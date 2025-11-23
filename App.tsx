@@ -185,19 +185,19 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full w-full max-w-md sm:max-w-full md:max-w-[480px] mx-auto bg-brand-cream relative shadow-2xl overflow-hidden text-brand-black">
-      {/* Content Area */}
-      <div className={`flex-1 overflow-y-auto custom-scrollbar`}>
+    <div className="flex flex-col h-[100dvh] w-full max-w-md sm:max-w-full md:max-w-[480px] mx-auto bg-brand-cream relative shadow-2xl overflow-hidden text-brand-black">
+      {/* Content Area - Added pb-24 to prevent content being hidden behind menu */}
+      <div className="flex-1 overflow-y-auto custom-scrollbar pb-24">
         {renderContent()}
       </div>
 
-      {/* Modern Bottom Navigation */}
-      <div className="absolute bottom-0 left-0 right-0 z-50 bg-brand-white/90 backdrop-blur-md border-t border-brand-light pb-safe">
-        <div className="flex justify-around items-center h-[70px] px-2">
+      {/* Modern Bottom Navigation - Fixed Position & White Background */}
+      <div className="fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-gray-200 pb-6 pt-2">
+        <div className="flex justify-around items-center h-[60px] px-2 max-w-md mx-auto">
             
             <button
               onClick={() => setActiveTab(Tab.PROFILE)}
-              className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.PROFILE ? 'text-brand-black' : 'text-brand-grey/50'}`}
+              className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.PROFILE ? 'text-brand-black' : 'text-gray-400'}`}
             >
               <div className={`p-1 rounded-xl transition-all ${activeTab === Tab.PROFILE ? 'bg-brand-cream' : ''}`}>
                 <User size={22} strokeWidth={activeTab === Tab.PROFILE ? 2.5 : 2} />
@@ -207,7 +207,7 @@ const App: React.FC = () => {
 
             <button
               onClick={() => setActiveTab(Tab.CONTENT)}
-              className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.CONTENT ? 'text-brand-black' : 'text-brand-grey/50'}`}
+              className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.CONTENT ? 'text-brand-black' : 'text-gray-400'}`}
             >
               <div className={`p-1 rounded-xl transition-all ${activeTab === Tab.CONTENT ? 'bg-brand-cream' : ''}`}>
                 <Newspaper size={22} strokeWidth={activeTab === Tab.CONTENT ? 2.5 : 2} />
@@ -215,12 +215,12 @@ const App: React.FC = () => {
               <span className="text-[9px] font-bold">Медиа</span>
             </button>
             
-            {/* Central Action Button: Projects/Chessboard */}
+            {/* Central Action Button */}
             <button
               onClick={() => setIsChessboardOpen(true)}
-              className="flex flex-col items-center justify-center w-14 h-full -mt-6 group"
+              className="flex flex-col items-center justify-center w-14 h-full -mt-8 group relative z-10"
             >
-              <div className="w-12 h-12 bg-brand-black text-brand-gold rounded-full flex items-center justify-center shadow-lg border-4 border-brand-cream group-active:scale-95 transition-transform">
+              <div className="w-12 h-12 bg-brand-black text-brand-gold rounded-full flex items-center justify-center shadow-lg border-4 border-white group-active:scale-95 transition-transform">
                 <Grid3X3 size={22} />
               </div>
               <span className="text-[9px] font-bold text-brand-black mt-1">Проекты</span>
@@ -228,7 +228,7 @@ const App: React.FC = () => {
 
             <button
               onClick={() => setActiveTab(Tab.MARKET)}
-              className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.MARKET ? 'text-brand-black' : 'text-brand-grey/50'}`}
+              className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.MARKET ? 'text-brand-black' : 'text-gray-400'}`}
             >
               <div className={`p-1 rounded-xl transition-all ${activeTab === Tab.MARKET ? 'bg-brand-cream' : ''}`}>
                 <ShoppingBag size={22} strokeWidth={activeTab === Tab.MARKET ? 2.5 : 2} />
@@ -238,7 +238,7 @@ const App: React.FC = () => {
 
             <button
               onClick={() => setActiveTab(Tab.LEADERBOARD)}
-              className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.LEADERBOARD ? 'text-brand-black' : 'text-brand-grey/50'}`}
+              className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.LEADERBOARD ? 'text-brand-black' : 'text-gray-400'}`}
             >
               <div className={`p-1 rounded-xl transition-all ${activeTab === Tab.LEADERBOARD ? 'bg-brand-cream' : ''}`}>
                 <Trophy size={22} strokeWidth={activeTab === Tab.LEADERBOARD ? 2.5 : 2} />

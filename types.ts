@@ -1,43 +1,98 @@
+
 export enum CurrencyType {
-  COMMON = 'COMMON',       // "Кирпичики" - from games
-  RARE = 'RARE',           // "Золотые блоки" - from deals
-  LEGENDARY = 'LEGENDARY', // "Алмазные ключи" - from 10 deals
+  SILVER = 'SILVER', // Regular coins (Daily tasks)
+  GOLD = 'GOLD',   // Premium coins (Sales only)
 }
 
 export interface UserProfile {
   id: string;
   name: string;
-  rank: string;
   avatar: string;
+  level: number;
+  currentXP: number;
+  nextLevelXP: number;
+  silverCoins: number;
+  goldCoins: number;
   dealsClosed: number;
-  wallet: {
-    [CurrencyType.COMMON]: number;
-    [CurrencyType.RARE]: number;
-    [CurrencyType.LEGENDARY]: number;
-  };
+  // Contact Info for Business Card
+  phone: string;
+  telegram: string;
+  whatsapp: string;
+}
+
+export interface ProjectStat {
+  id: string;
+  name: string; // "ЖК Бруклин"
+  sales: number;
+  totalUnits: number;
+  color: string;
+}
+
+export interface DailyQuest {
+  id: string;
+  title: string;
+  rewardXP: number;
+  rewardAmount: number;
+  rewardCurrency: CurrencyType;
+  isCompleted: boolean;
+  type: 'SHARE' | 'TEST' | 'DEAL';
+}
+
+export interface ConstructionUpdate {
+  id: string;
+  title: string;
+  projectName: string;
+  description: string; // Main text
+  checklist: string[]; // Bullet points for popup
+  generatedText?: string;
+  images: string[]; // Array for carousel
+  date: string;
+  progress: number;
+}
+
+export interface ShopItem {
+  id: string;
+  name: string;
+  category: 'TECH' | 'MERCH' | 'LUXURY' | 'EXPERIENCE';
+  price: number;
+  currency: CurrencyType;
+  image: string;
+  inStock: boolean;
 }
 
 export interface LeaderboardEntry {
   id: string;
   name: string;
   deals: number;
-  points: number;
+  xp: number;
   avatar: string;
+  trend: 'up' | 'down' | 'neutral';
 }
 
-export interface NewsItem {
+export interface ChessUnit {
   id: string;
-  title: string;
-  content: string;
-  date: string;
-  type: 'news' | 'event' | 'promo';
+  number: string;
+  rooms: number; // 1, 2, 3, Studio (0)
+  area: number;
+  price: number;
+  status: 'FREE' | 'BOOKED' | 'SOLD';
+  floor: number;
 }
 
-export interface ShopItem {
+export interface ProjectData {
   id: string;
   name: string;
-  description: string;
-  cost: number;
-  currency: CurrencyType;
+  floors: number;
+  unitsPerFloor: number;
   image: string;
 }
+
+// Helper to calculate Rank based on deals
+export const getRank = (deals: number): string => {
+  if (deals >= 50) return 'Гуру Недвижимости';
+  if (deals >= 35) return 'Мастер';
+  if (deals >= 20) return 'Эксперт';
+  if (deals >= 10) return 'Специалист';
+  if (deals >= 5) return 'Агент';
+  return 'Новичок';
+};

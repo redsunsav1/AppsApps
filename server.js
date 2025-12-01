@@ -105,8 +105,8 @@ app.post('/api/auth', async (req, res) => {
   }
 });
 
-// Любой другой запрос возвращает index.html (чтобы работал React Router)
-app.get('*', (req, res) => {
+// Любой другой запрос возвращает index.html
+app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 

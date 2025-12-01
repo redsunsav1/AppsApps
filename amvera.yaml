@@ -1,0 +1,14 @@
+meta:
+  environment: node
+  toolchain:
+    name: npm
+    version: 20
+build:
+  requirements: package.json
+  # Сначала ставим пакеты, потом собираем TypeScript проект в папку dist
+  command: npm install && npm run build
+run:
+  # Запускаем наш сервер
+  command: node server.js
+  containerPort: 8080
+  persistenceMount: /data

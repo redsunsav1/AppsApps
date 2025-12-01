@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import WebApp from '@twa-dev/sdk';
-import './App.css';
 
 // Тип данных, которые придут от нашего сервера
 interface UserData {

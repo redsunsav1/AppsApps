@@ -1,14 +1,10 @@
 meta:
-  environment: node
+  environment: docker
   toolchain:
-    name: npm
-    version: 20
+    name: docker
+    version: latest
 build:
-  requirements: package.json
-  # Сначала ставим пакеты, потом собираем TypeScript проект в папку dist
-  command: npm install && npm run build
+  dockerfile: Dockerfile
 run:
-  # Запускаем наш сервер
-  command: node server.js
-  containerPort: 8080
   persistenceMount: /data
+  containerPort: 8080

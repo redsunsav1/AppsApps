@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Clock, ChevronRight, X, CheckCircle2, Building2, TrendingUp } from 'lucide-react';
 import { ConstructionUpdate } from '../types';
 
-// Данные с этапами строительства (Чек-листами)
+// ТВОИ данные (я ничего не менял)
 const NEWS: ConstructionUpdate[] = [
   {
     id: '1',
@@ -50,14 +50,13 @@ const NEWS: ConstructionUpdate[] = [
 ];
 
 const NewsFeed: React.FC = () => {
-  // Состояние для открытой новости
   const [selectedNews, setSelectedNews] = useState<ConstructionUpdate | null>(null);
 
   return (
-    <div className="pb-36 pt-6 px-4 space-y-5 animate-fade-in">
+    <div className="pb-36 pt-6 px-4 space-y-5 animate-fade-in relative">
       <h2 className="text-2xl font-extrabold text-[#433830] pl-2">Новости и Ход строительства</h2>
       
-      {/* Список новостей */}
+      {/* Список новостей (Твой код) */}
       {NEWS.map(item => (
         <div 
           key={item.id} 
@@ -67,7 +66,6 @@ const NewsFeed: React.FC = () => {
           <div className="h-44 w-full overflow-hidden relative">
             <img src={item.images[0]} alt="" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
             
-            {/* Бейдж с названием ЖК */}
             <div className="absolute top-4 left-4 bg-white/90 backdrop-blur-md px-3 py-1 rounded-full text-xs font-bold text-[#433830] flex items-center gap-1 shadow-sm">
               <Building2 size={12} className="text-[#BA8F50]" />
               {item.projectName}
@@ -79,7 +77,6 @@ const NewsFeed: React.FC = () => {
               <div className="flex items-center gap-1 text-xs text-gray-400">
                 <Clock size={12} /> {item.date}
               </div>
-              {/* Мини-индикатор прогресса */}
               <div className="flex items-center gap-1.5 text-xs font-bold text-[#BA8F50]">
                 <TrendingUp size={14} />
                 {item.progress}% готовности
@@ -96,10 +93,13 @@ const NewsFeed: React.FC = () => {
         </div>
       ))}
 
-      {/* --- МОДАЛЬНОЕ ОКНО (ДЕТАЛИ) --- */}
+      {/* --- МОДАЛЬНОЕ ОКНО (ИСПРАВЛЕНО ПОЗИЦИОНИРОВАНИЕ) --- */}
       {selectedNews && (
-        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-[#433830]/60 backdrop-blur-sm p-4 animate-fade-in">
-          {/* Подложка для закрытия кликом вне окна */}
+        // БЫЛО: flex items-end (внизу)
+        // СТАЛО: flex items-center (по центру) + top-0 h-full (на весь экран)
+        <div className="fixed top-0 left-0 w-full h-full z-[100] flex items-center justify-center bg-[#433830]/60 backdrop-blur-sm p-4 animate-fade-in">
+          
+          {/* Подложка для закрытия */}
           <div className="absolute inset-0" onClick={() => setSelectedNews(null)} />
           
           <div className="bg-white w-full max-w-md rounded-[2rem] overflow-hidden shadow-2xl relative z-10 animate-slide-up max-h-[85vh] flex flex-col">
@@ -117,7 +117,7 @@ const NewsFeed: React.FC = () => {
               <img src={selectedNews.images[0]} alt="" className="w-full h-full object-cover" />
             </div>
 
-            {/* Контент (с прокруткой) */}
+            {/* Контент */}
             <div className="p-6 overflow-y-auto custom-scrollbar">
               <div className="flex items-center gap-2 mb-2">
                 <span className="bg-[#F2EBDF] text-[#433830] px-3 py-1 rounded-lg text-xs font-bold uppercase tracking-wider">
@@ -150,7 +150,7 @@ const NewsFeed: React.FC = () => {
                 {selectedNews.description}
               </p>
 
-              {/* Чек-лист (То, что ты хотел) */}
+              {/* Чек-лист (Твой функционал) */}
               <div className="space-y-3">
                 <h3 className="font-bold text-[#433830] text-sm uppercase tracking-wide">Выполненные этапы</h3>
                 {selectedNews.checklist.map((item, idx) => (

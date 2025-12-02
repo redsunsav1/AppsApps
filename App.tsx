@@ -8,7 +8,7 @@ import ContentHub from './components/NewsFeed';
 import Marketplace from './components/Shop';
 import Leaderboard from './components/Leaderboard';
 import ChessboardModal from './components/Chessboard';
-import { AdminPanel } from './components/AdminPanel'; // <-- НОВОЕ: Импорт админки
+import { AdminPanel } from './components/AdminPanel';
 
 import { UserProfile, DailyQuest, ProjectStat, CurrencyType } from './types';
 
@@ -29,15 +29,15 @@ interface ServerUser {
   is_registered: boolean;
   phone?: string;
   company?: string;
-  is_admin?: boolean; // <-- НОВОЕ: Флаг админа
+  is_admin?: boolean;
 }
 
 interface AppUserProfile extends UserProfile {
   is_registered: boolean;
-  is_admin: boolean; // <-- НОВОЕ
+  is_admin: boolean;
 }
 
-// ... (ТВОИ ЗАГЛУШКИ MOCK_DEFAULTS, PROJECT_STATS, DAILY_QUESTS ОСТАВЛЯЕМ КАК БЫЛИ) ...
+// Заглушки
 const MOCK_DEFAULTS = {
   avatar: 'https://images.unsplash.com/photo-1560250097-0b93528c311a?ixlib=rb-4.0.3&auto=format&fit=crop&w=256&q=80',
   level: 1, currentXP: 0, nextLevelXP: 1000, goldCoins: 0, dealsClosed: 0, telegram: '', whatsapp: ''
@@ -62,8 +62,10 @@ const App: React.FC = () => {
   const [quests, setQuests] = useState<DailyQuest[]>(DAILY_QUESTS);
   const [isChessboardOpen, setIsChessboardOpen] = useState(false);
   
-  // --- НОВОЕ: Состояние для новостей ---
+  // --- Состояние для новостей и админки ---
   const [news, setNews] = useState<any[]>([]); 
+  const [isAdminModalOpen, setIsAdminModalOpen] = useState(false); // Открыта ли админка
+  const [editingItem, setEditingItem] = useState<any>(null);     // Какую новость редактируем
 
   // --- Форма регистрации ---
   const [regName, setRegName] = useState('');
@@ -106,7 +108,7 @@ const App: React.FC = () => {
             is_registered: serverUser.is_registered,
             phone: serverUser.phone || '',
             company: serverUser.company || '',
-            is_admin: serverUser.is_admin || false, // <-- Сохраняем админа
+            is_admin: serverUser.is_admin || false,
           });
           if (serverUser.first_name) setRegName(serverUser.first_name);
         }
@@ -144,14 +146,24 @@ const App: React.FC = () => {
 
   const onClaimQuest = (id: string) => { console.log("Claim", id); };
 
+  // --- УПРАВЛЕНИЕ АДМИНКОЙ ---
+  const handleOpenCreate = () => {
+    setEditingItem(null); // Очищаем форму (создание новой)
+    setIsAdminModalOpen(true);
+  };
+
+  const handleOpenEdit = (item: any) => {
+    setEditingItem(item); // Заполняем форму данными (редактирование)
+    setIsAdminModalOpen(true);
+  };
+
   if (loading) return <div className="flex items-center justify-center h-screen bg-brand-cream w-full">Загрузка...</div>;
   if (!user) return <div className="flex items-center justify-center h-screen bg-brand-cream p-4">Open in Telegram</div>;
 
-  // --- ЭКРАН РЕГИСТРАЦИИ (Твой) ---
+  // --- ЭКРАН РЕГИСТРАЦИИ ---
   if (!user.is_registered) {
     return (
       <div className="flex flex-col h-screen w-full bg-brand-cream text-brand-black p-6 justify-center max-w-md mx-auto">
-        {/* ... (ВЕСЬ ТВОЙ КОД ВЕРСТКИ РЕГИСТРАЦИИ ОСТАЕТСЯ ЗДЕСЬ БЕЗ ИЗМЕНЕНИЙ) ... */}
         <div className="mb-8 text-center">
           <div className="w-20 h-20 bg-brand-gold rounded-full mx-auto mb-4 flex items-center justify-center shadow-lg"><User size={40} className="text-white" /></div>
           <h1 className="text-2xl font-bold mb-2">Добро пожаловать!</h1>
@@ -173,15 +185,44 @@ const App: React.FC = () => {
       <div className="flex-1 overflow-y-auto custom-scrollbar pb-24">
         {activeTab === Tab.PROFILE && <Dashboard user={user} quests={quests} stats={PROJECT_STATS} onClaimQuest={onClaimQuest} />}
         
-        {/* 👇 Передаем новости в твой компонент ContentHub (Важно: тебе нужно обновить сам ContentHub, чтобы он принимал проп 'news') */}
-        {activeTab === Tab.CONTENT && <ContentHub news={news} />}
+        {/* Передаем новости и функции управления в ленту */}
+        {activeTab === Tab.CONTENT && (
+          <ContentHub 
+            news={news} 
+            isAdmin={user.is_admin} 
+            onEdit={handleOpenEdit} 
+            onRefresh={fetchNews} 
+          />
+        )}
         
         {activeTab === Tab.MARKET && <Marketplace userSilver={user.silverCoins} userGold={user.goldCoins} />}
         {activeTab === Tab.LEADERBOARD && <Leaderboard />}
       </div>
 
-      {/* АДМИНКА: Появляется поверх всего, если ты админ */}
-      {user.is_admin && <AdminPanel onNewsAdded={fetchNews} />}
+      {/* КНОПКА ОТКРЫТИЯ АДМИНКИ (Для создания новой новости) */}
+      {user.is_admin && !isAdminModalOpen && (
+        <button 
+          onClick={handleOpenCreate}
+          style={{
+            position: 'fixed', bottom: '90px', right: '20px', 
+            background: '#e74c3c', color: 'white', border: 'none', 
+            borderRadius: '50%', width: '50px', height: '50px', 
+            fontSize: '24px', zIndex: 100, cursor: 'pointer',
+            boxShadow: '0 4px 10px rgba(0,0,0,0.3)'
+          }}
+        >
+          ⚙️
+        </button>
+      )}
+
+      {/* МОДАЛЬНОЕ ОКНО АДМИНКИ */}
+      {isAdminModalOpen && (
+        <AdminPanel 
+          onNewsAdded={fetchNews} 
+          onClose={() => setIsAdminModalOpen(false)} 
+          editData={editingItem}
+        />
+      )}
 
       <div className="fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-gray-200 pb-6 pt-2">
         <div className="flex justify-around items-center h-[60px] px-2 max-w-md mx-auto">

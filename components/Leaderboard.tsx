@@ -1,67 +1,54 @@
 import React from 'react';
-import { LeaderboardEntry, getRank } from '../types';
-import { Trophy, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { Trophy } from 'lucide-react';
 
-interface LeaderboardProps {
-  entries: LeaderboardEntry[];
-}
+const USERS = [
+  { id: 1, name: 'Елена Волкова', deals: 12, company: 'АН Этажи' },
+  { id: 2, name: 'Алексей Смирнов', deals: 10, company: 'ИП Смирнов' },
+  { id: 3, name: 'Мария Иванова', deals: 8, company: 'Самолет Плюс' },
+  { id: 4, name: 'Дмитрий Петров', deals: 7, company: 'Частный брокер' },
+  { id: 5, name: 'Ольга Соколова', deals: 5, company: 'Владис' },
+  { id: 6, name: 'Иван Сидоров', deals: 3, company: 'ИП Сидоров' },
+  { id: 7, name: 'Анна Кузнецова', deals: 2, company: 'Инком' },
+  { id: 8, name: 'Петр Васильев', deals: 1, company: 'Миэль' },
+  { id: 9, name: 'Виктория Ким', deals: 1, company: 'Аякс' },
+  { id: 10, name: 'Сергей Морозов', deals: 0, company: 'Новичок' },
+];
 
-const Leaderboard: React.FC<LeaderboardProps> = ({ entries }) => {
+const Leaderboard: React.FC = () => {
   return (
-    <div className="pb-32 animate-fade-in">
-      <header className="px-6 pt-8 pb-6">
-        <h2 className="text-2xl font-bold text-brand-black">Топ Партнеров</h2>
-        <p className="text-brand-grey text-sm mt-1">Рейтинг эффективности за Сентябрь</p>
-      </header>
+    <div className="pb-36 pt-6 px-4 animate-fade-in">
+      {/* Заголовок */}
+      <div className="bg-gradient-to-r from-[#BA8F50] to-[#d4a056] text-white p-6 rounded-2xl shadow-lg mb-6 text-center relative overflow-hidden">
+        <div className="absolute top-0 left-0 w-full h-full bg-black opacity-10" />
+        <div className="relative z-10">
+            <Trophy size={40} className="mx-auto mb-2 opacity-90" />
+            <h2 className="text-2xl font-bold">Топ Партнеров</h2>
+            <p className="opacity-90 text-sm">Лидеры продаж за Декабрь</p>
+        </div>
+      </div>
 
-      <div className="px-4 space-y-3">
-        {entries.map((leader, index) => {
-          const isTop3 = index < 3;
-          const rankName = getRank(leader.deals);
-          
-          return (
-            <div 
-              key={leader.id} 
-              className={`
-                flex items-center p-4 rounded-2xl border transition-all
-                ${isTop3 ? 'bg-brand-white border-brand-light shadow-sm' : 'bg-transparent border-transparent'}
-              `}
-            >
-              <div className={`
-                w-8 font-bold text-sm mr-3 text-center
-                ${index === 0 ? 'text-brand-gold text-lg' : 
-                  index === 1 ? 'text-brand-black/60' : 
-                  index === 2 ? 'text-brand-black/50' : 'text-brand-grey'}
-              `}>
-                {index + 1}
-              </div>
-              
-              <img 
-                src={leader.avatar} 
-                alt={leader.name} 
-                className="w-10 h-10 rounded-full object-cover border border-brand-cream mr-3" 
-              />
-              
-              <div className="flex-1">
-                <h4 className="font-bold text-brand-black text-sm">{leader.name}</h4>
-                <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-[10px] bg-brand-cream text-brand-black/70 px-1.5 py-0.5 rounded-md font-bold">{rankName}</span>
-                </div>
-              </div>
-
-              <div className="text-right">
-                 <div className="font-bold text-brand-black text-sm">{leader.deals} сд.</div>
-                 <div className="flex items-center justify-end gap-1 mt-0.5">
-                    {leader.trend === 'up' && <TrendingUp size={12} className="text-green-600" />}
-                    {leader.trend === 'down' && <TrendingDown size={12} className="text-red-400" />}
-                    {leader.trend === 'neutral' && <Minus size={12} className="text-brand-grey" />}
-                 </div>
-              </div>
-
-              {index === 0 && <Trophy size={20} className="text-brand-gold ml-3" />}
+      {/* Список */}
+      <div className="space-y-3">
+        {USERS.map((u, index) => (
+          <div key={u.id} className="bg-white p-4 rounded-xl flex items-center gap-4 shadow-sm border border-[#EAE0D5]">
+            {/* Место в рейтинге */}
+            <div className={`font-bold text-lg w-8 h-8 flex items-center justify-center rounded-full shrink-0 ${index < 3 ? 'bg-[#BA8F50] text-white shadow-md' : 'bg-gray-100 text-gray-400'}`}>
+              {index + 1}
             </div>
-          );
-        })}
+            
+            {/* Инфо */}
+            <div className="flex-1 min-w-0">
+              <h3 className="font-bold text-[#433830] truncate">{u.name}</h3>
+              <p className="text-xs text-gray-500 truncate">{u.company}</p>
+            </div>
+            
+            {/* Сделки */}
+            <div className="text-right shrink-0">
+              <span className="font-bold text-lg block text-[#433830] leading-none">{u.deals}</span>
+              <span className="text-[10px] text-gray-400 uppercase font-bold">Сделок</span>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

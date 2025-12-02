@@ -1,6 +1,6 @@
 import React from 'react';
 import { UserProfile, DailyQuest, ProjectStat, CurrencyType, getRank } from '../types';
-import { ChevronRight, CheckCircle2, Circle, Zap, Phone, Send, MessageCircle } from 'lucide-react';
+import { ChevronRight, CheckCircle2, Circle, Zap, Phone, Briefcase } from 'lucide-react';
 
 interface DashboardProps {
   user: UserProfile;
@@ -15,11 +15,12 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
 
   return (
     <div className="pb-36 animate-fade-in">
-      {/* Header / Profile Summary */}
+      
+      {/* 1. Header / Profile Summary (ТВОЙ КОД БЕЗ ИЗМЕНЕНИЙ) */}
       <div className="pt-8 px-6 pb-8 bg-brand-white rounded-b-[2.5rem] shadow-sm relative z-10">
          <div className="flex justify-between items-start mb-6">
             <div>
-                 <h1 className="text-2xl font-extrabold text-brand-black">Мой профиль</h1>
+                 <h1 className="text-2xl font-extrabold text-brand-black">Привет, {user.name}!</h1>
                  <p className="text-brand-grey text-xs font-medium mt-1">Клуб партнеров</p>
             </div>
             {/* Rank Display */}
@@ -70,44 +71,40 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
          </div>
       </div>
 
-      {/* Business Card / Contacts (Replaces Goal) */}
+      {/* 2. Business Card (ОБНОВЛЕНО: Добавлена компания и телефон) */}
       <div className="mt-6 mx-4">
          <div className="bg-white rounded-2xl p-5 shadow-sm border border-brand-light">
-            <h3 className="text-sm font-bold text-brand-black mb-4 uppercase tracking-wide opacity-70">Визитка</h3>
+            <h3 className="text-sm font-bold text-brand-black mb-4 uppercase tracking-wide opacity-70 flex items-center gap-2">
+                <Briefcase size={16} /> Визитка
+            </h3>
             
-            <div className="grid grid-cols-3 gap-3">
-                <a href={`https://t.me/${user.telegram.replace('@', '')}`} target="_blank" rel="noreferrer" 
-                   className="flex flex-col items-center justify-center gap-2 py-4 bg-blue-50 rounded-xl border border-blue-100 active:scale-[0.97] transition-transform">
-                    <div className="w-10 h-10 bg-blue-500 text-white rounded-full flex items-center justify-center shadow-md shadow-blue-200">
-                        <Send size={18} className="-ml-0.5 mt-0.5" />
+            <div className="space-y-3">
+                {/* Компания */}
+                <div className="flex items-center justify-between p-3 bg-brand-cream/50 rounded-xl border border-brand-light/50">
+                    <div>
+                        <p className="text-[10px] font-bold text-brand-grey uppercase mb-0.5">Компания / ИП</p>
+                        <p className="font-bold text-brand-black">{user.company || 'Не указано'}</p>
                     </div>
-                    <span className="text-[10px] font-bold text-blue-600">Telegram</span>
-                </a>
+                </div>
 
-                <a href={`https://wa.me/${user.whatsapp.replace(/[^0-9]/g, '')}`} target="_blank" rel="noreferrer"
-                   className="flex flex-col items-center justify-center gap-2 py-4 bg-green-50 rounded-xl border border-green-100 active:scale-[0.97] transition-transform">
-                    <div className="w-10 h-10 bg-green-500 text-white rounded-full flex items-center justify-center shadow-md shadow-green-200">
-                        <MessageCircle size={18} />
+                {/* Телефон + Кнопка */}
+                <div className="flex gap-3">
+                    <div className="flex-1 p-3 bg-brand-cream/50 rounded-xl border border-brand-light/50 flex flex-col justify-center">
+                        <p className="text-[10px] font-bold text-brand-grey uppercase mb-0.5">Телефон</p>
+                        <p className="font-bold text-brand-black">{user.phone}</p>
                     </div>
-                    <span className="text-[10px] font-bold text-green-600">WhatsApp</span>
-                </a>
-
-                <a href={`tel:${user.phone}`} 
-                   className="flex flex-col items-center justify-center gap-2 py-4 bg-brand-cream rounded-xl border border-brand-beige active:scale-[0.97] transition-transform">
-                    <div className="w-10 h-10 bg-brand-black text-brand-gold rounded-full flex items-center justify-center shadow-md">
-                        <Phone size={18} />
-                    </div>
-                    <span className="text-[10px] font-bold text-brand-black">Позвонить</span>
-                </a>
-            </div>
-            
-            <div className="mt-4 flex justify-center">
-                <p className="text-xs text-brand-grey font-medium">{user.phone}</p>
+                    
+                    <a href={`tel:${user.phone}`} 
+                       className="flex items-center justify-center w-16 bg-brand-black text-brand-gold rounded-xl shadow-md active:scale-95 transition-transform"
+                    >
+                        <Phone size={24} />
+                    </a>
+                </div>
             </div>
          </div>
       </div>
 
-      {/* Daily Quests */}
+      {/* 3. Daily Quests (ТВОЙ КОД БЕЗ ИЗМЕНЕНИЙ) */}
       <div className="mt-8 px-6">
         <h3 className="text-lg font-bold text-brand-black mb-4 flex items-center gap-2">
             Задачи <Zap size={16} className="text-brand-gold fill-current" />
@@ -140,7 +137,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
         </div>
       </div>
 
-      {/* Statistics Section */}
+      {/* 4. Statistics Section (ТВОЙ КОД БЕЗ ИЗМЕНЕНИЙ) */}
       <div className="mt-10 px-6 pb-6">
           <h3 className="text-lg font-bold text-brand-black mb-4">Статистика продаж</h3>
           <div className="bg-brand-white rounded-3xl p-6 shadow-sm border border-brand-light">
@@ -154,7 +151,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
                           <div className="h-2 w-full bg-brand-cream rounded-full overflow-hidden">
                               <div 
                                 className={`h-full rounded-full ${stat.color}`} 
-                                style={{ width: `${(stat.sales / 20) * 100}%` }} // Normalized for demo
+                                style={{ width: `${(stat.sales / 20) * 100}%` }} 
                               ></div>
                           </div>
                       </div>

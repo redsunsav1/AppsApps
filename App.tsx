@@ -10,7 +10,7 @@ import Leaderboard from './components/Leaderboard';
 import ChessboardModal from './components/Chessboard';
 import { UserProfile, DailyQuest, ConstructionUpdate, ShopItem, LeaderboardEntry, ProjectStat, CurrencyType } from './types';
 
-// Типы вкладок
+// Типы
 enum Tab {
   PROFILE = 'PROFILE',
   CONTENT = 'CONTENT',
@@ -18,7 +18,6 @@ enum Tab {
   LEADERBOARD = 'LEADERBOARD',
 }
 
-// Тип юзера с сервера
 interface ServerUser {
   id: number;
   telegram_id: string;
@@ -27,14 +26,14 @@ interface ServerUser {
   balance: number;
   is_registered: boolean;
   phone?: string;
-  company?: string; // <-- Теперь тут company вместо city
+  company?: string;
 }
 
 interface AppUserProfile extends UserProfile {
   is_registered: boolean;
 }
 
-// Заглушки (Mock Data)
+// Заглушки
 const MOCK_DEFAULTS = {
   avatar: 'https://images.unsplash.com/photo-1560250097-0b93528c311a?ixlib=rb-4.0.3&auto=format&fit=crop&w=256&q=80',
   level: 1,
@@ -46,7 +45,6 @@ const MOCK_DEFAULTS = {
   whatsapp: ''
 };
 
-// Статистика (твоя заглушка)
 const PROJECT_STATS: ProjectStat[] = [
   { id: 'p1', name: 'ЖК Бруклин', sales: 8, totalUnits: 120, color: 'bg-brand-black' },
   { id: 'p2', name: 'ЖК Бабайка', sales: 12, totalUnits: 450, color: 'bg-brand-gold' },
@@ -60,7 +58,6 @@ const DAILY_QUESTS: DailyQuest[] = [
   { id: 'q3', title: 'Продать 2-к квартиру', rewardXP: 1000, rewardAmount: 10, rewardCurrency: CurrencyType.GOLD, isCompleted: false, type: 'DEAL' },
 ];
 
-// Данные для других вкладок
 const NEWS_UPDATES: ConstructionUpdate[] = [
   { id: 'n1', title: 'Заливка 20 этажа', projectName: 'ЖК Бруклин', description: 'В ЖК Бруклин строители приступили к финальной стадии.', checklist: [], images: ['https://images.unsplash.com/photo-1541888946425-d81bb19240f5?auto=format&fit=crop&w=800&q=80'], date: '2 часа назад', progress: 65 },
 ];
@@ -80,8 +77,9 @@ const App: React.FC = () => {
   const [isChessboardOpen, setIsChessboardOpen] = useState(false);
 
   // --- Форма регистрации ---
+  const [regName, setRegName] = useState(''); // <-- Новое состояние для Имени
   const [regPhone, setRegPhone] = useState('');
-  const [regCompany, setRegCompany] = useState(''); // <-- Вместо City теперь Company
+  const [regCompany, setRegCompany] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // 1. Вход
@@ -107,8 +105,10 @@ const App: React.FC = () => {
             silverCoins: serverUser.balance,
             is_registered: serverUser.is_registered,
             phone: serverUser.phone || '',
-            company: serverUser.company || '', // <-- Берем компанию
+            company: serverUser.company || '',
           });
+          // Если имя уже есть в базе, подставляем его в форму
+          if (serverUser.first_name) setRegName(serverUser.first_name);
         }
       })
       .catch(err => console.error("Auth error:", err))
@@ -118,9 +118,9 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // 2. Регистрация
+  // 2. Регистрация (отправляем Имя тоже)
   const handleRegistration = () => {
-    if(!regPhone || !regCompany) return;
+    if(!regPhone || !regCompany || !regName) return;
     setIsSubmitting(true);
 
     fetch('/api/register', {
@@ -129,39 +129,24 @@ const App: React.FC = () => {
       body: JSON.stringify({ 
         initData: WebApp.initData,
         phone: regPhone, 
-        company: regCompany // <-- Отправляем компанию
+        company: regCompany,
+        name: regName // <-- Отправляем имя
       }),
     })
     .then(res => res.json())
     .then(data => {
       if (data.success && user) {
-        setUser({ ...user, is_registered: true, phone: regPhone, company: regCompany });
+        setUser({ ...user, is_registered: true, phone: regPhone, company: regCompany, name: regName });
       }
     })
     .catch(err => alert("Ошибка сохранения"))
     .finally(() => setIsSubmitting(false));
   };
 
-  const renderContent = () => {
-    if (!user) return null;
-    switch (activeTab) {
-      case Tab.PROFILE:
-        return <Dashboard user={user} quests={quests} stats={PROJECT_STATS} />;
-      case Tab.CONTENT:
-        return <ContentHub />;
-      case Tab.MARKET:
-        return <Marketplace userSilver={user.silverCoins} userGold={user.goldCoins} />;
-      case Tab.LEADERBOARD:
-        return <Leaderboard />;
-      default:
-        return null;
-    }
-  };
-
   if (loading) return <div className="flex items-center justify-center h-screen bg-brand-cream w-full">Loading...</div>;
   if (!user) return <div className="flex items-center justify-center h-screen bg-brand-cream p-4">Open in Telegram</div>;
 
-  // --- ЭКРАН РЕГИСТРАЦИИ ---
+  // --- ЭКРАН РЕГИСТРАЦИИ (Добавлено поле Имя) ---
   if (!user.is_registered) {
     return (
       <div className="flex flex-col h-screen w-full bg-brand-cream text-brand-black p-6 justify-center max-w-md mx-auto">
@@ -174,6 +159,19 @@ const App: React.FC = () => {
         </div>
 
         <div className="space-y-4 bg-white p-6 rounded-2xl shadow-sm border border-brand-beige">
+          
+          {/* Поле ИМЯ (Теперь активное) */}
+          <div>
+            <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Имя и Фамилия</label>
+            <input 
+              type="text"
+              value={regName}
+              onChange={e => setRegName(e.target.value)}
+              placeholder="Иван Иванов"
+              className="w-full p-3 bg-brand-light rounded-xl border-none focus:ring-2 focus:ring-brand-gold outline-none"
+            />
+          </div>
+
           <div>
             <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Компания / ИП</label>
             <input 
@@ -184,6 +182,7 @@ const App: React.FC = () => {
               className="w-full p-3 bg-brand-light rounded-xl border-none focus:ring-2 focus:ring-brand-gold outline-none"
             />
           </div>
+          
           <div>
             <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Ваш телефон</label>
             <input 
@@ -197,7 +196,7 @@ const App: React.FC = () => {
           
           <button 
             onClick={handleRegistration}
-            disabled={isSubmitting || !regPhone || !regCompany}
+            disabled={isSubmitting || !regPhone || !regCompany || !regName}
             className="w-full py-4 bg-brand-black text-white rounded-xl font-bold text-lg mt-4 active:scale-95 transition-transform disabled:opacity-50"
           >
             {isSubmitting ? 'Сохранение...' : 'Вступить в клуб'}
@@ -211,49 +210,19 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-[100dvh] w-full max-w-md mx-auto bg-brand-cream relative shadow-2xl overflow-hidden text-brand-black">
       <div className="flex-1 overflow-y-auto custom-scrollbar pb-24">
-        {renderContent()}
+        {activeTab === Tab.PROFILE && <Dashboard user={user} quests={quests} stats={PROJECT_STATS} />}
+        {activeTab === Tab.CONTENT && <ContentHub />}
+        {activeTab === Tab.MARKET && <Marketplace userSilver={user.silverCoins} userGold={user.goldCoins} />}
+        {activeTab === Tab.LEADERBOARD && <Leaderboard />}
       </div>
 
-      {/* Навигация */}
       <div className="fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-gray-200 pb-6 pt-2">
         <div className="flex justify-around items-center h-[60px] px-2 max-w-md mx-auto">
-            
-            <button onClick={() => setActiveTab(Tab.PROFILE)} className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.PROFILE ? 'text-brand-black' : 'text-gray-400'}`}>
-              <div className={`p-1 rounded-xl transition-all ${activeTab === Tab.PROFILE ? 'bg-brand-cream' : ''}`}>
-                <User size={22} strokeWidth={activeTab === Tab.PROFILE ? 2.5 : 2} />
-              </div>
-              <span className="text-[9px] font-bold">Профиль</span>
-            </button>
-
-            {/* Было Медиа, стало Новости */}
-            <button onClick={() => setActiveTab(Tab.CONTENT)} className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.CONTENT ? 'text-brand-black' : 'text-gray-400'}`}>
-              <div className={`p-1 rounded-xl transition-all ${activeTab === Tab.CONTENT ? 'bg-brand-cream' : ''}`}>
-                <Newspaper size={22} strokeWidth={activeTab === Tab.CONTENT ? 2.5 : 2} />
-              </div>
-              <span className="text-[9px] font-bold">Новости</span>
-            </button>
-            
-            <button onClick={() => setIsChessboardOpen(true)} className="flex flex-col items-center justify-center w-14 h-full -mt-8 group relative z-10">
-              <div className="w-12 h-12 bg-brand-black text-brand-gold rounded-full flex items-center justify-center shadow-lg border-4 border-white group-active:scale-95 transition-transform">
-                <Grid3X3 size={22} />
-              </div>
-              <span className="text-[9px] font-bold text-brand-black mt-1">Проекты</span>
-            </button>
-
-            <button onClick={() => setActiveTab(Tab.MARKET)} className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.MARKET ? 'text-brand-black' : 'text-gray-400'}`}>
-              <div className={`p-1 rounded-xl transition-all ${activeTab === Tab.MARKET ? 'bg-brand-cream' : ''}`}>
-                <ShoppingBag size={22} strokeWidth={activeTab === Tab.MARKET ? 2.5 : 2} />
-              </div>
-              <span className="text-[9px] font-bold">Маркет</span>
-            </button>
-
-            <button onClick={() => setActiveTab(Tab.LEADERBOARD)} className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.LEADERBOARD ? 'text-brand-black' : 'text-gray-400'}`}>
-              <div className={`p-1 rounded-xl transition-all ${activeTab === Tab.LEADERBOARD ? 'bg-brand-cream' : ''}`}>
-                <Trophy size={22} strokeWidth={activeTab === Tab.LEADERBOARD ? 2.5 : 2} />
-              </div>
-              <span className="text-[9px] font-bold">Топ</span>
-            </button>
-
+            <button onClick={() => setActiveTab(Tab.PROFILE)} className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.PROFILE ? 'text-brand-black' : 'text-gray-400'}`}><div className={`p-1 rounded-xl transition-all ${activeTab === Tab.PROFILE ? 'bg-brand-cream' : ''}`}><User size={22} strokeWidth={activeTab === Tab.PROFILE ? 2.5 : 2} /></div><span className="text-[9px] font-bold">Профиль</span></button>
+            <button onClick={() => setActiveTab(Tab.CONTENT)} className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.CONTENT ? 'text-brand-black' : 'text-gray-400'}`}><div className={`p-1 rounded-xl transition-all ${activeTab === Tab.CONTENT ? 'bg-brand-cream' : ''}`}><Newspaper size={22} strokeWidth={activeTab === Tab.CONTENT ? 2.5 : 2} /></div><span className="text-[9px] font-bold">Новости</span></button>
+            <button onClick={() => setIsChessboardOpen(true)} className="flex flex-col items-center justify-center w-14 h-full -mt-8 group relative z-10"><div className="w-12 h-12 bg-brand-black text-brand-gold rounded-full flex items-center justify-center shadow-lg border-4 border-white group-active:scale-95 transition-transform"><Grid3X3 size={22} /></div><span className="text-[9px] font-bold text-brand-black mt-1">Проекты</span></button>
+            <button onClick={() => setActiveTab(Tab.MARKET)} className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.MARKET ? 'text-brand-black' : 'text-gray-400'}`}><div className={`p-1 rounded-xl transition-all ${activeTab === Tab.MARKET ? 'bg-brand-cream' : ''}`}><ShoppingBag size={22} strokeWidth={activeTab === Tab.MARKET ? 2.5 : 2} /></div><span className="text-[9px] font-bold">Маркет</span></button>
+            <button onClick={() => setActiveTab(Tab.LEADERBOARD)} className={`flex flex-col items-center justify-center w-14 h-full gap-1 transition-all ${activeTab === Tab.LEADERBOARD ? 'text-brand-black' : 'text-gray-400'}`}><div className={`p-1 rounded-xl transition-all ${activeTab === Tab.LEADERBOARD ? 'bg-brand-cream' : ''}`}><Trophy size={22} strokeWidth={activeTab === Tab.LEADERBOARD ? 2.5 : 2} /></div><span className="text-[9px] font-bold">Топ</span></button>
         </div>
       </div>
 

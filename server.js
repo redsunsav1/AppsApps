@@ -22,27 +22,42 @@ app.use(express.static(path.join(__dirname, 'dist')));
 // --- ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ ---
 const client = new Client({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false } // Нужно для Amvera/Cloud баз
+  ssl: { rejectUnauthorized: false }
 });
 
-client.connect()
-  .then(() => console.log('✅ Connected to Database'))
-  .catch(err => console.error('❌ DB Connection Error:', err));
+// Функция настройки базы данных (создание таблиц и колонок)
+const initDb = async () => {
+  try {
+    await client.connect();
+    console.log('✅ Connected to Database');
 
-// Создаем таблицу пользователей при старте (если её нет)
-const createTableQuery = `
-  CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
-    telegram_id BIGINT UNIQUE NOT NULL,
-    username TEXT,
-    first_name TEXT,
-    balance INT DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  );
-`;
-client.query(createTableQuery);
+    // 1. Создаем таблицу, если её нет
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        telegram_id BIGINT UNIQUE NOT NULL,
+        username TEXT,
+        first_name TEXT,
+        balance INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
 
-// --- ФУНКЦИЯ ПРОВЕРКИ ПОДПИСИ TELEGRAM (ВАЖНО!) ---
+    // 2. Добавляем новые колонки (для тех, у кого старая версия базы)
+    // Эти команды безопасны: если колонка есть, они ничего не сломают
+    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;');
+    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT;');
+    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_registered BOOLEAN DEFAULT FALSE;');
+    
+    console.log('✅ Database schema updated');
+  } catch (err) {
+    console.error('❌ DB Connection/Setup Error:', err);
+  }
+};
+
+initDb();
+
+// --- ФУНКЦИЯ ПРОВЕРКИ ПОДПИСИ TELEGRAM ---
 const verifyTelegramWebAppData = (telegramInitData) => {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error('BOT_TOKEN is missing');
@@ -51,57 +66,69 @@ const verifyTelegramWebAppData = (telegramInitData) => {
   const hash = urlParams.get('hash');
   urlParams.delete('hash');
 
-  // Сортируем параметры
   const params = Array.from(urlParams.entries())
     .map(([key, value]) => `${key}=${value}`)
     .sort()
     .join('\n');
 
-  // Генерируем секретный ключ и хеш
   const secretKey = crypto.createHmac('sha256', 'WebAppData').update(token).digest();
   const calculatedHash = crypto.createHmac('sha256', secretKey).update(params).digest('hex');
 
   return calculatedHash === hash;
 };
 
-// --- API: РЕГИСТРАЦИЯ / ВХОД ---
+// --- API: ВХОД (Получение данных юзера) ---
 app.post('/api/auth', async (req, res) => {
   const { initData } = req.body;
-
   if (!initData) return res.status(400).json({ error: 'No data' });
 
   try {
-    // 1. Проверяем подлинность (Защита от хакеров)
-    // Если тестируете локально без токена - закомментируйте проверку, но НЕ ЗАБУДЬТЕ ВКЛЮЧИТЬ В ПРОДАКШЕНЕ
     const isValid = verifyTelegramWebAppData(initData);
     if (!isValid) return res.status(403).json({ error: 'Invalid signature' });
 
-    // 2. Достаем данные юзера
     const urlParams = new URLSearchParams(initData);
     const user = JSON.parse(urlParams.get('user'));
 
-    // 3. Работаем с БД
-    // Проверяем, есть ли юзер
-    const findQuery = 'SELECT * FROM users WHERE telegram_id = $1';
-    const findResult = await client.query(findQuery, [user.id]);
+    const findResult = await client.query('SELECT * FROM users WHERE telegram_id = $1', [user.id]);
 
     if (findResult.rows.length > 0) {
-      // Юзер старый — возвращаем профиль
       return res.json({ user: findResult.rows[0], status: 'exists' });
     } else {
-      // Юзер новый — создаем
-      const insertQuery = `
-        INSERT INTO users (telegram_id, username, first_name)
-        VALUES ($1, $2, $3)
-        RETURNING *
-      `;
-      const insertResult = await client.query(insertQuery, [user.id, user.username, user.first_name]);
+      const insertResult = await client.query(
+        'INSERT INTO users (telegram_id, username, first_name) VALUES ($1, $2, $3) RETURNING *',
+        [user.id, user.username, user.first_name]
+      );
       return res.json({ user: insertResult.rows[0], status: 'created' });
     }
-
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// --- API: РЕГИСТРАЦИЯ (Заполнение анкеты) ---
+app.post('/api/register', async (req, res) => {
+  const { initData, phone, city } = req.body;
+
+  try {
+    // Проверка подписи
+    const isValid = verifyTelegramWebAppData(initData);
+    if (!isValid) return res.status(403).json({ error: 'Invalid signature' });
+
+    // Получаем ID
+    const urlParams = new URLSearchParams(initData);
+    const user = JSON.parse(urlParams.get('user'));
+
+    // Обновляем данные пользователя
+    const result = await client.query(
+      'UPDATE users SET phone = $1, city = $2, is_registered = TRUE WHERE telegram_id = $3 RETURNING *',
+      [phone, city, user.id]
+    );
+
+    res.json({ user: result.rows[0], success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Registration error' });
   }
 });
 

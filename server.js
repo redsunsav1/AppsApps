@@ -40,9 +40,9 @@ const initDb = async () => {
       );
     `);
 
-    // Добавляем новые колонки (безопасно)
+    // Добавляем колонки (безопасно)
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;');
-    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS company TEXT;'); // <-- Было city, стало company
+    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS company TEXT;');
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_registered BOOLEAN DEFAULT FALSE;');
     
     console.log('✅ Database schema updated');
@@ -59,7 +59,6 @@ app.post('/api/auth', async (req, res) => {
   if (!initData) return res.status(400).json({ error: 'No data' });
 
   try {
-    // Валидацию можно включить перед продакшеном
     const urlParams = new URLSearchParams(initData);
     const user = JSON.parse(urlParams.get('user'));
 
@@ -80,23 +79,35 @@ app.post('/api/auth', async (req, res) => {
   }
 });
 
-// --- API: РЕГИСТРАЦИЯ (Изменили city на company) ---
+// --- API: РЕГИСТРАЦИЯ (ОБНОВЛЕНО: Добавлено name) ---
 app.post('/api/register', async (req, res) => {
-  const { initData, phone, company } = req.body; // <-- Принимаем company
+  const { initData, phone, company, name } = req.body; // <-- Принимаем еще и name
 
   try {
     const urlParams = new URLSearchParams(initData);
     const user = JSON.parse(urlParams.get('user'));
 
+    // Обновляем не только телефон и компанию, но и ИМЯ (first_name)
     const result = await client.query(
-      'UPDATE users SET phone = $1, company = $2, is_registered = TRUE WHERE telegram_id = $3 RETURNING *',
-      [phone, company, user.id]
+      'UPDATE users SET phone = $1, company = $2, first_name = $3, is_registered = TRUE WHERE telegram_id = $4 RETURNING *',
+      [phone, company, name, user.id]
     );
 
     res.json({ user: result.rows[0], success: true });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Registration error' });
+  }
+});
+
+// ОЧИСТКА БАЗЫ (Для тестов)
+app.get('/api/danger/clear-db', async (req, res) => {
+  try {
+    await client.query('DELETE FROM users');
+    await client.query('ALTER SEQUENCE users_id_seq RESTART WITH 1');
+    res.send('<h1>База очищена!</h1>');
+  } catch (e) {
+    res.status(500).send(e.message);
   }
 });
 

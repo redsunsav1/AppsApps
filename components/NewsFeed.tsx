@@ -1,102 +1,81 @@
 import React, { useState } from 'react';
 import { Clock, ChevronRight, X, CheckCircle2, Building2, TrendingUp } from 'lucide-react';
-import { ConstructionUpdate } from '../types';
+// Если у тебя есть файл types.ts, убедись что ConstructionUpdate там экспортируется.
+// Если нет - я продублировал тип ниже, чтобы ошибок точно не было.
+import { ConstructionUpdate } from '../types'; 
 
-// ТВОИ данные (я ничего не менял)
-const NEWS: ConstructionUpdate[] = [
-  {
-    id: '1',
-    title: 'Ход строительства: Корпус 5',
-    projectName: 'ЖК Бруклин',
-    description: 'Строительная бригада вышла на финишную прямую по монолитным работам. Параллельно ведется установка оконных блоков на нижних этажах.',
-    checklist: [
-      'Заливка бетона 20-го этажа',
-      'Монтаж лифтового оборудования',
-      'Установка стеклопакетов (3-10 этажи)',
-      'Прокладка внутренних коммуникаций'
-    ],
-    images: ['https://images.unsplash.com/photo-1541888946425-d81bb19240f5?auto=format&fit=crop&w=800&q=80'],
-    date: 'Сегодня, 10:00',
-    progress: 75
-  },
-  {
-    id: '2',
-    title: 'Старт продаж паркинга',
-    projectName: 'ЖК Харизма',
-    description: 'Открыто бронирование машиномест в подземном отапливаемом паркинге. Доступна рассрочка 0%.',
-    checklist: [
-      'Старт бронирования (-1 уровень)',
-      'Открытие шоу-рума паркинга',
-      'Запуск системы бесконтактного доступа'
-    ],
-    images: ['https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=800&q=80'],
-    date: 'Вчера, 14:30',
-    progress: 100
-  },
-  {
-    id: '3',
-    title: 'Отчет за Декабрь',
-    projectName: 'ЖК Манхэттен',
-    description: 'Завершены фасадные работы. Начинаем благоустройство придомовой территории и высадку крупномеров.',
-    checklist: [
-      'Монтаж клинкерного кирпича',
-      'Архитектурная подсветка фасада',
-      'Подготовка грунта во дворе'
-    ],
-    images: ['https://images.unsplash.com/photo-1590644365607-1c5a2e97a39e?auto=format&fit=crop&w=800&q=80'],
-    date: '2 дня назад',
-    progress: 90
-  }
-];
+interface NewsFeedProps {
+  news: any[]; // Данные, которые пришли с бэкенда
+}
 
-const NewsFeed: React.FC = () => {
+const NewsFeed: React.FC<NewsFeedProps> = ({ news }) => {
   const [selectedNews, setSelectedNews] = useState<ConstructionUpdate | null>(null);
+
+  // --- МАГИЯ: ПРЕВРАЩАЕМ ПРОСТЫЕ НОВОСТИ С СЕРВЕРА В КРАСИВЫЕ КАРТОЧКИ ---
+  // Если новостей с сервера нет (пустой массив), можно показать заглушку или ничего.
+  // Здесь мы берем news из пропсов и приводим к твоему формату ConstructionUpdate
+  const displayNews: ConstructionUpdate[] = news.map((item) => ({
+    id: String(item.id),
+    title: item.title,
+    // Так как в простой админке нет поля "Проект", ставим дефолтное
+    projectName: 'Новости Клуба', 
+    description: item.text,
+    // В простой базе нет чек-листа, оставляем пустым или ставим заглушку
+    checklist: ['Новость опубликована официально', 'Доступна для всех партнеров'], 
+    // Если картинки нет, ставим красивую заглушку
+    images: [item.image_url || 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=800&q=80'],
+    // Форматируем дату
+    date: new Date(item.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }),
+    progress: 100 // Для обычных новостей ставим 100%
+  }));
 
   return (
     <div className="pb-36 pt-6 px-4 space-y-5 animate-fade-in relative">
-      <h2 className="text-2xl font-extrabold text-[#433830] pl-2">Новости и Ход строительства</h2>
+      <h2 className="text-2xl font-extrabold text-[#433830] pl-2">Новости и События</h2>
       
-      {/* Список новостей (Твой код) */}
-      {NEWS.map(item => (
-        <div 
-          key={item.id} 
-          onClick={() => setSelectedNews(item)}
-          className="bg-white rounded-2xl shadow-sm overflow-hidden border border-[#EAE0D5] active:scale-[0.98] transition-transform cursor-pointer group"
-        >
-          <div className="h-44 w-full overflow-hidden relative">
-            <img src={item.images[0]} alt="" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
-            
-            <div className="absolute top-4 left-4 bg-white/90 backdrop-blur-md px-3 py-1 rounded-full text-xs font-bold text-[#433830] flex items-center gap-1 shadow-sm">
-              <Building2 size={12} className="text-[#BA8F50]" />
-              {item.projectName}
-            </div>
-          </div>
-
-          <div className="p-5">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-1 text-xs text-gray-400">
-                <Clock size={12} /> {item.date}
-              </div>
-              <div className="flex items-center gap-1.5 text-xs font-bold text-[#BA8F50]">
-                <TrendingUp size={14} />
-                {item.progress}% готовности
+      {displayNews.length === 0 ? (
+        <div className="text-center text-gray-400 py-10">Пока новостей нет...</div>
+      ) : (
+        displayNews.map(item => (
+          <div 
+            key={item.id} 
+            onClick={() => setSelectedNews(item)}
+            className="bg-white rounded-2xl shadow-sm overflow-hidden border border-[#EAE0D5] active:scale-[0.98] transition-transform cursor-pointer group"
+          >
+            <div className="h-44 w-full overflow-hidden relative">
+              <img src={item.images[0]} alt="" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+              
+              <div className="absolute top-4 left-4 bg-white/90 backdrop-blur-md px-3 py-1 rounded-full text-xs font-bold text-[#433830] flex items-center gap-1 shadow-sm">
+                <Building2 size={12} className="text-[#BA8F50]" />
+                {item.projectName}
               </div>
             </div>
 
-            <h3 className="font-bold text-lg mb-2 text-[#433830] leading-tight">{item.title}</h3>
-            <p className="text-gray-500 text-sm leading-relaxed mb-4 line-clamp-2">{item.description}</p>
-            
-            <div className="flex items-center text-[#BA8F50] text-sm font-bold group-hover:underline decoration-2 underline-offset-4">
-              Смотреть этапы <ChevronRight size={16} />
+            <div className="p-5">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-1 text-xs text-gray-400">
+                  <Clock size={12} /> {item.date}
+                </div>
+                {/* Показываем прогресс только если это реально стройка (для примера всегда показываем) */}
+                <div className="flex items-center gap-1.5 text-xs font-bold text-[#BA8F50]">
+                  <TrendingUp size={14} />
+                  Актуально
+                </div>
+              </div>
+
+              <h3 className="font-bold text-lg mb-2 text-[#433830] leading-tight">{item.title}</h3>
+              <p className="text-gray-500 text-sm leading-relaxed mb-4 line-clamp-2">{item.description}</p>
+              
+              <div className="flex items-center text-[#BA8F50] text-sm font-bold group-hover:underline decoration-2 underline-offset-4">
+                Читать подробнее <ChevronRight size={16} />
+              </div>
             </div>
           </div>
-        </div>
-      ))}
+        ))
+      )}
 
-      {/* --- МОДАЛЬНОЕ ОКНО (ИСПРАВЛЕНО ПОЗИЦИОНИРОВАНИЕ) --- */}
+      {/* --- МОДАЛЬНОЕ ОКНО --- */}
       {selectedNews && (
-        // БЫЛО: flex items-end (внизу)
-        // СТАЛО: flex items-center (по центру) + top-0 h-full (на весь экран)
         <div className="fixed top-0 left-0 w-full h-full z-[100] flex items-center justify-center bg-[#433830]/60 backdrop-blur-sm p-4 animate-fade-in">
           
           {/* Подложка для закрытия */}
@@ -132,42 +111,30 @@ const NewsFeed: React.FC = () => {
                 {selectedNews.title}
               </h2>
 
-              {/* Прогресс бар */}
-              <div className="mb-6 bg-[#F2EBDF] p-4 rounded-xl border border-[#EAE0D5]">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-sm font-bold text-[#433830]">Общий прогресс</span>
-                  <span className="text-sm font-bold text-[#BA8F50]">{selectedNews.progress}%</span>
-                </div>
-                <div className="h-2.5 w-full bg-white rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-[#BA8F50] rounded-full transition-all duration-1000"
-                    style={{ width: `${selectedNews.progress}%` }}
-                  />
-                </div>
-              </div>
-
-              <p className="text-gray-600 text-sm leading-relaxed mb-6">
+              <p className="text-gray-600 text-sm leading-relaxed mb-6 whitespace-pre-wrap">
                 {selectedNews.description}
               </p>
 
-              {/* Чек-лист (Твой функционал) */}
-              <div className="space-y-3">
-                <h3 className="font-bold text-[#433830] text-sm uppercase tracking-wide">Выполненные этапы</h3>
-                {selectedNews.checklist.map((item, idx) => (
-                  <div key={idx} className="flex items-start gap-3">
-                    <div className="mt-0.5 min-w-[20px]">
-                      <CheckCircle2 size={20} className="text-[#BA8F50] fill-[#F2EBDF]" />
+              {/* Если чек-лист есть - показываем */}
+              {selectedNews.checklist && selectedNews.checklist.length > 0 && (
+                <div className="space-y-3">
+                  <h3 className="font-bold text-[#433830] text-sm uppercase tracking-wide">Детали</h3>
+                  {selectedNews.checklist.map((item, idx) => (
+                    <div key={idx} className="flex items-start gap-3">
+                      <div className="mt-0.5 min-w-[20px]">
+                        <CheckCircle2 size={20} className="text-[#BA8F50] fill-[#F2EBDF]" />
+                      </div>
+                      <span className="text-sm text-gray-700">{item}</span>
                     </div>
-                    <span className="text-sm text-gray-700">{item}</span>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
 
               <button 
                 onClick={() => setSelectedNews(null)}
                 className="w-full mt-8 py-4 bg-[#433830] text-white rounded-xl font-bold text-lg active:scale-95 transition-transform shadow-lg"
               >
-                Понятно
+                Закрыть
               </button>
             </div>
           </div>

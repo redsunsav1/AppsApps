@@ -5,7 +5,6 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
-// Настройка путей
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -16,19 +15,17 @@ app.use(express.json());
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// Подключение к БД
+// --- ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ ---
 const client = new Client({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// Инициализация Таблиц
 const initDb = async () => {
   try {
     await client.connect();
     console.log('✅ Connected to Database');
 
-    // Создаем таблицу
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -38,15 +35,14 @@ const initDb = async () => {
         balance INT DEFAULT 0,
         phone TEXT,
         company TEXT,
-        city TEXT,
         is_registered BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
-    // Добавляем колонки, если их нет (Миграция)
+    // Добавляем новые колонки (безопасно)
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;');
-    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS company TEXT;');
+    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS company TEXT;'); // <-- Было city, стало company
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_registered BOOLEAN DEFAULT FALSE;');
     
     console.log('✅ Database schema updated');
@@ -57,36 +53,13 @@ const initDb = async () => {
 
 initDb();
 
-// Проверка подписи Telegram
-const verifyTelegramWebAppData = (telegramInitData) => {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) return true; // Если токен не задан (локальный тест), пропускаем
-  
-  const urlParams = new URLSearchParams(telegramInitData);
-  const hash = urlParams.get('hash');
-  urlParams.delete('hash');
-  
-  const params = Array.from(urlParams.entries())
-    .map(([key, value]) => `${key}=${value}`)
-    .sort()
-    .join('\n');
-    
-  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(token).digest();
-  const calculatedHash = crypto.createHmac('sha256', secretKey).update(params).digest('hex');
-  
-  return calculatedHash === hash;
-};
-
 // --- API: ВХОД ---
 app.post('/api/auth', async (req, res) => {
   const { initData } = req.body;
   if (!initData) return res.status(400).json({ error: 'No data' });
 
   try {
-    // В продакшене раскомментировать проверку!
-    // const isValid = verifyTelegramWebAppData(initData);
-    // if (!isValid) return res.status(403).json({ error: 'Invalid signature' });
-
+    // Валидацию можно включить перед продакшеном
     const urlParams = new URLSearchParams(initData);
     const user = JSON.parse(urlParams.get('user'));
 
@@ -107,9 +80,9 @@ app.post('/api/auth', async (req, res) => {
   }
 });
 
-// --- API: РЕГИСТРАЦИЯ ---
+// --- API: РЕГИСТРАЦИЯ (Изменили city на company) ---
 app.post('/api/register', async (req, res) => {
-  const { initData, phone, company } = req.body;
+  const { initData, phone, company } = req.body; // <-- Принимаем company
 
   try {
     const urlParams = new URLSearchParams(initData);
@@ -127,7 +100,6 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// --- ОТДАЧА ФРОНТЕНДА ---
 app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });

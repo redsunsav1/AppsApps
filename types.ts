@@ -1,4 +1,3 @@
-
 export enum CurrencyType {
   SILVER = 'SILVER', // Regular coins (Daily tasks)
   GOLD = 'GOLD',   // Premium coins (Sales only)
@@ -16,6 +15,7 @@ export interface UserProfile {
   dealsClosed: number;
   // Contact Info for Business Card
   phone: string;
+  company: string; // <--- ДОБАВИЛ ТОЛЬКО ЭТО (нужно для регистрации)
   telegram: string;
   whatsapp: string;
 }
@@ -51,22 +51,23 @@ export interface ConstructionUpdate {
 }
 
 export interface ShopItem {
-  id: string;
+  id: string | number;
   name: string;
-  category: 'TECH' | 'MERCH' | 'LUXURY' | 'EXPERIENCE';
+  category?: 'TECH' | 'MERCH' | 'LUXURY' | 'EXPERIENCE';
   price: number;
-  currency: CurrencyType;
-  image: string;
-  inStock: boolean;
+  currency: CurrencyType; // Используем это для определения цены
+  image: string; // Тут эмодзи или ссылка
+  inStock?: boolean;
 }
 
 export interface LeaderboardEntry {
-  id: string;
+  id: string | number;
   name: string;
   deals: number;
-  xp: number;
-  avatar: string;
-  trend: 'up' | 'down' | 'neutral';
+  company: string; // <--- ДОБАВИЛ, чтобы выводить "АН Этажи" в топе
+  xp?: number;
+  avatar?: string;
+  trend?: 'up' | 'down' | 'neutral';
 }
 
 export interface ChessUnit {

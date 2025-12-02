@@ -9,7 +9,6 @@ import Marketplace from './components/Shop';
 import Leaderboard from './components/Leaderboard';
 import ChessboardModal from './components/Chessboard';
 import { UserProfile, DailyQuest, ConstructionUpdate, ShopItem, LeaderboardEntry, ProjectStat, CurrencyType } from './types';
-import './App.css';
 
 // --- ТИПЫ ---
 

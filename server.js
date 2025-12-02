@@ -1,3 +1,6 @@
+// ... (Весь верхний код инициализации базы оставляем как был) ...
+// Я привожу полный код файла, чтобы ты просто заменил всё и не запутался.
+
 import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
@@ -23,9 +26,7 @@ const client = new Client({
 const initDb = async () => {
   try {
     await client.connect();
-    console.log('✅ Connected to Database');
-
-    // 1. Таблица пользователей
+    // Таблицы (код тот же)
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -40,8 +41,6 @@ const initDb = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-
-    // 2. Таблица новостей (ОБНОВЛЕННАЯ СТРУКТУРА)
     await client.query(`
       CREATE TABLE IF NOT EXISTS news (
         id SERIAL PRIMARY KEY,
@@ -54,21 +53,18 @@ const initDb = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-
-    // МИГРАЦИЯ: Добавляем колонки, если таблица уже была создана (чтобы не пересоздавать базу)
+    // Миграции (код тот же)
     await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS project_name TEXT;');
     await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS progress INT DEFAULT 0;');
     await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS checklist JSONB;');
-
-    // Колонки юзеров (на всякий случай)
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;');
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS company TEXT;');
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_registered BOOLEAN DEFAULT FALSE;');
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;');
     
-    console.log('✅ Database schema updated');
+    console.log('✅ Database connected & checked');
   } catch (err) {
-    console.error('❌ DB Connection Error:', err);
+    console.error('❌ DB Error:', err);
   }
 };
 
@@ -76,6 +72,7 @@ initDb();
 
 // --- API ---
 
+// Auth & Register (Код тот же)
 app.post('/api/auth', async (req, res) => {
   const { initData } = req.body;
   if (!initData) return res.status(400).json({ error: 'No data' });
@@ -109,13 +106,13 @@ app.post('/api/register', async (req, res) => {
     );
     res.json({ user: result.rows[0], success: true });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Registration error' });
+    res.status(500).json({ error: 'Error' });
   }
 });
 
-// --- НОВОСТИ (ПРОДВИНУТЫЕ) ---
+// --- НОВОСТИ (CRUD) ---
 
+// 1. Получить
 app.get('/api/news', async (req, res) => {
   try {
     const result = await client.query('SELECT * FROM news ORDER BY created_at DESC');
@@ -125,43 +122,77 @@ app.get('/api/news', async (req, res) => {
   }
 });
 
-// Добавление новости со всеми полями
+// 2. Добавить (POST)
 app.post('/api/news', async (req, res) => {
   const { initData, title, text, image_url, project_name, progress, checklist } = req.body;
-  
   try {
-    const urlParams = new URLSearchParams(initData);
-    const telegramUser = JSON.parse(urlParams.get('user'));
-
-    const userCheck = await client.query('SELECT is_admin FROM users WHERE telegram_id = $1', [telegramUser.id]);
-    
-    if (userCheck.rows.length > 0 && userCheck.rows[0].is_admin) {
+    if (await isAdmin(initData)) {
       await client.query(
         'INSERT INTO news (title, text, image_url, project_name, progress, checklist) VALUES ($1, $2, $3, $4, $5, $6)',
-        [
-          title, 
-          text, 
-          image_url, 
-          project_name || 'Новости Клуба', 
-          progress || 0, 
-          JSON.stringify(checklist || []) // Сохраняем массив как JSON
-        ]
+        [title, text, image_url, project_name || 'Новости', progress || 0, JSON.stringify(checklist || [])]
       );
       res.json({ success: true });
     } else {
-      res.status(403).json({ error: 'Доступ запрещен' });
+      res.status(403).json({ error: 'Forbidden' });
     }
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Error adding news' });
+    res.status(500).json({ error: 'Error' });
   }
 });
 
+// 3. УДАЛИТЬ (DELETE) - НОВОЕ!
+app.delete('/api/news/:id', async (req, res) => {
+  const { initData } = req.body; // Передаем initData в body для проверки админа
+  const { id } = req.params;
+  try {
+    if (await isAdmin(initData)) {
+      await client.query('DELETE FROM news WHERE id = $1', [id]);
+      res.json({ success: true });
+    } else {
+      res.status(403).json({ error: 'Forbidden' });
+    }
+  } catch (e) {
+    res.status(500).json({ error: 'Error' });
+  }
+});
+
+// 4. ОБНОВИТЬ (PUT) - НОВОЕ!
+app.put('/api/news/:id', async (req, res) => {
+  const { initData, title, text, image_url, project_name, progress, checklist } = req.body;
+  const { id } = req.params;
+  try {
+    if (await isAdmin(initData)) {
+      await client.query(
+        `UPDATE news SET 
+         title = $1, text = $2, image_url = $3, project_name = $4, progress = $5, checklist = $6 
+         WHERE id = $7`,
+        [title, text, image_url, project_name, progress, JSON.stringify(checklist), id]
+      );
+      res.json({ success: true });
+    } else {
+      res.status(403).json({ error: 'Forbidden' });
+    }
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Error' });
+  }
+});
+
+// Вспомогательная функция проверки админа
+async function isAdmin(initData) {
+  if (!initData) return false;
+  const urlParams = new URLSearchParams(initData);
+  const telegramUser = JSON.parse(urlParams.get('user'));
+  const userCheck = await client.query('SELECT is_admin FROM users WHERE telegram_id = $1', [telegramUser.id]);
+  return userCheck.rows.length > 0 && userCheck.rows[0].is_admin;
+}
+
+// Make Admin Link
 app.get('/api/make-admin', async (req, res) => {
   const { id, secret } = req.query;
   if (secret !== '12345') return res.send('Wrong secret');
   await client.query('UPDATE users SET is_admin = TRUE WHERE telegram_id = $1', [id]);
-  res.send(`User ${id} is now admin! Please restart the app.`);
+  res.send(`User ${id} is now admin!`);
 });
 
 app.get(/.*/, (req, res) => {

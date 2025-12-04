@@ -4,7 +4,7 @@ import pg from 'pg';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import xml2js from 'xml2js'; // Библиотека для XML
+import xml2js from 'xml2js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,11 +13,10 @@ const app = express();
 const { Client } = pg;
 
 // Настройки сервера
-app.use(express.json({ limit: '50mb' })); // Увеличили лимит для больших XML
+app.use(express.json({ limit: '50mb' }));
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// Подключение к БД
 const client = new Client({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
@@ -28,7 +27,7 @@ const initDb = async () => {
     await client.connect();
     console.log('✅ Connected to Database');
 
-    // 1. Пользователи
+    // 1. Создание таблиц
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -44,7 +43,6 @@ const initDb = async () => {
       );
     `);
 
-    // 2. Новости
     await client.query(`
       CREATE TABLE IF NOT EXISTS news (
         id SERIAL PRIMARY KEY,
@@ -58,7 +56,6 @@ const initDb = async () => {
       );
     `);
 
-    // 3. Проекты (ЖК) - НОВОЕ
     await client.query(`
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
@@ -69,7 +66,6 @@ const initDb = async () => {
       );
     `);
 
-    // 4. Квартиры (Units) - НОВОЕ
     await client.query(`
       CREATE TABLE IF NOT EXISTS units (
         id TEXT PRIMARY KEY,
@@ -85,14 +81,27 @@ const initDb = async () => {
       );
     `);
 
-    // Миграции (на случай старой базы)
+    // 2. Миграции (добавление колонок)
     await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS project_name TEXT;');
     await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS progress INT DEFAULT 0;');
     await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS checklist JSONB;');
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;');
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;');
+
+    // 3. АВТО-ЗАПОЛНЕНИЕ ПРОЕКТОВ (Чтобы было красиво сразу)
+    const projCheck = await client.query('SELECT count(*) FROM projects');
+    if (parseInt(projCheck.rows[0].count) === 0) {
+        console.log('⚡ Inserting Demo Projects...');
+        await client.query(`
+            INSERT INTO projects (id, name, floors, units_per_floor, image_url) VALUES
+            ('brk', 'ЖК Бруклин', 12, 6, 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00'),
+            ('mnht', 'ЖК Манхэттен', 24, 8, 'https://images.unsplash.com/photo-1464938050520-ef2270bb8ce8'),
+            ('bbyk', 'ЖК Бабайка', 9, 4, 'https://images.unsplash.com/photo-1460317442991-0ec209397118'),
+            ('chr', 'ЖК Харизма', 16, 5, 'https://images.unsplash.com/photo-1493809842364-78817add7ffb')
+        `);
+    }
     
-    console.log('✅ DB Schema synced');
+    console.log('✅ Database schema ready');
   } catch (err) {
     console.error('❌ DB Error:', err);
   }
@@ -100,7 +109,9 @@ const initDb = async () => {
 
 initDb();
 
-// --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+// --- API ---
+
+// Вспомогательная функция проверки админа
 async function isAdmin(initData) {
   if (!initData) return false;
   try {
@@ -113,8 +124,7 @@ async function isAdmin(initData) {
   }
 }
 
-// --- API: АВТОРИЗАЦИЯ И ПОЛЬЗОВАТЕЛИ ---
-
+// 1. Авторизация
 app.post('/api/auth', async (req, res) => {
   const { initData } = req.body;
   if (!initData) return res.status(400).json({ error: 'No data' });
@@ -122,7 +132,6 @@ app.post('/api/auth', async (req, res) => {
     const urlParams = new URLSearchParams(initData);
     const user = JSON.parse(urlParams.get('user'));
     const findResult = await client.query('SELECT * FROM users WHERE telegram_id = $1', [user.id]);
-    
     if (findResult.rows.length > 0) {
       return res.json({ user: findResult.rows[0], status: 'exists' });
     } else {
@@ -133,11 +142,12 @@ app.post('/api/auth', async (req, res) => {
       return res.json({ user: insertResult.rows[0], status: 'created' });
     }
   } catch (e) {
-    console.error('Auth Error:', e);
+    console.error(e);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
+// 2. Регистрация
 app.post('/api/register', async (req, res) => {
   const { initData, phone, company, name } = req.body;
   try {
@@ -153,8 +163,7 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// --- API: НОВОСТИ ---
-
+// 3. Новости (Get)
 app.get('/api/news', async (req, res) => {
   try {
     const result = await client.query('SELECT * FROM news ORDER BY created_at DESC');
@@ -164,6 +173,7 @@ app.get('/api/news', async (req, res) => {
   }
 });
 
+// 4. Новости (Post)
 app.post('/api/news', async (req, res) => {
   const { initData, title, text, image_url, project_name, progress, checklist } = req.body;
   if (await isAdmin(initData)) {
@@ -177,8 +187,9 @@ app.post('/api/news', async (req, res) => {
   }
 });
 
+// 5. Новости (Delete)
 app.delete('/api/news/:id', async (req, res) => {
-  const { initData } = req.body; 
+  const { initData } = req.body;
   if (await isAdmin(initData)) {
     await client.query('DELETE FROM news WHERE id = $1', [req.params.id]);
     res.json({ success: true });
@@ -187,6 +198,7 @@ app.delete('/api/news/:id', async (req, res) => {
   }
 });
 
+// 6. Новости (Put)
 app.put('/api/news/:id', async (req, res) => {
   const { initData, title, text, image_url, project_name, progress, checklist } = req.body;
   if (await isAdmin(initData)) {
@@ -200,9 +212,9 @@ app.put('/api/news/:id', async (req, res) => {
   }
 });
 
-// --- API: ШАХМАТКА И КВАРТИРЫ (НОВОЕ) ---
+// --- API ШАХМАТКИ ---
 
-// 1. Список проектов
+// 7. Получить проекты
 app.get('/api/projects', async (req, res) => {
   try {
     const result = await client.query('SELECT * FROM projects');
@@ -212,7 +224,7 @@ app.get('/api/projects', async (req, res) => {
   }
 });
 
-// 2. Квартиры проекта
+// 8. Получить квартиры
 app.get('/api/units/:projectId', async (req, res) => {
   try {
     const result = await client.query('SELECT * FROM units WHERE project_id = $1', [req.params.projectId]);
@@ -222,17 +234,10 @@ app.get('/api/units/:projectId', async (req, res) => {
   }
 });
 
-// 3. Генератор Демо-данных (Для теста)
+// 9. Генератор Демо-квартир
 app.post('/api/generate-demo/:projectId', async (req, res) => {
     const { projectId } = req.params;
     const { floors, unitsPerFloor } = req.body;
-
-    // Создаем проект
-    await client.query(`
-        INSERT INTO projects (id, name, floors, units_per_floor)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (id) DO NOTHING
-    `, [projectId, 'Demo ЖК', floors, unitsPerFloor]);
 
     // Генерируем квартиры
     for(let f = 1; f <= floors; f++) {
@@ -258,7 +263,7 @@ app.post('/api/generate-demo/:projectId', async (req, res) => {
     res.json({ success: true });
 });
 
-// 4. Парсер XML (Заготовка)
+// 10. Парсер XML (Заготовка)
 app.post('/api/sync-xml', async (req, res) => {
   const { xmlContent, projectId } = req.body;
   if (!xmlContent) return res.status(400).json({ error: 'No XML' });
@@ -266,14 +271,13 @@ app.post('/api/sync-xml', async (req, res) => {
   try {
     const parser = new xml2js.Parser();
     const result = await parser.parseStringPromise(xmlContent);
-    // Тут будет логика парсинга, пока просто возвращаем успех
     res.json({ success: true, message: 'XML parsed (logic pending)' });
   } catch (e) {
     res.status(500).json({ error: 'XML Error' });
   }
 });
 
-// --- Чит-код Админа ---
+// Чит-код
 app.get('/api/make-admin', async (req, res) => {
   const { id, secret } = req.query;
   if (secret !== '12345') return res.send('Wrong secret');

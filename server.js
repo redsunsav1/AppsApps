@@ -4,7 +4,7 @@ import pg from 'pg';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import xml2js from 'xml2js';
+import xml2js from 'xml2js'; // Библиотека для XML
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,11 +12,12 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const { Client } = pg;
 
-// Настройки сервера
+// Настройки сервера (50mb лимит для больших XML)
 app.use(express.json({ limit: '50mb' }));
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'dist')));
 
+// Подключение к БД
 const client = new Client({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
@@ -88,7 +89,7 @@ const initDb = async () => {
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;');
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;');
 
-    // 3. АВТО-ЗАПОЛНЕНИЕ ПРОЕКТОВ (Чтобы было красиво сразу)
+    // 3. АВТО-ЗАПОЛНЕНИЕ ПРОЕКТОВ (НОВОЕ: Чтобы шахматка не была пустой)
     const projCheck = await client.query('SELECT count(*) FROM projects');
     if (parseInt(projCheck.rows[0].count) === 0) {
         console.log('⚡ Inserting Demo Projects...');
@@ -109,9 +110,7 @@ const initDb = async () => {
 
 initDb();
 
-// --- API ---
-
-// Вспомогательная функция проверки админа
+// --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 async function isAdmin(initData) {
   if (!initData) return false;
   try {
@@ -124,7 +123,8 @@ async function isAdmin(initData) {
   }
 }
 
-// 1. Авторизация
+// --- API: АВТОРИЗАЦИЯ ---
+
 app.post('/api/auth', async (req, res) => {
   const { initData } = req.body;
   if (!initData) return res.status(400).json({ error: 'No data' });
@@ -147,7 +147,6 @@ app.post('/api/auth', async (req, res) => {
   }
 });
 
-// 2. Регистрация
 app.post('/api/register', async (req, res) => {
   const { initData, phone, company, name } = req.body;
   try {
@@ -163,7 +162,8 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// 3. Новости (Get)
+// --- API: НОВОСТИ ---
+
 app.get('/api/news', async (req, res) => {
   try {
     const result = await client.query('SELECT * FROM news ORDER BY created_at DESC');
@@ -173,7 +173,6 @@ app.get('/api/news', async (req, res) => {
   }
 });
 
-// 4. Новости (Post)
 app.post('/api/news', async (req, res) => {
   const { initData, title, text, image_url, project_name, progress, checklist } = req.body;
   if (await isAdmin(initData)) {
@@ -187,7 +186,6 @@ app.post('/api/news', async (req, res) => {
   }
 });
 
-// 5. Новости (Delete)
 app.delete('/api/news/:id', async (req, res) => {
   const { initData } = req.body;
   if (await isAdmin(initData)) {
@@ -198,7 +196,6 @@ app.delete('/api/news/:id', async (req, res) => {
   }
 });
 
-// 6. Новости (Put)
 app.put('/api/news/:id', async (req, res) => {
   const { initData, title, text, image_url, project_name, progress, checklist } = req.body;
   if (await isAdmin(initData)) {
@@ -212,9 +209,9 @@ app.put('/api/news/:id', async (req, res) => {
   }
 });
 
-// --- API ШАХМАТКИ ---
+// --- API: ШАХМАТКА И КВАРТИРЫ ---
 
-// 7. Получить проекты
+// 1. Получить проекты
 app.get('/api/projects', async (req, res) => {
   try {
     const result = await client.query('SELECT * FROM projects');
@@ -224,7 +221,7 @@ app.get('/api/projects', async (req, res) => {
   }
 });
 
-// 8. Получить квартиры
+// 2. Получить квартиры
 app.get('/api/units/:projectId', async (req, res) => {
   try {
     const result = await client.query('SELECT * FROM units WHERE project_id = $1', [req.params.projectId]);
@@ -234,12 +231,11 @@ app.get('/api/units/:projectId', async (req, res) => {
   }
 });
 
-// 9. Генератор Демо-квартир
+// 3. Генератор Демо-квартир (авто-создание при клике, если пусто)
 app.post('/api/generate-demo/:projectId', async (req, res) => {
     const { projectId } = req.params;
     const { floors, unitsPerFloor } = req.body;
 
-    // Генерируем квартиры
     for(let f = 1; f <= floors; f++) {
         for(let u = 1; u <= unitsPerFloor; u++) {
             const statusRandom = Math.random();
@@ -263,17 +259,75 @@ app.post('/api/generate-demo/:projectId', async (req, res) => {
     res.json({ success: true });
 });
 
-// 10. Парсер XML (Заготовка)
-app.post('/api/sync-xml', async (req, res) => {
-  const { xmlContent, projectId } = req.body;
-  if (!xmlContent) return res.status(400).json({ error: 'No XML' });
+// 4. НАСТОЯЩИЙ ПАРСЕР XML (PROFITBASE)
+app.post('/api/sync-xml-url', async (req, res) => {
+  const { url, projectId } = req.body;
+  
+  if (!url || !projectId) return res.status(400).json({ error: 'No URL or ProjectID' });
 
   try {
+    console.log(`📥 Fetching XML from: ${url}`);
+    
+    // 1. Скачиваем файл
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('Failed to fetch XML');
+    const xmlText = await response.text();
+
+    console.log(`📦 XML size: ${xmlText.length} bytes`);
+
+    // 2. Парсим
     const parser = new xml2js.Parser();
-    const result = await parser.parseStringPromise(xmlContent);
-    res.json({ success: true, message: 'XML parsed (logic pending)' });
+    const result = await parser.parseStringPromise(xmlText);
+
+    // Profitbase/Yandex структура: <realty-feed> -> <offer>
+    const offers = result?.['realty-feed']?.offer || [];
+    console.log(`🏠 Found ${offers.length} offers`);
+
+    let importedCount = 0;
+
+    for (const offer of offers) {
+        // Извлекаем данные
+        const unitId = offer.$?.['internal-id'] || offer['internal-id']?.[0] || `auto-${Math.random()}`;
+        
+        const price = parseFloat(offer.price?.[0]?.value?.[0] || '0');
+        const floor = parseInt(offer.floor?.[0] || '1');
+        
+        // Комнаты (очищаем от букв)
+        const roomsRaw = offer.rooms?.[0] || '1';
+        const rooms = parseInt(roomsRaw.toString().replace(/\D/g, '') || '1'); 
+        
+        const area = parseFloat(offer.area?.[0]?.value?.[0] || '0');
+        
+        // Номер квартиры (иногда flat-number, иногда apartment)
+        const number = offer['flat-number']?.[0] || offer.apartment?.[0] || '0';
+        
+        // План
+        const planUrl = offer.plan?.[0] || offer.image?.[0] || '';
+
+        // Статус
+        let statusRaw = 'available'; 
+        if (offer['deal-status']) statusRaw = offer['deal-status'][0];
+        
+        let status = 'FREE';
+        if (statusRaw === 'booked' || statusRaw === 'reserved') status = 'BOOKED';
+        if (statusRaw === 'sold') status = 'SOLD';
+
+        // 3. Записываем в базу
+        await client.query(`
+            INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (id) DO UPDATE 
+            SET price = EXCLUDED.price, status = EXCLUDED.status, plan_image_url = EXCLUDED.plan_image_url;
+        `, [unitId, projectId, floor, number, rooms, area, price, status, planUrl]);
+        
+        importedCount++;
+    }
+
+    res.json({ success: true, count: importedCount });
+
   } catch (e) {
-    res.status(500).json({ error: 'XML Error' });
+    console.error('XML Sync Error:', e);
+    res.status(500).json({ error: 'Sync failed: ' + e.message });
   }
 });
 

@@ -7,12 +7,12 @@ import Dashboard from './components/Dashboard';
 import ContentHub from './components/NewsFeed';
 import Marketplace from './components/Shop';
 import Leaderboard from './components/Leaderboard';
-import ChessboardModal from './components/Chessboard';
+import ChessboardModal from './components/Chessboard'; // Этот компонент теперь сам грузит данные с сервера
 import { AdminPanel } from './components/AdminPanel';
 
 import { UserProfile, DailyQuest, ProjectStat, CurrencyType } from './types';
 
-// Типы
+// Типы вкладок
 enum Tab {
   PROFILE = 'PROFILE',
   CONTENT = 'CONTENT',
@@ -20,6 +20,7 @@ enum Tab {
   LEADERBOARD = 'LEADERBOARD',
 }
 
+// Типы данных пользователя с сервера
 interface ServerUser {
   id: number;
   telegram_id: string;
@@ -32,22 +33,25 @@ interface ServerUser {
   is_admin?: boolean;
 }
 
+// Тип пользователя для приложения
 interface AppUserProfile extends UserProfile {
   is_registered: boolean;
   is_admin: boolean;
 }
 
-// Заглушки
+// --- ЗАГЛУШКИ (Пока оставим их для Дашборда, позже заменим на реальную статистику) ---
 const MOCK_DEFAULTS = {
   avatar: 'https://images.unsplash.com/photo-1560250097-0b93528c311a?ixlib=rb-4.0.3&auto=format&fit=crop&w=256&q=80',
   level: 1, currentXP: 0, nextLevelXP: 1000, goldCoins: 0, dealsClosed: 0, telegram: '', whatsapp: ''
 };
+
 const PROJECT_STATS: ProjectStat[] = [
   { id: 'p1', name: 'ЖК Бруклин', sales: 8, totalUnits: 120, color: 'bg-brand-black' },
   { id: 'p2', name: 'ЖК Бабайка', sales: 12, totalUnits: 450, color: 'bg-brand-gold' },
   { id: 'p3', name: 'ЖК Манхэттен', sales: 3, totalUnits: 80, color: 'bg-brand-grey' },
   { id: 'p4', name: 'ЖК Харизма', sales: 5, totalUnits: 200, color: 'bg-stone-400' },
 ];
+
 const DAILY_QUESTS: DailyQuest[] = [
   { id: 'q1', title: 'Репост новости ЖК Бруклин', rewardXP: 50, rewardAmount: 100, rewardCurrency: CurrencyType.SILVER, isCompleted: false, type: 'SHARE' },
   { id: 'q2', title: 'Тест: Планировки ЖК Харизма', rewardXP: 100, rewardAmount: 200, rewardCurrency: CurrencyType.SILVER, isCompleted: false, type: 'TEST' },
@@ -60,20 +64,22 @@ const App: React.FC = () => {
   
   const [activeTab, setActiveTab] = useState<Tab>(Tab.PROFILE);
   const [quests, setQuests] = useState<DailyQuest[]>(DAILY_QUESTS);
+  
+  // Управление модалкой Шахматки
   const [isChessboardOpen, setIsChessboardOpen] = useState(false);
   
-  // --- Состояние для новостей и админки ---
+  // Управление Новостями и Админкой
   const [news, setNews] = useState<any[]>([]); 
-  const [isAdminModalOpen, setIsAdminModalOpen] = useState(false); // Открыта ли админка
-  const [editingItem, setEditingItem] = useState<any>(null);     // Какую новость редактируем
+  const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<any>(null);
 
-  // --- Форма регистрации ---
+  // Форма регистрации
   const [regName, setRegName] = useState('');
   const [regPhone, setRegPhone] = useState('');
   const [regCompany, setRegCompany] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Функция загрузки новостей
+  // Загрузка новостей
   const fetchNews = () => {
     fetch('/api/news')
       .then(res => res.json())
@@ -81,13 +87,12 @@ const App: React.FC = () => {
       .catch(console.error);
   };
 
-  // 1. Вход + Загрузка новостей
+  // Инициализация при старте
   useEffect(() => {
     WebApp.ready();
     WebApp.expand();
     
-    // Сразу грузим новости
-    fetchNews();
+    fetchNews(); // Грузим новости сразу
 
     const initData = WebApp.initData;
     if (initData) {
@@ -120,6 +125,7 @@ const App: React.FC = () => {
     }
   }, []);
 
+  // Обработка регистрации
   const handleRegistration = () => {
     if(!regPhone || !regCompany || !regName) return;
     setIsSubmitting(true);
@@ -146,19 +152,19 @@ const App: React.FC = () => {
 
   const onClaimQuest = (id: string) => { console.log("Claim", id); };
 
-  // --- УПРАВЛЕНИЕ АДМИНКОЙ ---
+  // Логика Админки
   const handleOpenCreate = () => {
-    setEditingItem(null); // Очищаем форму (создание новой)
+    setEditingItem(null);
     setIsAdminModalOpen(true);
   };
 
   const handleOpenEdit = (item: any) => {
-    setEditingItem(item); // Заполняем форму данными (редактирование)
+    setEditingItem(item);
     setIsAdminModalOpen(true);
   };
 
-  if (loading) return <div className="flex items-center justify-center h-screen bg-brand-cream w-full">Загрузка...</div>;
-  if (!user) return <div className="flex items-center justify-center h-screen bg-brand-cream p-4">Open in Telegram</div>;
+  if (loading) return <div className="flex items-center justify-center h-screen bg-brand-cream w-full text-brand-black">Загрузка...</div>;
+  if (!user) return <div className="flex items-center justify-center h-screen bg-brand-cream p-4 text-brand-black">Open in Telegram</div>;
 
   // --- ЭКРАН РЕГИСТРАЦИИ ---
   if (!user.is_registered) {
@@ -185,7 +191,7 @@ const App: React.FC = () => {
       <div className="flex-1 overflow-y-auto custom-scrollbar pb-24">
         {activeTab === Tab.PROFILE && <Dashboard user={user} quests={quests} stats={PROJECT_STATS} onClaimQuest={onClaimQuest} />}
         
-        {/* Передаем новости и функции управления в ленту */}
+        {/* Передаем функции админки в новости */}
         {activeTab === Tab.CONTENT && (
           <ContentHub 
             news={news} 
@@ -199,7 +205,7 @@ const App: React.FC = () => {
         {activeTab === Tab.LEADERBOARD && <Leaderboard />}
       </div>
 
-      {/* КНОПКА ОТКРЫТИЯ АДМИНКИ (Для создания новой новости) */}
+      {/* Кнопка "Создать новость" (только для админа) */}
       {user.is_admin && !isAdminModalOpen && (
         <button 
           onClick={handleOpenCreate}
@@ -215,7 +221,7 @@ const App: React.FC = () => {
         </button>
       )}
 
-      {/* МОДАЛЬНОЕ ОКНО АДМИНКИ */}
+      {/* Окно админки */}
       {isAdminModalOpen && (
         <AdminPanel 
           onNewsAdded={fetchNews} 
@@ -224,19 +230,24 @@ const App: React.FC = () => {
         />
       )}
 
+      {/* Нижнее меню */}
       <div className="fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-gray-200 pb-6 pt-2">
         <div className="flex justify-around items-center h-[60px] px-2 max-w-md mx-auto">
             <NavBtn icon={User} label="Профиль" active={activeTab === Tab.PROFILE} onClick={() => setActiveTab(Tab.PROFILE)} />
             <NavBtn icon={Newspaper} label="Новости" active={activeTab === Tab.CONTENT} onClick={() => setActiveTab(Tab.CONTENT)} />
+            
+            {/* Кнопка "Проекты" открывает Шахматку */}
             <button onClick={() => setIsChessboardOpen(true)} className="flex flex-col items-center justify-center w-14 h-full -mt-8 group relative z-10">
               <div className="w-12 h-12 bg-brand-black text-brand-gold rounded-full flex items-center justify-center shadow-lg border-4 border-white group-active:scale-95 transition-transform"><Grid3X3 size={22} /></div>
               <span className="text-[9px] font-bold text-brand-black mt-1">Проекты</span>
             </button>
+
             <NavBtn icon={ShoppingBag} label="Маркет" active={activeTab === Tab.MARKET} onClick={() => setActiveTab(Tab.MARKET)} />
             <NavBtn icon={Trophy} label="Топ" active={activeTab === Tab.LEADERBOARD} onClick={() => setActiveTab(Tab.LEADERBOARD)} />
         </div>
       </div>
 
+      {/* Модалка Шахматки (Грузит данные с сервера сама) */}
       {isChessboardOpen && <ChessboardModal onClose={() => setIsChessboardOpen(false)} />}
     </div>
   );

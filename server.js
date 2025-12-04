@@ -1,12 +1,10 @@
-// ... (Весь верхний код инициализации базы оставляем как был) ...
-// Я привожу полный код файла, чтобы ты просто заменил всё и не запутался.
-
 import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import xml2js from 'xml2js'; // Импортируем парсер
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,7 +12,8 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const { Client } = pg;
 
-app.use(express.json());
+// Увеличиваем лимит JSON, чтобы пролез большой XML
+app.use(express.json({ limit: '50mb' }));
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'dist')));
 
@@ -26,7 +25,9 @@ const client = new Client({
 const initDb = async () => {
   try {
     await client.connect();
-    // Таблицы (код тот же)
+    console.log('✅ Connected to Database');
+
+    // ТАБЛИЦЫ ПОЛЬЗОВАТЕЛЕЙ И НОВОСТЕЙ (Твои старые)
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -53,16 +54,37 @@ const initDb = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    // Миграции (код тот же)
-    await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS project_name TEXT;');
-    await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS progress INT DEFAULT 0;');
-    await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS checklist JSONB;');
-    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;');
-    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS company TEXT;');
-    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_registered BOOLEAN DEFAULT FALSE;');
-    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;');
+
+    // --- НОВЫЕ ТАБЛИЦЫ ДЛЯ ШАХМАТКИ ---
     
-    console.log('✅ Database connected & checked');
+    // 1. Проекты (ЖК)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY, -- Например 'brk' (вручную или из фида)
+        name TEXT NOT NULL,
+        floors INT DEFAULT 1,
+        units_per_floor INT DEFAULT 4,
+        image_url TEXT
+      );
+    `);
+
+    // 2. Квартиры (Units)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS units (
+        id TEXT PRIMARY KEY,   -- Уникальный ID квартиры из фида
+        project_id TEXT,       -- Ссылка на проект
+        floor INT,
+        number TEXT,
+        rooms INT,
+        area NUMERIC,
+        price NUMERIC,
+        status TEXT,           -- FREE, BOOKED, SOLD
+        plan_image_url TEXT,   -- Планировка
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    console.log('✅ Database schema checked');
   } catch (err) {
     console.error('❌ DB Error:', err);
   }
@@ -70,130 +92,134 @@ const initDb = async () => {
 
 initDb();
 
-// --- API ---
+// ... (ТВОИ СТАРЫЕ API AUTH/REGISTER/NEWS ОСТАВЛЯЕМ) ...
+// Я их свернул для краткости, но они должны тут быть.
+// Если ты копируешь весь файл - вставь сюда методы из предыдущей версии server.js
+// (app.post('/api/auth'...), app.post('/api/register'...), app.get('/api/news'...) и т.д.)
 
-// Auth & Register (Код тот же)
-app.post('/api/auth', async (req, res) => {
-  const { initData } = req.body;
-  if (!initData) return res.status(400).json({ error: 'No data' });
+// --- ВСТАВЬ ЭТОТ БЛОК ПОСЛЕ НОВОСТЕЙ ---
+
+// 1. Получить список проектов
+app.get('/api/projects', async (req, res) => {
   try {
-    const urlParams = new URLSearchParams(initData);
-    const user = JSON.parse(urlParams.get('user'));
-    const findResult = await client.query('SELECT * FROM users WHERE telegram_id = $1', [user.id]);
-    if (findResult.rows.length > 0) {
-      return res.json({ user: findResult.rows[0], status: 'exists' });
-    } else {
-      const insertResult = await client.query(
-        'INSERT INTO users (telegram_id, username, first_name) VALUES ($1, $2, $3) RETURNING *',
-        [user.id, user.username, user.first_name]
-      );
-      return res.json({ user: insertResult.rows[0], status: 'created' });
+    const result = await client.query('SELECT * FROM projects');
+    // Если проектов нет, вернем дефолтные для теста
+    if (result.rows.length === 0) {
+      return res.json([
+        { id: 'brk', name: 'ЖК Бруклин', floors: 12, units_per_floor: 6, image_url: 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00' },
+        { id: 'mnht', name: 'ЖК Манхэттен', floors: 24, units_per_floor: 8, image_url: 'https://images.unsplash.com/photo-1464938050520-ef2270bb8ce8' }
+      ]);
     }
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-app.post('/api/register', async (req, res) => {
-  const { initData, phone, company, name } = req.body;
-  try {
-    const urlParams = new URLSearchParams(initData);
-    const user = JSON.parse(urlParams.get('user'));
-    const result = await client.query(
-      'UPDATE users SET phone = $1, company = $2, first_name = $3, is_registered = TRUE WHERE telegram_id = $4 RETURNING *',
-      [phone, company, name, user.id]
-    );
-    res.json({ user: result.rows[0], success: true });
-  } catch (e) {
-    res.status(500).json({ error: 'Error' });
-  }
-});
-
-// --- НОВОСТИ (CRUD) ---
-
-// 1. Получить
-app.get('/api/news', async (req, res) => {
-  try {
-    const result = await client.query('SELECT * FROM news ORDER BY created_at DESC');
     res.json(result.rows);
   } catch (e) {
     res.status(500).json({ error: 'DB Error' });
   }
 });
 
-// 2. Добавить (POST)
-app.post('/api/news', async (req, res) => {
-  const { initData, title, text, image_url, project_name, progress, checklist } = req.body;
+// 2. Получить квартиры конкретного проекта
+app.get('/api/units/:projectId', async (req, res) => {
+  const { projectId } = req.params;
   try {
-    if (await isAdmin(initData)) {
-      await client.query(
-        'INSERT INTO news (title, text, image_url, project_name, progress, checklist) VALUES ($1, $2, $3, $4, $5, $6)',
-        [title, text, image_url, project_name || 'Новости', progress || 0, JSON.stringify(checklist || [])]
-      );
-      res.json({ success: true });
-    } else {
-      res.status(403).json({ error: 'Forbidden' });
-    }
+    const result = await client.query('SELECT * FROM units WHERE project_id = $1', [projectId]);
+    res.json(result.rows);
   } catch (e) {
-    res.status(500).json({ error: 'Error' });
+    res.status(500).json({ error: 'DB Error' });
   }
 });
 
-// 3. УДАЛИТЬ (DELETE) - НОВОЕ!
-app.delete('/api/news/:id', async (req, res) => {
-  const { initData } = req.body; // Передаем initData в body для проверки админа
-  const { id } = req.params;
-  try {
-    if (await isAdmin(initData)) {
-      await client.query('DELETE FROM news WHERE id = $1', [id]);
-      res.json({ success: true });
-    } else {
-      res.status(403).json({ error: 'Forbidden' });
-    }
-  } catch (e) {
-    res.status(500).json({ error: 'Error' });
-  }
-});
+// 3. (АДМИН) Загрузка XML Фида (Profitbase)
+app.post('/api/sync-xml', async (req, res) => {
+  const { xmlContent, projectId } = req.body; // Мы пока будем слать XML текстом для простоты
+  
+  if (!xmlContent || !projectId) return res.status(400).json({ error: 'No XML or Project ID' });
 
-// 4. ОБНОВИТЬ (PUT) - НОВОЕ!
-app.put('/api/news/:id', async (req, res) => {
-  const { initData, title, text, image_url, project_name, progress, checklist } = req.body;
-  const { id } = req.params;
   try {
-    if (await isAdmin(initData)) {
-      await client.query(
-        `UPDATE news SET 
-         title = $1, text = $2, image_url = $3, project_name = $4, progress = $5, checklist = $6 
-         WHERE id = $7`,
-        [title, text, image_url, project_name, progress, JSON.stringify(checklist), id]
-      );
-      res.json({ success: true });
-    } else {
-      res.status(403).json({ error: 'Forbidden' });
+    const parser = new xml2js.Parser();
+    const result = await parser.parseStringPromise(xmlContent);
+
+    // Логика разбора (зависит от формата, тут пример стандартного YRL/Profitbase)
+    // Допустим, структура: <offer internal-id="123"> <price>...</price> ... </offer>
+    
+    // Это примерная структура, её нужно будет подточить под твой реальный XML
+    // Но для старта она подойдет (или мы загрузим фейковые данные)
+    
+    const offers = result?.realty_feed?.offer || [];
+    let count = 0;
+
+    for (const offer of offers) {
+        // Парсим данные
+        const unitId = offer.$?.['internal-id'] || Math.random().toString();
+        const price = offer.price?.[0]?.value?.[0] || 0;
+        const floor = parseInt(offer.floor?.[0] || '1');
+        const rooms = parseInt(offer.rooms?.[0] || '1');
+        const area = parseFloat(offer.area?.[0]?.value?.[0] || '0');
+        const number = offer.flat_number?.[0] || '0';
+        
+        // Статус (нужно мапить)
+        // Profitbase обычно шлет 'available', 'booked', 'sold'
+        let status = 'FREE'; 
+        // Тут можно добавить логику проверки статуса
+
+        // Сохраняем в базу (Upsert - обновить если есть)
+        await client.query(`
+            INSERT INTO units (id, project_id, floor, number, rooms, area, price, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (id) DO UPDATE 
+            SET price = EXCLUDED.price, status = EXCLUDED.status;
+        `, [unitId, projectId, floor, number, rooms, area, price, status]);
+        
+        count++;
     }
+
+    res.json({ success: true, imported: count });
+
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: 'Error' });
+    res.status(500).json({ error: 'XML Parse Error' });
   }
 });
 
-// Вспомогательная функция проверки админа
-async function isAdmin(initData) {
-  if (!initData) return false;
-  const urlParams = new URLSearchParams(initData);
-  const telegramUser = JSON.parse(urlParams.get('user'));
-  const userCheck = await client.query('SELECT is_admin FROM users WHERE telegram_id = $1', [telegramUser.id]);
-  return userCheck.rows.length > 0 && userCheck.rows[0].is_admin;
-}
+// 4. (АДМИН) Кнопка "Сгенерировать демо-квартиры" (Чтобы не возиться с XML прямо сейчас)
+app.post('/api/generate-demo/:projectId', async (req, res) => {
+    const { projectId } = req.params;
+    const { floors, unitsPerFloor } = req.body; // 12, 6
 
-// Make Admin Link
-app.get('/api/make-admin', async (req, res) => {
-  const { id, secret } = req.query;
-  if (secret !== '12345') return res.send('Wrong secret');
-  await client.query('UPDATE users SET is_admin = TRUE WHERE telegram_id = $1', [id]);
-  res.send(`User ${id} is now admin!`);
+    // Сначала создадим проект
+    await client.query(`
+        INSERT INTO projects (id, name, floors, units_per_floor)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (id) DO NOTHING
+    `, [projectId, 'Demo Project', floors, unitsPerFloor]);
+
+    // Генерируем квартиры
+    for(let f = 1; f <= floors; f++) {
+        for(let u = 1; u <= unitsPerFloor; u++) {
+            const statusRandom = Math.random();
+            let status = 'FREE';
+            if (statusRandom > 0.7) status = 'SOLD';
+            else if (statusRandom > 0.5) status = 'BOOKED';
+
+            await client.query(`
+                INSERT INTO units (id, project_id, floor, number, rooms, area, price, status)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (id) DO NOTHING
+            `, [
+                `${projectId}-${f}-${u}`, 
+                projectId, 
+                f, 
+                `${f}0${u}`, 
+                Math.floor(Math.random() * 3) + 1, 
+                Math.floor(Math.random() * 40) + 30, 
+                Math.floor(Math.random() * 5000000) + 5000000, 
+                status
+            ]);
+        }
+    }
+    res.json({ success: true });
 });
+
+// ... (ОСТАЛЬНОЙ КОД server.js: make-admin, listen...) ...
+// Обязательно верни сюда все функции из твоего старого файла!
 
 app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));

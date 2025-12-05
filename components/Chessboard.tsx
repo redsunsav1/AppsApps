@@ -43,6 +43,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
 
     return (
         <div className="fixed inset-0 z-50 flex flex-col bg-brand-cream animate-fade-in text-brand-black">
+            
             <div className="px-6 pt-8 pb-4 flex justify-between items-center bg-brand-white border-b border-brand-light">
                 {selectedProject ? (
                     <button onClick={() => setSelectedProject(null)} className="flex items-center gap-2 text-brand-black font-bold hover:text-brand-gold transition-colors">
@@ -85,34 +86,32 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                                     <div className="space-y-1 min-w-max px-2">
                                         {Array.from({length: selectedProject.floors}).map((_, i) => {
                                             const floorNum = selectedProject.floors - i;
-                                            if (floorNum < 2) return null; 
+                                            
+                                            // --- ЛОГИКА ОТОБРАЖЕНИЯ ---
+                                            if (floorNum < 2) return null; // Прячем технический 1 этаж
+                                            const displayFloor = floorNum - 1; // Визуально это 1, 2, 3...
 
                                             const floorUnits = units.filter(u => u.floor === floorNum);
                                             
-                                            // Сортировка по номеру (чтобы шли 101, 102, 103...)
-                                            floorUnits.sort((a, b) => {
-                                                const numA = parseInt(a.number.replace(/\D/g, '')) || 0;
-                                                const numB = parseInt(b.number.replace(/\D/g, '')) || 0;
-                                                return numA - numB;
-                                            });
-                                            
-                                            // ЖЕСТКАЯ СЕТКА (берем из проекта или 8)
-                                            const cols = selectedProject.unitsPerFloor || 8;
+                                            // Сортируем по номеру (1, 2, 3...)
+                                            floorUnits.sort((a, b) => parseInt(a.number) - parseInt(b.number));
+
+                                            const cols = 8; // Жестко 8
 
                                             return (
                                                 <div key={floorNum} className="flex gap-2 items-center">
-                                                    <div className="w-6 text-xs font-bold text-brand-grey text-center sticky left-0 bg-brand-cream z-10">{floorNum}</div>
+                                                    {/* Номер этажа слева */}
+                                                    <div className="w-6 text-xs font-bold text-brand-grey text-center sticky left-0 bg-brand-cream z-10">
+                                                        {displayFloor}
+                                                    </div>
                                                     
                                                     <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${cols}, minmax(40px, 1fr))` }}>
+                                                        {/* Выводим ровно 8 ячеек */}
                                                         {Array.from({length: cols}).map((_, idx) => {
-                                                            // Пытаемся найти квартиру для этой ячейки
-                                                            // ТУТ ТОНКИЙ МОМЕНТ: Если в фиде есть пропуски, они будут в конце.
-                                                            // Чтобы было идеально, нужно знать номер квартиры на площадке.
-                                                            // Пока просто выводим по порядку.
+                                                            // Берем квартиру по индексу в отсортированном массиве
                                                             const unit = floorUnits[idx];
 
                                                             if (!unit) {
-                                                                // Если квартиры нет в фиде - рисуем "Продано/Нет в продаже"
                                                                 return <div key={`empty-${idx}`} className="h-10 w-12 bg-gray-200/30 rounded-md border border-transparent" />
                                                             }
 
@@ -127,7 +126,8 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                                                                         ${unit.status === 'SOLD' ? 'bg-brand-light border-transparent text-white opacity-40 cursor-default' : ''}
                                                                     `}
                                                                 >
-                                                                    <span className="font-bold">{unit.rooms}к</span>
+                                                                    {/* Номер: если 1, 2... то норм. Если 201, можно обрезать */}
+                                                                    <span className="font-bold">{unit.number}</span>
                                                                     {unit.status === 'FREE' && <span>{unit.area}</span>}
                                                                 </div>
                                                             );
@@ -151,6 +151,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                         <button onClick={() => setBookingUnit(null)} className="absolute top-4 right-4 text-gray-400 hover:text-black">
                             <X size={20} />
                         </button>
+
                         <div className="mb-4">
                             <div className={`inline-block px-3 py-1 rounded-full text-xs font-bold mb-2 
                                 ${bookingUnit.status === 'FREE' ? 'bg-green-100 text-green-700' : ''}
@@ -160,18 +161,24 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                                 {bookingUnit.status === 'FREE' ? 'Свободна' : bookingUnit.status === 'BOOKED' ? 'Забронирована' : 'Продана'}
                             </div>
                             <h3 className="text-2xl font-bold text-brand-black">Кв. №{bookingUnit.number}</h3>
-                            <p className="text-gray-500 text-sm">Этаж {bookingUnit.floor}</p>
+                            <p className="text-gray-500 text-sm">Этаж {bookingUnit.floor - 1}</p>
                         </div>
+
                         <div className="space-y-3 mb-6">
                             <div className="flex justify-between border-b border-gray-100 pb-2">
                                 <span className="text-gray-500">Площадь</span>
                                 <span className="font-bold">{bookingUnit.area} м²</span>
+                            </div>
+                            <div className="flex justify-between border-b border-gray-100 pb-2">
+                                <span className="text-gray-500">Комнат</span>
+                                <span className="font-bold">{bookingUnit.rooms}</span>
                             </div>
                             <div className="flex justify-between items-center pt-2">
                                 <span className="text-gray-500">Цена</span>
                                 <span className="text-xl font-bold text-brand-gold">{formatPrice(bookingUnit.price)}</span>
                             </div>
                         </div>
+
                         <div className="flex gap-3">
                             <button onClick={() => setBookingUnit(null)} className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-bold">Отмена</button>
                             {bookingUnit.status === 'FREE' && (

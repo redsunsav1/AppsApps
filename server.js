@@ -13,10 +13,12 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const { Client } = pg;
 
+// Настройки сервера
 app.use(express.json({ limit: '50mb' }));
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'dist')));
 
+// Подключение к БД
 const client = new Client({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
@@ -27,11 +29,13 @@ const initDb = async () => {
     await client.connect();
     console.log('✅ Connected to Database');
 
+    // 1. Таблицы
     await client.query(`CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, telegram_id BIGINT UNIQUE NOT NULL, username TEXT, first_name TEXT, balance INT DEFAULT 0, phone TEXT, company TEXT, is_registered BOOLEAN DEFAULT FALSE, is_admin BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
     await client.query(`CREATE TABLE IF NOT EXISTS news (id SERIAL PRIMARY KEY, title TEXT NOT NULL, text TEXT NOT NULL, image_url TEXT, project_name TEXT, progress INT DEFAULT 0, checklist JSONB, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
     await client.query(`CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, floors INT DEFAULT 1, units_per_floor INT DEFAULT 4, image_url TEXT, feed_url TEXT);`);
     await client.query(`CREATE TABLE IF NOT EXISTS units (id TEXT PRIMARY KEY, project_id TEXT, floor INT, number TEXT, rooms INT, area NUMERIC, price NUMERIC, status TEXT, plan_image_url TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
 
+    // Миграции
     await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS project_name TEXT;');
     await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS progress INT DEFAULT 0;');
     await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS checklist JSONB;');
@@ -47,9 +51,9 @@ const initDb = async () => {
 };
 initDb();
 
-// --- УМНЫЙ ПАРСЕР (С ОЧИСТКОЙ И АВТО-КОРРЕКЦИЕЙ) ---
+// --- УМНАЯ СИНХРОНИЗАЦИЯ ---
 async function syncProjectWithXml(projectId, url) {
-    console.log(`🔄 Syncing ${projectId}...`);
+    console.log(`🔄 Syncing project ${projectId} from ${url}...`);
     const response = await fetch(url);
     if (!response.ok) throw new Error('Failed to fetch XML');
     const xmlText = await response.text();
@@ -58,16 +62,18 @@ async function syncProjectWithXml(projectId, url) {
     const result = await parser.parseStringPromise(xmlText);
     const offers = result?.['realty-feed']?.offer || [];
     
-    console.log(`📦 Cleaning old units for ${projectId}...`);
+    console.log(`📦 Offers found: ${offers.length}. Cleaning old data...`);
+
+    // 1. ОЧИСТКА СТАРЫХ ДАННЫХ (Чтобы не было дублей и каши)
     await client.query('DELETE FROM units WHERE project_id = $1', [projectId]);
 
     let count = 0;
     let maxFloor = 1;
-    const floorCounts = {};
+    const floorCounts = {}; // Считаем квартиры на этажах
 
     for (const offer of offers) {
         const floor = parseInt(offer.floor?.[0] || '1');
-        if (floor < 1) continue; // Фильтр: убираем этаж 0 и -1
+        if (floor < 1) continue; // Пропускаем подвал
 
         const unitId = offer.$?.['internal-id'] || offer['internal-id']?.[0] || `auto-${Math.random()}`;
         const price = parseFloat(offer.price?.[0]?.value?.[0] || '0');
@@ -82,7 +88,7 @@ async function syncProjectWithXml(projectId, url) {
         const number = offer['flat-number']?.[0] || offer.apartment?.[0] || '0';
         const planUrl = offer['planning-image']?.[0] || offer.image?.[0] || '';
 
-        // Статусы (Profitbase)
+        // --- СТАТУСЫ ---
         let statusRaw = ''; 
         if (offer['deal-status']) statusRaw += offer['deal-status'][0];
         if (offer['sales-status']) statusRaw += ' ' + offer['sales-status'][0];
@@ -101,7 +107,7 @@ async function syncProjectWithXml(projectId, url) {
         count++;
     }
     
-    // Обновляем этажность и ширину
+    // Обновляем настройки проекта (этажи и ширину)
     const maxUnitsOnFloor = Math.max(...Object.values(floorCounts), 4);
     await client.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3 WHERE id = $4', [maxFloor, maxUnitsOnFloor, url, projectId]);
     
@@ -194,6 +200,7 @@ app.post('/api/generate-demo/:projectId', async (req, res) => {
     res.json({ success: true });
 });
 
+// Ручной запуск
 app.post('/api/sync-xml-url', async (req, res) => {
   const { url, projectId } = req.body;
   if (!url || !projectId) return res.status(400).json({ error: 'No URL or ProjectID' });

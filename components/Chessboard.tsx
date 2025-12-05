@@ -11,11 +11,9 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
     const [projects, setProjects] = useState<ProjectData[]>([]);
     const [units, setUnits] = useState<ChessUnit[]>([]);
     const [loading, setLoading] = useState(false);
-    
-    // Состояние для красивой модалки бронирования (вместо alert)
     const [bookingUnit, setBookingUnit] = useState<ChessUnit | null>(null);
 
-    // 1. Загружаем проекты
+    // 1. Грузим список проектов
     useEffect(() => {
         fetch('/api/projects')
             .then(res => res.json())
@@ -24,32 +22,20 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                     id: p.id,
                     name: p.name,
                     floors: p.floors,
-                    unitsPerFloor: p.units_per_floor,
+                    unitsPerFloor: p.units_per_floor || 8, 
                     image: p.image_url || 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00'
                 }));
                 setProjects(mapped);
             });
     }, []);
 
-    // 2. Загружаем квартиры при выборе
+    // 2. Грузим квартиры при выборе
     const handleProjectSelect = (p: ProjectData) => {
         setSelectedProject(p);
         setLoading(true);
-        
         fetch(`/api/units/${p.id}`)
             .then(res => res.json())
-            .then(data => {
-                // Если квартир нет вообще - предложим сгенерировать демо (на всякий случай)
-                if (data.length === 0) {
-                    fetch(`/api/generate-demo/${p.id}`, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ floors: p.floors, unitsPerFloor: p.unitsPerFloor })
-                    }).then(() => handleProjectSelect(p));
-                } else {
-                    setUnits(data);
-                }
-            })
+            .then(data => setUnits(data))
             .finally(() => setLoading(false));
     };
 
@@ -57,10 +43,22 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
         return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(price);
     };
 
+    // ВЫЧИСЛЕНИЕ СЕТКИ (чтобы не съезжало)
+    // Используем unitsPerFloor, который посчитал сервер, или пересчитываем локально
+    const getActualUnitsPerFloor = () => {
+        if (units.length === 0) return 4;
+        const counts: Record<number, number> = {};
+        units.forEach(u => { counts[u.floor] = (counts[u.floor] || 0) + 1; });
+        return Math.max(...Object.values(counts));
+    };
+
+    // Ширина сетки: берем максимум из того, что сказал сервер, и того, что насчитали
+    const gridCols = selectedProject ? Math.max(selectedProject.unitsPerFloor, getActualUnitsPerFloor()) : 4;
+
     return (
         <div className="fixed inset-0 z-50 flex flex-col bg-brand-cream animate-fade-in text-brand-black">
             
-            {/* --- ШАПКА --- */}
+            {/* ШАПКА */}
             <div className="px-6 pt-8 pb-4 flex justify-between items-center bg-brand-white border-b border-brand-light">
                 {selectedProject ? (
                     <button onClick={() => setSelectedProject(null)} className="flex items-center gap-2 text-brand-black font-bold hover:text-brand-gold transition-colors">
@@ -79,19 +77,11 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                     // СПИСОК ПРОЕКТОВ
                     <div className="grid grid-cols-1 gap-4">
                         {projects.map(p => (
-                            <div 
-                                key={p.id}
-                                onClick={() => handleProjectSelect(p)}
-                                className="bg-brand-white rounded-2xl p-2 flex gap-4 items-center border border-transparent hover:border-brand-gold transition-all cursor-pointer active:scale-[0.98]"
-                            >
+                            <div key={p.id} onClick={() => handleProjectSelect(p)} className="bg-brand-white rounded-2xl p-2 flex gap-4 items-center border border-transparent hover:border-brand-gold transition-all cursor-pointer active:scale-[0.98]">
                                 <img src={p.image} alt={p.name} className="w-24 h-24 rounded-xl object-cover bg-brand-light" />
                                 <div>
                                     <h3 className="text-lg font-bold text-brand-black">{p.name}</h3>
                                     <p className="text-sm text-brand-grey">{p.floors} этажей</p>
-                                    <div className="mt-2 flex items-center gap-2 text-brand-gold text-xs font-bold">
-                                        <Building2 size={14} />
-                                        Показать шахматку
-                                    </div>
                                 </div>
                             </div>
                         ))}
@@ -106,16 +96,20 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                                 <div className="flex items-center gap-4 mb-6 justify-center text-xs font-medium text-brand-grey sticky top-0 bg-brand-cream py-2 z-10">
                                     <div className="flex items-center gap-1"><div className="w-3 h-3 bg-white border border-brand-light rounded-sm"></div> Свободно</div>
                                     <div className="flex items-center gap-1"><div className="w-3 h-3 bg-brand-cream border border-brand-gold rounded-sm"></div> Бронь</div>
-                                    <div className="flex items-center gap-1"><div className="w-3 h-3 bg-brand-light rounded-sm"></div> Продано</div>
+                                    <div className="flex items-center gap-1"><div className="w-3 h-3 bg-brand-light rounded-sm opacity-50"></div> Продано</div>
                                 </div>
 
                                 <div className="space-y-1">
-                                    {/* Рендер этажей (сверху вниз) */}
+                                    {/* ОТРИСОВКА ЭТАЖЕЙ */}
                                     {Array.from({length: selectedProject.floors}).map((_, i) => {
                                         const floorNum = selectedProject.floors - i;
+                                        
+                                        // СКРЫВАЕМ 1 ЭТАЖ (как просил)
+                                        if (floorNum < 2) return null;
+
                                         const floorUnits = units.filter(u => u.floor === floorNum);
                                         
-                                        // Сортировка: слева направо по номеру квартиры
+                                        // Сортировка по номеру (слева направо)
                                         floorUnits.sort((a, b) => {
                                             const numA = parseInt(a.number.replace(/\D/g, '')) || 0;
                                             const numB = parseInt(b.number.replace(/\D/g, '')) || 0;
@@ -125,25 +119,28 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                                         return (
                                             <div key={floorNum} className="flex gap-2 items-center">
                                                 <div className="w-6 text-xs font-bold text-brand-grey text-center">{floorNum}</div>
-                                                <div className="flex-1 flex gap-1 flex-wrap">
-                                                    {floorUnits.length > 0 ? floorUnits.map(unit => (
+                                                
+                                                {/* ЖЕСТКАЯ СЕТКА */}
+                                                <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }}>
+                                                    {floorUnits.map(unit => (
                                                         <div 
                                                             key={unit.id}
                                                             onClick={() => setBookingUnit(unit)}
                                                             className={`
-                                                                h-10 w-10 sm:w-12 rounded-md flex flex-col items-center justify-center border text-[9px] transition-all cursor-pointer
+                                                                h-10 rounded-md flex flex-col items-center justify-center border text-[9px] transition-all cursor-pointer
                                                                 ${unit.status === 'FREE' ? 'bg-white border-brand-light hover:border-brand-gold hover:bg-brand-cream shadow-sm' : ''}
                                                                 ${unit.status === 'BOOKED' ? 'bg-brand-cream border-brand-gold/30 text-brand-gold' : ''}
-                                                                ${unit.status === 'SOLD' ? 'bg-brand-light border-transparent text-white opacity-60' : ''}
+                                                                ${unit.status === 'SOLD' ? 'bg-brand-light border-transparent text-white opacity-40 cursor-default' : ''}
                                                             `}
                                                         >
                                                             <span className="font-bold">{unit.rooms}к</span>
                                                             {unit.status === 'FREE' && <span>{unit.area}</span>}
                                                         </div>
-                                                    )) : (
-                                                        // Пустой этаж (заглушка)
-                                                        <div className="text-[10px] text-gray-300 italic w-full text-center">Нет квартир</div>
-                                                    )}
+                                                    ))}
+                                                    {/* Заполнители пустоты */}
+                                                    {Array.from({length: Math.max(0, gridCols - floorUnits.length)}).map((_, idx) => (
+                                                        <div key={`empty-${idx}`} className="h-10 bg-transparent border border-transparent opacity-20" />
+                                                    ))}
                                                 </div>
                                             </div>
                                         )
@@ -155,12 +152,10 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                 )}
             </div>
 
-            {/* --- КРАСИВАЯ МОДАЛКА БРОНИРОВАНИЯ --- */}
+            {/* --- ОКНО БРОНИРОВАНИЯ --- */}
             {bookingUnit && (
                 <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in p-4">
-                    {/* Подложка для закрытия по клику вне */}
                     <div className="absolute inset-0" onClick={() => setBookingUnit(null)} />
-                    
                     <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl animate-slide-up relative z-10">
                         <button onClick={() => setBookingUnit(null)} className="absolute top-4 right-4 text-gray-400 hover:text-black">
                             <X size={20} />
@@ -174,7 +169,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                             `}>
                                 {bookingUnit.status === 'FREE' ? 'Свободна' : bookingUnit.status === 'BOOKED' ? 'Забронирована' : 'Продана'}
                             </div>
-                            <h3 className="text-2xl font-bold text-brand-black">Квартира №{bookingUnit.number}</h3>
+                            <h3 className="text-2xl font-bold text-brand-black">Кв. №{bookingUnit.number}</h3>
                             <p className="text-gray-500 text-sm">Этаж {bookingUnit.floor}</p>
                         </div>
 
@@ -198,13 +193,13 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                                 onClick={() => setBookingUnit(null)}
                                 className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-bold active:scale-95 transition-transform"
                             >
-                                Закрыть
+                                Отмена
                             </button>
                             
                             {bookingUnit.status === 'FREE' && (
                                 <button 
                                     onClick={() => {
-                                        alert('Заявка отправлена вашему менеджеру!');
+                                        alert('Заявка отправлена!');
                                         setBookingUnit(null);
                                     }}
                                     className="flex-1 py-3 bg-brand-black text-white rounded-xl font-bold shadow-lg active:scale-95 transition-transform"
@@ -216,7 +211,6 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                     </div>
                 </div>
             )}
-
         </div>
     );
 };

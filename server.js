@@ -25,12 +25,14 @@ const client = new Client({
 const initDb = async () => {
   try {
     await client.connect();
-    console.log('✅ DB Connected');
+    console.log('✅ Connected to Database');
+
+    // Таблицы
     await client.query(`CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, telegram_id BIGINT UNIQUE NOT NULL, username TEXT, first_name TEXT, balance INT DEFAULT 0, phone TEXT, company TEXT, is_registered BOOLEAN DEFAULT FALSE, is_admin BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
     await client.query(`CREATE TABLE IF NOT EXISTS news (id SERIAL PRIMARY KEY, title TEXT NOT NULL, text TEXT NOT NULL, image_url TEXT, project_name TEXT, progress INT DEFAULT 0, checklist JSONB, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
     await client.query(`CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, floors INT DEFAULT 1, units_per_floor INT DEFAULT 4, image_url TEXT, feed_url TEXT);`);
     await client.query(`CREATE TABLE IF NOT EXISTS units (id TEXT PRIMARY KEY, project_id TEXT, floor INT, number TEXT, rooms INT, area NUMERIC, price NUMERIC, status TEXT, plan_image_url TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
-    
+
     // Миграции
     await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS project_name TEXT;');
     await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS progress INT DEFAULT 0;');
@@ -39,7 +41,6 @@ const initDb = async () => {
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;');
     await client.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS feed_url TEXT;');
 
-    // Демо проект
     const projCheck = await client.query('SELECT count(*) FROM projects');
     if (parseInt(projCheck.rows[0].count) === 0) {
         await client.query(`INSERT INTO projects (id, name, floors, units_per_floor, image_url) VALUES ('brk', 'ЖК Бруклин', 12, 6, 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00') ON CONFLICT DO NOTHING`);
@@ -48,54 +49,34 @@ const initDb = async () => {
 };
 initDb();
 
-// --- НОВАЯ УМНАЯ СИНХРОНИЗАЦИЯ (СКЕЛЕТ + НАЛОЖЕНИЕ) ---
+// --- СИНХРОНИЗАЦИЯ "ПО ПОРЯДКУ" (БЕЗ НОМЕРОВ) ---
 async function syncProjectWithXml(projectId, url) {
-    console.log(`🔄 Syncing ${projectId} (Skeleton Mode)...`);
+    console.log(`🔄 Syncing ${projectId}...`);
     
-    // 1. Настройки дома (Если это твой ЖК, ставим жестко)
-    // Можно вынести в базу, но пока для надежности пропишем тут
-    let floorsTotal = 19;
-    let unitsPerFloor = 8;
-    let startFloor = 2; // С какого этажа начинаются квартиры
+    // 1. Настройки дома (ЖК Бабайка: 19 эт, 8 кв, старт со 2 эт)
+    const floorsTotal = 19;
+    const unitsPerFloor = 8;
+    const startFloor = 2;
     
-    // Сначала очищаем старые данные
+    // Сначала очищаем старые данные и создаем СКЕЛЕТ
     await client.query('DELETE FROM units WHERE project_id = $1', [projectId]);
 
-    // 2. СОЗДАЕМ СКЕЛЕТ (ВСЕ КВАРТИРЫ ПРОДАНЫ)
     console.log('💀 Generating skeleton (SOLD)...');
-    let globalFlatNumber = 1; // Сквозная нумерация с 1
+    let globalFlatNumber = 1; 
     
-    const skeletonUnits = [];
-    
+    // Создаем все квартиры как "ПРОДАНО"
+    // Важно: создаем их в строгом порядке (этаж 2 кв 1..8, этаж 3 кв 1..8)
     for (let f = startFloor; f <= floorsTotal; f++) {
         for (let u = 1; u <= unitsPerFloor; u++) {
-            skeletonUnits.push({
-                id: `${projectId}-${f}-${u}`, // Временный ID
-                project_id: projectId,
-                floor: f,
-                number: String(globalFlatNumber), // 1, 2, 3...
-                rooms: 0, // Пока не знаем
-                area: 0,
-                price: 0,
-                status: 'SOLD', // По умолчанию продано
-                plan_image_url: ''
-            });
+            await client.query(`
+                INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, 'SOLD', '')
+            `, [`${projectId}-${f}-${u}`, projectId, f, String(globalFlatNumber), 0, 0, 0]);
             globalFlatNumber++;
         }
     }
 
-    // Записываем скелет в базу (пакетами, чтобы быстрее)
-    // Для простоты запишем по одной, Postgres справится
-    for (const unit of skeletonUnits) {
-        await client.query(`
-            INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        `, [unit.id, unit.project_id, unit.floor, unit.number, unit.rooms, unit.area, unit.price, unit.status, unit.plan_image_url]);
-    }
-    
-    console.log(`✅ Skeleton created: ${skeletonUnits.length} units.`);
-
-    // 3. НАКЛАДЫВАЕМ XML (ОБНОВЛЯЕМ ТЕ, ЧТО ЕСТЬ В ПРОДАЖЕ)
+    // 2. СКАЧИВАЕМ И ПАРСИМ XML
     const response = await fetch(url);
     if (!response.ok) throw new Error('Failed to fetch XML');
     const xmlText = await response.text();
@@ -103,50 +84,69 @@ async function syncProjectWithXml(projectId, url) {
     const result = await parser.parseStringPromise(xmlText);
     const offers = result?.['realty-feed']?.offer || [];
     
-    console.log(`📦 XML Loaded: ${offers.length} offers. Updating...`);
+    console.log(`📦 XML Loaded: ${offers.length} offers.`);
+
+    // 3. СОРТИРУЕМ ОФФЕРЫ ИЗ XML
+    // Profitbase обычно отдает их вразнобой. Нам нужно отсортировать их так же, как мы создавали скелет.
+    // Сортируем по этажу (с 2 по 19), а внутри этажа - по площади (от меньшей к большей)
+    // Это единственный способ угадать порядок без номеров квартир.
     
+    const sortedOffers = offers.map(o => ({
+        data: o,
+        floor: parseInt(o.floor?.[0] || '0'),
+        area: parseFloat(o.area?.[0]?.value?.[0] || '0')
+    })).sort((a, b) => {
+        if (a.floor === b.floor) return a.area - b.area; // Слева направо по площади
+        return a.floor - b.floor; // Снизу вверх по этажам
+    });
+
+    // 4. НАКЛАДЫВАЕМ ДАННЫЕ
+    // Берем все созданные квартиры из базы (отсортированные так же: floor ASC, number ASC)
+    const dbUnitsRes = await client.query('SELECT * FROM units WHERE project_id = $1 ORDER BY floor ASC, CAST(number AS INT) ASC', [projectId]);
+    const dbUnits = dbUnitsRes.rows;
+
     let updatedCount = 0;
-
-    for (const offer of offers) {
-        // Ищем номер квартиры в фиде
-        const number = offer['flat-number']?.[0] || offer.apartment?.[0];
+    
+    // Идем по списку квартир из XML и кладем их в первые попавшиеся слоты на нужном этаже
+    for (const item of sortedOffers) {
+        const offer = item.data;
+        const floor = item.floor;
         
-        if (!number) {
-            console.log('⚠️ Offer without number, skipping');
-            continue;
+        // Ищем в базе первую СВОБОДНУЮ (точнее SOLD) ячейку на ЭТОМ этаже
+        const targetUnit = dbUnits.find(u => u.floor === floor && u.status === 'SOLD'); // SOLD тут значит "еще не обновлена"
+        
+        if (targetUnit) {
+            // Нашли слот! Обновляем его.
+            const price = parseFloat(offer.price?.[0]?.value?.[0] || '0');
+            const rooms = parseInt((offer.rooms?.[0] || '1').toString().replace(/\D/g, ''));
+            const area = item.area;
+            const planUrl = offer['planning-image']?.[0] || offer.image?.[0] || '';
+
+            // Статус
+            let status = 'FREE';
+            let rawStatus = '';
+            if (offer['deal-status']) rawStatus += JSON.stringify(offer['deal-status']);
+            const s = rawStatus.toLowerCase();
+            if (s.includes('book') || s.includes('reserv') || s.includes('бронь')) status = 'BOOKED';
+            
+            // Обновляем в базе по ID найденного слота
+            await client.query(`
+                UPDATE units 
+                SET price = $1, status = $2, rooms = $3, area = $4, plan_image_url = $5
+                WHERE id = $6
+            `, [price, status, rooms, area, planUrl, targetUnit.id]);
+            
+            // Помечаем в локальном массиве, что этот слот занят (чтобы не перезаписать)
+            targetUnit.status = 'UPDATED'; 
+            updatedCount++;
         }
-
-        // Данные из фида
-        const price = parseFloat(offer.price?.[0]?.value?.[0] || '0');
-        const rooms = parseInt((offer.rooms?.[0] || '1').toString().replace(/\D/g, ''));
-        const area = parseFloat(offer.area?.[0]?.value?.[0] || '0');
-        const floor = parseInt(offer.floor?.[0] || '0');
-        const planUrl = offer['planning-image']?.[0] || offer.image?.[0] || '';
-
-        // Статус из фида
-        let status = 'FREE';
-        let rawStatus = '';
-        if (offer['deal-status']) rawStatus += JSON.stringify(offer['deal-status']);
-        const s = rawStatus.toLowerCase();
-        if (s.includes('book') || s.includes('reserv') || s.includes('бронь')) status = 'BOOKED';
-        // Если в фиде есть 'sold' - ок, обновим. Но обычно их там нет.
-
-        // ОБНОВЛЯЕМ КВАРТИРУ В БАЗЕ ПО НОМЕРУ
-        // Мы ищем квартиру с таким же номером в этом проекте
-        const updateRes = await client.query(`
-            UPDATE units 
-            SET price = $1, status = $2, rooms = $3, area = $4, plan_image_url = $5, floor = $6
-            WHERE project_id = $7 AND number = $8
-        `, [price, status, rooms, area, planUrl, floor, projectId, number]);
-
-        if (updateRes.rowCount > 0) updatedCount++;
     }
 
     // Обновляем настройки проекта
     await client.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3 WHERE id = $4', [floorsTotal, unitsPerFloor, url, projectId]);
     
-    console.log(`🏁 Finalized. Total: ${skeletonUnits.length}, Updated from XML: ${updatedCount}`);
-    return { count: updatedCount, total: skeletonUnits.length };
+    console.log(`🏁 Done. Updated: ${updatedCount}. Total slots: ${dbUnits.length}`);
+    return { count: updatedCount, total: dbUnits.length };
 }
 
 cron.schedule('0 10 * * *', async () => {
@@ -224,19 +224,17 @@ app.get('/api/units/:projectId', async (req, res) => {
 });
 app.post('/api/generate-demo/:projectId', async (req, res) => { res.json({ success: true }); });
 
-// РУЧНОЙ ЗАПУСК (Возвращает статистику)
 app.post('/api/sync-xml-url', async (req, res) => {
   const { url, projectId } = req.body;
   if (!url || !projectId) return res.status(400).json({ error: 'No URL or ProjectID' });
   try {
     const result = await syncProjectWithXml(projectId, url);
-    res.json({ success: true, ...result });
+    res.json({ success: true, count: result.count });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Sync failed: ' + e.message });
   }
 });
-
 app.get('/api/make-admin', async (req, res) => {
   const { id, secret } = req.query;
   if (secret !== '12345') return res.send('Wrong secret');

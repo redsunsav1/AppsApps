@@ -5,6 +5,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import xml2js from 'xml2js';
+import cron from 'node-cron';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -66,7 +67,99 @@ const initDb = async () => {
 
 initDb();
 
-// --- ВСПОМОГАТЕЛЬНЫЕ ---
+// --- УМНАЯ СИНХРОНИЗАЦИЯ ---
+async function syncProjectWithXml(projectId, url) {
+    console.log(`🔄 Syncing project ${projectId} from ${url}...`);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('Failed to fetch XML');
+    const xmlText = await response.text();
+
+    const parser = new xml2js.Parser();
+    const result = await parser.parseStringPromise(xmlText);
+    const offers = result?.['realty-feed']?.offer || [];
+    
+    console.log(`📦 Offers found: ${offers.length}`);
+
+    let count = 0;
+    let maxFloor = 1;
+    let maxUnitsOnFloor = 0;
+    const floorCounts = {}; // Считаем квартиры на каждом этаже
+
+    for (const offer of offers) {
+        const unitId = offer.$?.['internal-id'] || offer['internal-id']?.[0] || `auto-${Math.random()}`;
+        const price = parseFloat(offer.price?.[0]?.value?.[0] || '0');
+        const floor = parseInt(offer.floor?.[0] || '1');
+        
+        // Обновляем макс этаж
+        if (floor > maxFloor) maxFloor = floor;
+
+        // Считаем макс квартир на этаже (для ширины сетки)
+        if (!floorCounts[floor]) floorCounts[floor] = 0;
+        floorCounts[floor]++;
+        if (floorCounts[floor] > maxUnitsOnFloor) maxUnitsOnFloor = floorCounts[floor];
+
+        const roomsRaw = (offer.rooms?.[0] || offer['room-count']?.[0] || '1').toString();
+        const rooms = parseInt(roomsRaw.replace(/\D/g, '') || '1'); 
+        const area = parseFloat(offer.area?.[0]?.value?.[0] || '0');
+        const number = offer['flat-number']?.[0] || offer.apartment?.[0] || '0';
+        const planUrl = offer['planning-image']?.[0] || offer.image?.[0] || '';
+
+        // --- ЛОГИКА СТАТУСОВ (ПРОКАЧАННАЯ) ---
+        let statusRaw = ''; 
+        if (offer['deal-status']) statusRaw += offer['deal-status'][0];
+        if (offer['sales-status']) statusRaw += ' ' + offer['sales-status'][0];
+        
+        // Добавляем проверку категории (иногда там пишут "Продажа" или "Сдано")
+        if (offer.category) statusRaw += ' ' + offer.category[0];
+
+        const s = statusRaw.toLowerCase();
+        let status = 'FREE';
+
+        // 1. Явные признаки продажи/брони
+        if (s.includes('sold') || s.includes('продано') || s.includes('сдано') || s.includes('busy')) {
+            status = 'SOLD';
+        } else if (s.includes('book') || s.includes('reserv') || s.includes('бронь')) {
+            status = 'BOOKED';
+        } else if (price < 1000) {
+            // Если цены нет или она 0 — скорее всего продано
+            status = 'SOLD'; 
+        } else {
+            status = 'FREE';
+        }
+
+        await client.query(`
+            INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (id) DO UPDATE 
+            SET price = EXCLUDED.price, status = EXCLUDED.status, floor = EXCLUDED.floor, plan_image_url = EXCLUDED.plan_image_url, number = EXCLUDED.number;
+        `, [unitId, projectId, floor, number, rooms, area, price, status, planUrl]);
+        count++;
+    }
+    
+    // Обновляем этажность и ШИРИНУ проекта (ставим 8 или сколько насчитали)
+    const unitsWidth = maxUnitsOnFloor > 0 ? maxUnitsOnFloor : 8;
+    
+    if (maxFloor > 1) {
+        await client.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3 WHERE id = $4', [maxFloor, unitsWidth, url, projectId]);
+    } else {
+        await client.query('UPDATE projects SET feed_url = $1 WHERE id = $2', [url, projectId]);
+    }
+    
+    return count;
+}
+
+// CRON (Автоматическое обновление каждый день)
+cron.schedule('0 10 * * *', async () => {
+    try {
+        const res = await client.query('SELECT id, feed_url FROM projects WHERE feed_url IS NOT NULL');
+        for (const project of res.rows) {
+            if (project.feed_url) await syncProjectWithXml(project.id, project.feed_url);
+        }
+    } catch (e) { console.error('Cron Error:', e); }
+});
+
+// --- API ---
+
 async function isAdmin(initData) {
   if (!initData) return false;
   try {
@@ -76,8 +169,6 @@ async function isAdmin(initData) {
     return res.rows.length > 0 && res.rows[0].is_admin;
   } catch (e) { return false; }
 }
-
-// --- API ---
 
 app.post('/api/auth', async (req, res) => {
   const { initData } = req.body;
@@ -98,12 +189,11 @@ app.post('/api/register', async (req, res) => {
   try {
     const urlParams = new URLSearchParams(initData);
     const user = JSON.parse(urlParams.get('user'));
-    const result = await client.query('UPDATE users SET phone = $1, company = $2, first_name = $3, is_registered = TRUE WHERE telegram_id = $4 RETURNING *', [phone, company, name, user.id]);
-    res.json({ user: result.rows[0], success: true });
+    await client.query('UPDATE users SET phone = $1, company = $2, first_name = $3, is_registered = TRUE WHERE telegram_id = $4', [phone, company, name, user.id]);
+    res.json({ success: true });
   } catch (e) { res.status(500).json({ error: 'Error' }); }
 });
 
-// Новости
 app.get('/api/news', async (req, res) => {
   const result = await client.query('SELECT * FROM news ORDER BY created_at DESC');
   res.json(result.rows);
@@ -132,8 +222,6 @@ app.put('/api/news/:id', async (req, res) => {
   } else res.status(403).json({ error: 'Forbidden' });
 });
 
-// --- API ШАХМАТКИ ---
-
 app.get('/api/projects', async (req, res) => {
   const result = await client.query('SELECT * FROM projects');
   res.json(result.rows);
@@ -144,106 +232,21 @@ app.get('/api/units/:projectId', async (req, res) => {
   res.json(result.rows);
 });
 
-// ГЕНЕРАТОР ДЕМО (Оставляем на всякий случай)
 app.post('/api/generate-demo/:projectId', async (req, res) => {
     res.json({ success: true });
 });
 
-// --- ПАРСЕР XML ПО ССЫЛКЕ (Profitbase / Yandex) ---
 app.post('/api/sync-xml-url', async (req, res) => {
   const { url, projectId } = req.body;
   if (!url || !projectId) return res.status(400).json({ error: 'No URL or ProjectID' });
-
   try {
-    console.log(`📥 Fetching XML from: ${url}`);
-    
-    // 1. Скачиваем
-    const response = await fetch(url);
-    if (!response.ok) throw new Error('Failed to fetch XML');
-    const xmlText = await response.text();
-
-    // 2. Парсим
-    const parser = new xml2js.Parser();
-    const result = await parser.parseStringPromise(xmlText);
-
-    // Структура Profitbase (YRL)
-    const offers = result?.['realty-feed']?.offer || [];
-    console.log(`🏠 Found ${offers.length} offers for ${projectId}`);
-
-    let count = 0;
-    let maxFloor = 1; // Следим за этажностью
-    let maxUnitsOnFloor = 0;
-    const floorCounts = {}; // Для подсчета квартир на этаже
-
-    for (const offer of offers) {
-        // Данные
-        const unitId = offer.$?.['internal-id'] || offer['internal-id']?.[0] || `auto-${Math.random()}`;
-        const price = parseFloat(offer.price?.[0]?.value?.[0] || '0');
-        const floor = parseInt(offer.floor?.[0] || '1');
-        
-        // Обновляем макс. этаж для проекта
-        if (floor > maxFloor) maxFloor = floor;
-
-        // Считаем сколько квартир на этаже (чтобы шахматка не ехала)
-        if (!floorCounts[floor]) floorCounts[floor] = 0;
-        floorCounts[floor]++;
-        if (floorCounts[floor] > maxUnitsOnFloor) maxUnitsOnFloor = floorCounts[floor];
-
-        // Комнаты
-        let rooms = 1;
-        if (offer['room-count']) rooms = parseInt(offer['room-count']?.[0]) || 1;
-        else if (offer.rooms) rooms = parseInt(offer.rooms?.[0]) || 1;
-
-        const area = parseFloat(offer.area?.[0]?.value?.[0] || '0');
-        
-        // Номер
-        const number = offer['flat-number']?.[0] || offer.apartment?.[0] || '0';
-        
-        // План
-        const planUrl = offer['planning-image']?.[0] || offer.image?.[0] || '';
-
-        // Статус (Profitbase)
-        // Логика: если есть deal-status и он 'sold' или 'booked'
-        let statusRaw = 'unknown'; 
-        if (offer['deal-status']) statusRaw = offer['deal-status'][0];
-        
-        let status = 'FREE';
-        const s = statusRaw.toLowerCase();
-        
-        // Расширенная проверка статусов
-        if (s.includes('booked') || s.includes('reserved') || s.includes('rent') || s.includes('бронь')) status = 'BOOKED';
-        else if (s.includes('sold') || s.includes('продано') || s.includes('busy')) status = 'SOLD';
-        else status = 'FREE'; 
-
-        // 3. Запись в базу
-        await client.query(`
-            INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            ON CONFLICT (id) DO UPDATE 
-            SET price = EXCLUDED.price, status = EXCLUDED.status, floor = EXCLUDED.floor, plan_image_url = EXCLUDED.plan_image_url;
-        `, [unitId, projectId, floor, number, rooms, area, price, status, planUrl]);
-        
-        count++;
-    }
-
-    // 4. ОБНОВЛЯЕМ ЭТАЖНОСТЬ И ШИРИНУ ПРОЕКТА
-    const unitsWidth = maxUnitsOnFloor > 0 ? maxUnitsOnFloor : 8;
-    
-    if (maxFloor > 1) {
-        await client.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3 WHERE id = $4', [maxFloor, unitsWidth, url, projectId]);
-    } else {
-        await client.query('UPDATE projects SET feed_url = $1 WHERE id = $2', [url, projectId]);
-    }
-
+    const count = await syncProjectWithXml(projectId, url);
     res.json({ success: true, count });
-
   } catch (e) {
-    console.error('XML Sync Error:', e);
     res.status(500).json({ error: 'Sync failed: ' + e.message });
   }
 });
 
-// Admin Link
 app.get('/api/make-admin', async (req, res) => {
   const { id, secret } = req.query;
   if (secret !== '12345') return res.send('Wrong secret');
@@ -251,7 +254,6 @@ app.get('/api/make-admin', async (req, res) => {
   res.send(`User ${id} is now admin!`);
 });
 
-// Frontend
 app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });

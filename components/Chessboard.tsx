@@ -43,7 +43,6 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
 
     return (
         <div className="fixed inset-0 z-50 flex flex-col bg-brand-cream animate-fade-in text-brand-black">
-            
             <div className="px-6 pt-8 pb-4 flex justify-between items-center bg-brand-white border-b border-brand-light">
                 {selectedProject ? (
                     <button onClick={() => setSelectedProject(null)} className="flex items-center gap-2 text-brand-black font-bold hover:text-brand-gold transition-colors">
@@ -89,14 +88,15 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                                             if (floorNum < 2) return null; 
 
                                             const floorUnits = units.filter(u => u.floor === floorNum);
-                                            // Сортировка
+                                            
+                                            // Сортировка по номеру (чтобы шли 101, 102, 103...)
                                             floorUnits.sort((a, b) => {
                                                 const numA = parseInt(a.number.replace(/\D/g, '')) || 0;
                                                 const numB = parseInt(b.number.replace(/\D/g, '')) || 0;
                                                 return numA - numB;
                                             });
-
-                                            // Определяем ширину сетки по настройке проекта
+                                            
+                                            // ЖЕСТКАЯ СЕТКА (берем из проекта или 8)
                                             const cols = selectedProject.unitsPerFloor || 8;
 
                                             return (
@@ -104,27 +104,34 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                                                     <div className="w-6 text-xs font-bold text-brand-grey text-center sticky left-0 bg-brand-cream z-10">{floorNum}</div>
                                                     
                                                     <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${cols}, minmax(40px, 1fr))` }}>
-                                                        {/* Квартиры, которые есть в фиде */}
-                                                        {floorUnits.map(unit => (
-                                                            <div 
-                                                                key={unit.id}
-                                                                onClick={() => setBookingUnit(unit)}
-                                                                className={`
-                                                                    h-10 w-12 rounded-md flex flex-col items-center justify-center border text-[9px] transition-all cursor-pointer
-                                                                    ${unit.status === 'FREE' ? 'bg-white border-brand-light hover:border-brand-gold hover:bg-brand-cream shadow-sm' : ''}
-                                                                    ${unit.status === 'BOOKED' ? 'bg-brand-cream border-brand-gold/30 text-brand-gold' : ''}
-                                                                    ${unit.status === 'SOLD' ? 'bg-brand-light border-transparent text-white opacity-40 cursor-default' : ''}
-                                                                `}
-                                                            >
-                                                                <span className="font-bold">{unit.rooms}к</span>
-                                                                {unit.status === 'FREE' && <span>{unit.area}</span>}
-                                                            </div>
-                                                        ))}
-                                                        
-                                                        {/* Заполнение пустоты (ПРОДАНО) */}
-                                                        {Array.from({length: Math.max(0, cols - floorUnits.length)}).map((_, idx) => (
-                                                            <div key={`empty-${idx}`} className="h-10 w-12 bg-gray-200/30 rounded-md border border-transparent" title="Нет в продаже" />
-                                                        ))}
+                                                        {Array.from({length: cols}).map((_, idx) => {
+                                                            // Пытаемся найти квартиру для этой ячейки
+                                                            // ТУТ ТОНКИЙ МОМЕНТ: Если в фиде есть пропуски, они будут в конце.
+                                                            // Чтобы было идеально, нужно знать номер квартиры на площадке.
+                                                            // Пока просто выводим по порядку.
+                                                            const unit = floorUnits[idx];
+
+                                                            if (!unit) {
+                                                                // Если квартиры нет в фиде - рисуем "Продано/Нет в продаже"
+                                                                return <div key={`empty-${idx}`} className="h-10 w-12 bg-gray-200/30 rounded-md border border-transparent" />
+                                                            }
+
+                                                            return (
+                                                                <div 
+                                                                    key={unit.id}
+                                                                    onClick={() => setBookingUnit(unit)}
+                                                                    className={`
+                                                                        h-10 w-12 rounded-md flex flex-col items-center justify-center border text-[9px] transition-all cursor-pointer
+                                                                        ${unit.status === 'FREE' ? 'bg-white border-brand-light hover:border-brand-gold hover:bg-brand-cream shadow-sm' : ''}
+                                                                        ${unit.status === 'BOOKED' ? 'bg-brand-cream border-brand-gold/30 text-brand-gold' : ''}
+                                                                        ${unit.status === 'SOLD' ? 'bg-brand-light border-transparent text-white opacity-40 cursor-default' : ''}
+                                                                    `}
+                                                                >
+                                                                    <span className="font-bold">{unit.rooms}к</span>
+                                                                    {unit.status === 'FREE' && <span>{unit.area}</span>}
+                                                                </div>
+                                                            );
+                                                        })}
                                                     </div>
                                                 </div>
                                             )
@@ -144,7 +151,6 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                         <button onClick={() => setBookingUnit(null)} className="absolute top-4 right-4 text-gray-400 hover:text-black">
                             <X size={20} />
                         </button>
-
                         <div className="mb-4">
                             <div className={`inline-block px-3 py-1 rounded-full text-xs font-bold mb-2 
                                 ${bookingUnit.status === 'FREE' ? 'bg-green-100 text-green-700' : ''}
@@ -156,40 +162,20 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                             <h3 className="text-2xl font-bold text-brand-black">Кв. №{bookingUnit.number}</h3>
                             <p className="text-gray-500 text-sm">Этаж {bookingUnit.floor}</p>
                         </div>
-
                         <div className="space-y-3 mb-6">
                             <div className="flex justify-between border-b border-gray-100 pb-2">
                                 <span className="text-gray-500">Площадь</span>
                                 <span className="font-bold">{bookingUnit.area} м²</span>
-                            </div>
-                            <div className="flex justify-between border-b border-gray-100 pb-2">
-                                <span className="text-gray-500">Комнат</span>
-                                <span className="font-bold">{bookingUnit.rooms}</span>
                             </div>
                             <div className="flex justify-between items-center pt-2">
                                 <span className="text-gray-500">Цена</span>
                                 <span className="text-xl font-bold text-brand-gold">{formatPrice(bookingUnit.price)}</span>
                             </div>
                         </div>
-
                         <div className="flex gap-3">
-                            <button 
-                                onClick={() => setBookingUnit(null)}
-                                className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-bold active:scale-95 transition-transform"
-                            >
-                                Отмена
-                            </button>
-                            
+                            <button onClick={() => setBookingUnit(null)} className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-bold">Отмена</button>
                             {bookingUnit.status === 'FREE' && (
-                                <button 
-                                    onClick={() => {
-                                        alert('Заявка отправлена!');
-                                        setBookingUnit(null);
-                                    }}
-                                    className="flex-1 py-3 bg-brand-black text-white rounded-xl font-bold shadow-lg active:scale-95 transition-transform"
-                                >
-                                    Забронировать
-                                </button>
+                                <button onClick={() => { alert('Заявка отправлена!'); setBookingUnit(null); }} className="flex-1 py-3 bg-brand-black text-white rounded-xl font-bold shadow-lg">Забронировать</button>
                             )}
                         </div>
                     </div>

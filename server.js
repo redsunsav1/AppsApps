@@ -29,14 +29,10 @@ const initDb = async () => {
     await client.connect();
     console.log('✅ Connected to Database');
 
-    // 1. Таблицы
+    // Таблицы
     await client.query(`CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, telegram_id BIGINT UNIQUE NOT NULL, username TEXT, first_name TEXT, balance INT DEFAULT 0, phone TEXT, company TEXT, is_registered BOOLEAN DEFAULT FALSE, is_admin BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
     await client.query(`CREATE TABLE IF NOT EXISTS news (id SERIAL PRIMARY KEY, title TEXT NOT NULL, text TEXT NOT NULL, image_url TEXT, project_name TEXT, progress INT DEFAULT 0, checklist JSONB, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
-    
-    // Проекты + feed_url
     await client.query(`CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, floors INT DEFAULT 1, units_per_floor INT DEFAULT 4, image_url TEXT, feed_url TEXT);`);
-    
-    // Квартиры
     await client.query(`CREATE TABLE IF NOT EXISTS units (id TEXT PRIMARY KEY, project_id TEXT, floor INT, number TEXT, rooms INT, area NUMERIC, price NUMERIC, status TEXT, plan_image_url TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
 
     // Миграции
@@ -47,29 +43,18 @@ const initDb = async () => {
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;');
     await client.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS feed_url TEXT;');
 
-    // Авто-создание демо-проектов
+    // Демо-проекты
     const projCheck = await client.query('SELECT count(*) FROM projects');
     if (parseInt(projCheck.rows[0].count) === 0) {
-        console.log('⚡ Inserting Demo Projects...');
-        await client.query(`
-            INSERT INTO projects (id, name, floors, units_per_floor, image_url) VALUES
-            ('brk', 'ЖК Бруклин', 12, 6, 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00'),
-            ('mnht', 'ЖК Манхэттен', 24, 8, 'https://images.unsplash.com/photo-1464938050520-ef2270bb8ce8'),
-            ('bbyk', 'ЖК Бабайка', 9, 4, 'https://images.unsplash.com/photo-1460317442991-0ec209397118'),
-            ('chr', 'ЖК Харизма', 16, 5, 'https://images.unsplash.com/photo-1493809842364-78817add7ffb')
-        `);
+        await client.query(`INSERT INTO projects (id, name, floors, units_per_floor, image_url) VALUES ('brk', 'ЖК Бруклин', 12, 6, 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00') ON CONFLICT DO NOTHING`);
     }
-    console.log('✅ Database ready');
-  } catch (err) {
-    console.error('❌ DB Error:', err);
-  }
+  } catch (err) { console.error('❌ DB Error:', err); }
 };
-
 initDb();
 
-// --- УМНАЯ СИНХРОНИЗАЦИЯ ---
+// --- УМНЫЙ ПАРСЕР (Специально под твой XML) ---
 async function syncProjectWithXml(projectId, url) {
-    console.log(`🔄 Syncing ${projectId}...`);
+    console.log(`🔄 Syncing project ${projectId} from ${url}...`);
     const response = await fetch(url);
     if (!response.ok) throw new Error('Failed to fetch XML');
     const xmlText = await response.text();
@@ -78,57 +63,85 @@ async function syncProjectWithXml(projectId, url) {
     const result = await parser.parseStringPromise(xmlText);
     const offers = result?.['realty-feed']?.offer || [];
     
-    console.log(`📦 Cleaning old units for ${projectId}...`);
-    // 1. УДАЛЯЕМ СТАРЫЕ КВАРТИРЫ
+    console.log(`📦 Offers found: ${offers.length}. Cleaning old data...`);
+
+    // 1. ОЧИЩАЕМ СТАРЫЕ ДАННЫЕ (Чтобы не было дублей)
     await client.query('DELETE FROM units WHERE project_id = $1', [projectId]);
 
     let count = 0;
     let maxFloor = 1;
-    const floorCounts = {};
+    const floorCounts = {}; 
 
     for (const offer of offers) {
+        // Этаж
         const floor = parseInt(offer.floor?.[0] || '1');
-        if (floor < 1) continue; // Фильтр: убираем этаж 0 и -1
+        if (floor < 1) continue; // Пропускаем подвал
 
-        const unitId = offer.$?.['internal-id'] || offer['internal-id']?.[0] || `auto-${Math.random()}`;
+        // ID и Цена
+        const unitId = offer.$?.['internal-id'] || `auto-${Math.random()}`;
         const price = parseFloat(offer.price?.[0]?.value?.[0] || '0');
         
+        // Считаем этажность
         if (floor > maxFloor) maxFloor = floor;
         if (!floorCounts[floor]) floorCounts[floor] = 0;
         floorCounts[floor]++;
 
-        const roomsRaw = (offer.rooms?.[0] || offer['room-count']?.[0] || '1').toString();
-        const rooms = parseInt(roomsRaw.replace(/\D/g, '') || '1'); 
+        // Данные квартиры
+        const rooms = parseInt(offer.rooms?.[0] || '1'); 
         const area = parseFloat(offer.area?.[0]?.value?.[0] || '0');
+        
+        // Номер квартиры (ВАЖНО: берем flat-number)
         const number = offer['flat-number']?.[0] || offer.apartment?.[0] || '0';
-        const planUrl = offer['planning-image']?.[0] || offer.image?.[0] || '';
+        
+        // Планировка (ищем тег image с атрибутом tag="plan" или просто первое фото)
+        let planUrl = '';
+        if (offer.image) {
+            const planImg = offer.image.find(img => img.$ && img.$.tag === 'plan');
+            planUrl = planImg ? planImg._ : offer.image[0];
+            if (typeof planUrl !== 'string') planUrl = ''; // защита
+        }
 
-        // Статусы (Profitbase)
+        // --- СТАТУСЫ (СУПЕР-ПАРСЕР) ---
         let statusRaw = ''; 
-        if (offer['deal-status']) statusRaw += offer['deal-status'][0];
-        if (offer['sales-status']) statusRaw += ' ' + offer['sales-status'][0];
+        if (offer['deal-status']) statusRaw = offer['deal-status'][0];
         const s = statusRaw.toLowerCase();
         
         let status = 'FREE';
-        if (s.includes('sold') || s.includes('продано') || s.includes('busy') || s.includes('rent')) status = 'SOLD';
-        else if (s.includes('book') || s.includes('reserv') || s.includes('бронь')) status = 'BOOKED';
-        else if (price < 100) status = 'SOLD'; 
-        else status = 'FREE';
+
+        // 1. БРОНЬ (ищем слова бронь, резерв)
+        if (s.includes('book') || s.includes('reserv') || s.includes('бронь') || s.includes('резерв')) {
+            status = 'BOOKED';
+        } 
+        // 2. ПРОДАНО (ищем sold, продано)
+        else if (s.includes('sold') || s.includes('продано')) {
+            status = 'SOLD';
+        }
+        // 3. СВОБОДНО (обычно "продажа от застройщика")
+        else {
+            status = 'FREE';
+        }
+        
+        // Если цены нет — считаем продано (на всякий случай)
+        if (price < 100 && status === 'FREE') status = 'SOLD';
 
         await client.query(`
             INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         `, [unitId, projectId, floor, number, rooms, area, price, status, planUrl]);
+        
         count++;
     }
     
-    // Обновляем этажность и ширину
+    // Обновляем проект (ширина = макс кол-во квартир на этаже)
     const maxUnitsOnFloor = Math.max(...Object.values(floorCounts), 4);
+    console.log(`Project updated: ${maxFloor} floors, ${maxUnitsOnFloor} wide`);
+    
     await client.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3 WHERE id = $4', [maxFloor, maxUnitsOnFloor, url, projectId]);
     
     return count;
 }
 
+// CRON
 cron.schedule('0 10 * * *', async () => {
     try {
         const res = await client.query('SELECT id, feed_url FROM projects WHERE feed_url IS NOT NULL');
@@ -138,7 +151,7 @@ cron.schedule('0 10 * * *', async () => {
     } catch (e) { console.error('Cron Error:', e); }
 });
 
-// --- API ---
+// API
 async function isAdmin(initData) {
   if (!initData) return false;
   try {
@@ -215,7 +228,7 @@ app.post('/api/generate-demo/:projectId', async (req, res) => {
     res.json({ success: true });
 });
 
-// Ручной запуск
+// Ручной запуск с обновленным парсером
 app.post('/api/sync-xml-url', async (req, res) => {
   const { url, projectId } = req.body;
   if (!url || !projectId) return res.status(400).json({ error: 'No URL or ProjectID' });
@@ -223,6 +236,7 @@ app.post('/api/sync-xml-url', async (req, res) => {
     const count = await syncProjectWithXml(projectId, url);
     res.json({ success: true, count });
   } catch (e) {
+    console.error(e);
     res.status(500).json({ error: 'Sync failed: ' + e.message });
   }
 });

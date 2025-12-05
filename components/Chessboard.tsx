@@ -13,7 +13,6 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
     const [loading, setLoading] = useState(false);
     const [bookingUnit, setBookingUnit] = useState<ChessUnit | null>(null);
 
-    // 1. Грузим список проектов
     useEffect(() => {
         fetch('/api/projects')
             .then(res => res.json())
@@ -22,14 +21,13 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                     id: p.id,
                     name: p.name,
                     floors: p.floors,
-                    unitsPerFloor: p.units_per_floor || 8, 
+                    unitsPerFloor: p.units_per_floor || 8,
                     image: p.image_url || 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00'
                 }));
                 setProjects(mapped);
             });
     }, []);
 
-    // 2. Грузим квартиры при выборе
     const handleProjectSelect = (p: ProjectData) => {
         setSelectedProject(p);
         setLoading(true);
@@ -43,8 +41,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
         return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(price);
     };
 
-    // ВЫЧИСЛЕНИЕ СЕТКИ (чтобы не съезжало)
-    // Используем unitsPerFloor, который посчитал сервер, или пересчитываем локально
+    // Динамическая сетка
     const getActualUnitsPerFloor = () => {
         if (units.length === 0) return 4;
         const counts: Record<number, number> = {};
@@ -52,13 +49,11 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
         return Math.max(...Object.values(counts));
     };
 
-    // Ширина сетки: берем максимум из того, что сказал сервер, и того, что насчитали
     const gridCols = selectedProject ? Math.max(selectedProject.unitsPerFloor, getActualUnitsPerFloor()) : 4;
 
     return (
         <div className="fixed inset-0 z-50 flex flex-col bg-brand-cream animate-fade-in text-brand-black">
             
-            {/* ШАПКА */}
             <div className="px-6 pt-8 pb-4 flex justify-between items-center bg-brand-white border-b border-brand-light">
                 {selectedProject ? (
                     <button onClick={() => setSelectedProject(null)} className="flex items-center gap-2 text-brand-black font-bold hover:text-brand-gold transition-colors">
@@ -74,7 +69,6 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
 
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
                 {!selectedProject ? (
-                    // СПИСОК ПРОЕКТОВ
                     <div className="grid grid-cols-1 gap-4">
                         {projects.map(p => (
                             <div key={p.id} onClick={() => handleProjectSelect(p)} className="bg-brand-white rounded-2xl p-2 flex gap-4 items-center border border-transparent hover:border-brand-gold transition-all cursor-pointer active:scale-[0.98]">
@@ -87,7 +81,6 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                         ))}
                     </div>
                 ) : (
-                    // ШАХМАТКА
                     <div className="animate-slide-up pb-20">
                          {loading ? (
                              <div className="flex justify-center mt-20"><Loader2 className="animate-spin text-brand-gold" /></div>
@@ -99,17 +92,13 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                                     <div className="flex items-center gap-1"><div className="w-3 h-3 bg-brand-light rounded-sm opacity-50"></div> Продано</div>
                                 </div>
 
-                                <div className="space-y-1">
-                                    {/* ОТРИСОВКА ЭТАЖЕЙ */}
+                                <div className="space-y-1 min-w-max px-2">
                                     {Array.from({length: selectedProject.floors}).map((_, i) => {
                                         const floorNum = selectedProject.floors - i;
-                                        
-                                        // СКРЫВАЕМ 1 ЭТАЖ (как просил)
-                                        if (floorNum < 2) return null;
+                                        if (floorNum < 2) return null; // Скрываем 1 этаж
 
                                         const floorUnits = units.filter(u => u.floor === floorNum);
                                         
-                                        // Сортировка по номеру (слева направо)
                                         floorUnits.sort((a, b) => {
                                             const numA = parseInt(a.number.replace(/\D/g, '')) || 0;
                                             const numB = parseInt(b.number.replace(/\D/g, '')) || 0;
@@ -118,16 +107,15 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
 
                                         return (
                                             <div key={floorNum} className="flex gap-2 items-center">
-                                                <div className="w-6 text-xs font-bold text-brand-grey text-center">{floorNum}</div>
+                                                <div className="w-6 text-xs font-bold text-brand-grey text-center sticky left-0 bg-brand-cream z-10">{floorNum}</div>
                                                 
-                                                {/* ЖЕСТКАЯ СЕТКА */}
-                                                <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }}>
+                                                <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(40px, 1fr))` }}>
                                                     {floorUnits.map(unit => (
                                                         <div 
                                                             key={unit.id}
                                                             onClick={() => setBookingUnit(unit)}
                                                             className={`
-                                                                h-10 rounded-md flex flex-col items-center justify-center border text-[9px] transition-all cursor-pointer
+                                                                h-10 w-12 rounded-md flex flex-col items-center justify-center border text-[9px] transition-all cursor-pointer
                                                                 ${unit.status === 'FREE' ? 'bg-white border-brand-light hover:border-brand-gold hover:bg-brand-cream shadow-sm' : ''}
                                                                 ${unit.status === 'BOOKED' ? 'bg-brand-cream border-brand-gold/30 text-brand-gold' : ''}
                                                                 ${unit.status === 'SOLD' ? 'bg-brand-light border-transparent text-white opacity-40 cursor-default' : ''}
@@ -137,9 +125,8 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                                                             {unit.status === 'FREE' && <span>{unit.area}</span>}
                                                         </div>
                                                     ))}
-                                                    {/* Заполнители пустоты */}
                                                     {Array.from({length: Math.max(0, gridCols - floorUnits.length)}).map((_, idx) => (
-                                                        <div key={`empty-${idx}`} className="h-10 bg-transparent border border-transparent opacity-20" />
+                                                        <div key={`empty-${idx}`} className="h-10 w-12 bg-gray-200/30 rounded-md border border-transparent" />
                                                     ))}
                                                 </div>
                                             </div>
@@ -152,7 +139,6 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                 )}
             </div>
 
-            {/* --- ОКНО БРОНИРОВАНИЯ --- */}
             {bookingUnit && (
                 <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in p-4">
                     <div className="absolute inset-0" onClick={() => setBookingUnit(null)} />

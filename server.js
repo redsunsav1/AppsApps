@@ -49,66 +49,78 @@ const initDb = async () => {
 };
 initDb();
 
-// --- ПАРСЕР С ГЛУБОКОЙ ОТЛАДКОЙ ---
+// --- УМНАЯ СИНХРОНИЗАЦИЯ (С ГЕНЕРАЦИЕЙ НОМЕРОВ) ---
 async function syncProjectWithXml(projectId, url) {
-    console.log(`🔄 Syncing ${projectId}...`);
+    console.log(`🔄 START SYNC: ${projectId}`);
     const response = await fetch(url);
     if (!response.ok) throw new Error('Failed to fetch XML');
     const xmlText = await response.text();
 
     const parser = new xml2js.Parser();
     const result = await parser.parseStringPromise(xmlText);
-    const offers = result?.['realty-feed']?.offer || [];
+    const rawOffers = result?.['realty-feed']?.offer || [];
     
-    console.log(`📦 Offers found: ${offers.length}`);
-
-    // УДАЛЯЕМ СТАРЫЕ КВАРТИРЫ
+    console.log(`📦 Raw offers: ${rawOffers.length}. Processing...`);
     await client.query('DELETE FROM units WHERE project_id = $1', [projectId]);
 
-    let count = 0;
-    let maxFloor = 1;
-    const floorCounts = {};
+    // 1. ПРЕДОБРАБОТКА: Фильтруем и Сортируем
+    // Нам нужно выстроить их в цепочку: 2 этаж (кв 1-8), 3 этаж (кв 9-16)...
+    const cleanOffers = [];
 
-    // --- DEBUG: ВЫВОДИМ СТРУКТУРУ ПЕРВОЙ КВАРТИРЫ В ЛОГ ---
-    if (offers.length > 0) {
-        console.log('🔍 DEBUG FIRST OFFER KEYS:', Object.keys(offers[0]));
-        console.log('🔍 DEBUG FIRST OFFER DATA:', JSON.stringify(offers[0]).substring(0, 500));
-    }
-
-    for (const offer of offers) {
+    for (const offer of rawOffers) {
         const floor = parseInt(offer.floor?.[0] || '1');
-        if (floor < 1) continue; 
-
-        const unitId = offer.$?.['internal-id'] || offer['internal-id']?.[0] || `auto-${Math.random()}`;
-        const price = parseFloat(offer.price?.[0]?.value?.[0] || '0');
+        // Игнорируем 1 этаж (кладовки)
+        if (floor < 2) continue;
         
-        if (floor > maxFloor) maxFloor = floor;
-        if (!floorCounts[floor]) floorCounts[floor] = 0;
-        floorCounts[floor]++;
-
-        const roomsRaw = (offer.rooms?.[0] || offer['room-count']?.[0] || '1').toString();
-        const rooms = parseInt(roomsRaw.replace(/\D/g, '') || '1'); 
+        // Достаем площадь для вторичной сортировки (обычно на этаже квартиры идут по возрастанию площади или комнат)
         const area = parseFloat(offer.area?.[0]?.value?.[0] || '0');
         
-        // --- ПОИСК НОМЕРА КВАРТИРЫ (Перебор вариантов) ---
-        let number = '0';
-        if (offer['flat-number']) number = offer['flat-number'][0];
-        else if (offer['apartment']) number = offer['apartment'][0];
-        else if (offer['number']) number = offer['number'][0];
-        else if (offer['unit-number']) number = offer['unit-number'][0];
+        cleanOffers.push({
+            data: offer,
+            floor: floor,
+            area: area
+        });
+    }
+
+    // Сортируем: Сначала по Этажу (2->19), потом по Площади (меньше->больше) - это попытка угадать порядок "слева направо"
+    cleanOffers.sort((a, b) => {
+        if (a.floor === b.floor) {
+            return a.area - b.area; 
+        }
+        return a.floor - b.floor;
+    });
+
+    // 2. ЗАПИСЬ В БАЗУ С НОВЫМИ НОМЕРАМИ
+    let globalCounter = 1; // Начинаем нумерацию с 1
+    let maxFloor = 1;
+
+    for (const item of cleanOffers) {
+        const offer = item.data;
+        const floor = item.floor;
+        
+        if (floor > maxFloor) maxFloor = floor;
+
+        const unitId = offer.$?.['internal-id'] || `auto-${Math.random()}`;
+        const price = parseFloat(offer.price?.[0]?.value?.[0] || '0');
+        const roomsRaw = (offer.rooms?.[0] || offer['room-count']?.[0] || '1').toString();
+        const rooms = parseInt(roomsRaw.replace(/\D/g, '') || '1'); 
+        const area = item.area;
+        
+        // !!! ГЕНЕРИРУЕМ НОМЕР !!!
+        const number = globalCounter.toString();
         
         const planUrl = offer['planning-image']?.[0] || offer.image?.[0] || '';
 
-        // --- ПОИСК СТАТУСА ---
-        let rawStatus = ''; 
-        if (offer['deal-status']) rawStatus += JSON.stringify(offer['deal-status']);
-        if (offer['sales-status']) rawStatus += JSON.stringify(offer['sales-status']);
-        if (offer.description) rawStatus += JSON.stringify(offer.description); // Ищем в описании
+        // --- СТАТУСЫ ---
+        let rawInfo = '';
+        if (offer['deal-status']) rawInfo += JSON.stringify(offer['deal-status']);
+        if (offer['sales-status']) rawInfo += JSON.stringify(offer['sales-status']);
+        if (offer.description) rawInfo += JSON.stringify(offer.description);
 
-        const s = rawStatus.toLowerCase();
+        const s = rawInfo.toLowerCase();
         let status = 'FREE';
 
-        if (s.includes('sold') || s.includes('продано') || s.includes('продан') || price < 100) {
+        if (s.includes('sold') || s.includes('продано') || s.includes('busy') || s.includes('rent') || price < 100) {
             status = 'SOLD';
         } else if (s.includes('book') || s.includes('reserv') || s.includes('бронь') || s.includes('забронирован')) {
             status = 'BOOKED';
@@ -116,24 +128,22 @@ async function syncProjectWithXml(projectId, url) {
             status = 'FREE';
         }
 
-        // Логируем странные нули
-        if (number === '0' && count < 5) {
-            console.log(`⚠️ Warning: Flat number not found for unit ${unitId}`);
-        }
-
         await client.query(`
             INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         `, [unitId, projectId, floor, number, rooms, area, price, status, planUrl]);
-        count++;
+        
+        globalCounter++;
     }
     
-    const maxUnitsOnFloor = Math.max(...Object.values(floorCounts), 4);
-    console.log(`✅ Synced. MaxFloor: ${maxFloor}, MaxWidth: ${maxUnitsOnFloor}`);
+    // Обновляем проект: Ставим 8 квартир на этаж (как ты сказал)
+    const unitsPerFloor = 8; 
     
-    await client.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3 WHERE id = $4', [maxFloor, maxUnitsOnFloor, url, projectId]);
+    console.log(`✅ Synced ${globalCounter - 1} units. Floors: 2-${maxFloor}.`);
+
+    await client.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3 WHERE id = $4', [maxFloor, unitsPerFloor, url, projectId]);
     
-    return { count, debug: ['Check logs'] };
+    return globalCounter - 1;
 }
 
 cron.schedule('0 10 * * *', async () => {
@@ -145,7 +155,7 @@ cron.schedule('0 10 * * *', async () => {
     } catch (e) { console.error('Cron Error:', e); }
 });
 
-// API
+// API (стандарт)
 async function isAdmin(initData) {
   if (!initData) return false;
   try {
@@ -210,12 +220,13 @@ app.get('/api/units/:projectId', async (req, res) => {
   res.json(result.rows);
 });
 app.post('/api/generate-demo/:projectId', async (req, res) => { res.json({ success: true }); });
+
 app.post('/api/sync-xml-url', async (req, res) => {
   const { url, projectId } = req.body;
   if (!url || !projectId) return res.status(400).json({ error: 'No URL or ProjectID' });
   try {
-    const result = await syncProjectWithXml(projectId, url);
-    res.json({ success: true, count: result.count, debug: result.debug });
+    const count = await syncProjectWithXml(projectId, url);
+    res.json({ success: true, count });
   } catch (e) {
     res.status(500).json({ error: 'Sync failed: ' + e.message });
   }

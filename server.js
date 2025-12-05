@@ -35,7 +35,7 @@ const initDb = async () => {
     await client.query(`CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, floors INT DEFAULT 1, units_per_floor INT DEFAULT 4, image_url TEXT, feed_url TEXT);`);
     await client.query(`CREATE TABLE IF NOT EXISTS units (id TEXT PRIMARY KEY, project_id TEXT, floor INT, number TEXT, rooms INT, area NUMERIC, price NUMERIC, status TEXT, plan_image_url TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`);
 
-    // Миграции
+    // 2. Миграции
     await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS project_name TEXT;');
     await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS progress INT DEFAULT 0;');
     await client.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS checklist JSONB;');
@@ -43,17 +43,19 @@ const initDb = async () => {
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;');
     await client.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS feed_url TEXT;');
 
+    // 3. Демо-данные (если пусто)
     const projCheck = await client.query('SELECT count(*) FROM projects');
     if (parseInt(projCheck.rows[0].count) === 0) {
         await client.query(`INSERT INTO projects (id, name, floors, units_per_floor, image_url) VALUES ('brk', 'ЖК Бруклин', 12, 6, 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00') ON CONFLICT DO NOTHING`);
     }
   } catch (err) { console.error('❌ DB Error:', err); }
 };
+
 initDb();
 
 // --- УМНАЯ СИНХРОНИЗАЦИЯ ---
 async function syncProjectWithXml(projectId, url) {
-    console.log(`🔄 Syncing project ${projectId} from ${url}...`);
+    console.log(`🔄 Syncing ${projectId} from ${url}...`);
     const response = await fetch(url);
     if (!response.ok) throw new Error('Failed to fetch XML');
     const xmlText = await response.text();
@@ -64,16 +66,16 @@ async function syncProjectWithXml(projectId, url) {
     
     console.log(`📦 Offers found: ${offers.length}. Cleaning old data...`);
 
-    // 1. ОЧИСТКА СТАРЫХ ДАННЫХ (Чтобы не было дублей и каши)
+    // Удаляем старые данные перед загрузкой
     await client.query('DELETE FROM units WHERE project_id = $1', [projectId]);
 
     let count = 0;
     let maxFloor = 1;
-    const floorCounts = {}; // Считаем квартиры на этажах
+    const floorCounts = {}; 
 
     for (const offer of offers) {
         const floor = parseInt(offer.floor?.[0] || '1');
-        if (floor < 1) continue; // Пропускаем подвал
+        if (floor < 1) continue; // Фильтр подвалов
 
         const unitId = offer.$?.['internal-id'] || offer['internal-id']?.[0] || `auto-${Math.random()}`;
         const price = parseFloat(offer.price?.[0]?.value?.[0] || '0');
@@ -88,17 +90,35 @@ async function syncProjectWithXml(projectId, url) {
         const number = offer['flat-number']?.[0] || offer.apartment?.[0] || '0';
         const planUrl = offer['planning-image']?.[0] || offer.image?.[0] || '';
 
-        // --- СТАТУСЫ ---
-        let statusRaw = ''; 
-        if (offer['deal-status']) statusRaw += offer['deal-status'][0];
-        if (offer['sales-status']) statusRaw += ' ' + offer['sales-status'][0];
-        const s = statusRaw.toLowerCase();
+        // --- СУПЕР-ПРОВЕРКА СТАТУСА ---
+        // Собираем строку из всех возможных полей
+        let rawStatus = '';
         
+        // 1. Текст внутри deal-status
+        if (offer['deal-status']) rawStatus += JSON.stringify(offer['deal-status']);
+        // 2. Атрибуты deal-status (часто статус "sold" лежит тут: <deal-status value="sold"/>)
+        if (offer['deal-status']?.[0]?.$) rawStatus += JSON.stringify(offer['deal-status'][0].$);
+        // 3. sales-status
+        if (offer['sales-status']) rawStatus += JSON.stringify(offer['sales-status']);
+
+        const s = rawStatus.toLowerCase();
         let status = 'FREE';
-        if (s.includes('sold') || s.includes('продано') || s.includes('busy') || s.includes('rent')) status = 'SOLD';
-        else if (s.includes('book') || s.includes('reserv') || s.includes('бронь')) status = 'BOOKED';
-        else if (price < 100) status = 'SOLD'; // Нет цены = продано
-        else status = 'FREE';
+
+        if (s.includes('sold') || s.includes('продано') || s.includes('busy') || s.includes('rent')) {
+            status = 'SOLD';
+        } else if (s.includes('book') || s.includes('reserv') || s.includes('бронь')) {
+            status = 'BOOKED';
+        } else if (price < 100) {
+            // Если цены нет - считаем продано
+            status = 'SOLD';
+        } else {
+            status = 'FREE';
+        }
+        
+        // Логируем первые 3 квартиры для проверки
+        if (count < 3) {
+             console.log(`Unit ${number}: Raw="${s}" => Status=${status}`);
+        }
 
         await client.query(`
             INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url)
@@ -107,7 +127,7 @@ async function syncProjectWithXml(projectId, url) {
         count++;
     }
     
-    // Обновляем настройки проекта (этажи и ширину)
+    // Обновляем проект (ширина = макс кол-во квартир на этаже)
     const maxUnitsOnFloor = Math.max(...Object.values(floorCounts), 4);
     await client.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3 WHERE id = $4', [maxFloor, maxUnitsOnFloor, url, projectId]);
     
@@ -200,7 +220,6 @@ app.post('/api/generate-demo/:projectId', async (req, res) => {
     res.json({ success: true });
 });
 
-// Ручной запуск
 app.post('/api/sync-xml-url', async (req, res) => {
   const { url, projectId } = req.body;
   if (!url || !projectId) return res.status(400).json({ error: 'No URL or ProjectID' });
@@ -214,14 +233,4 @@ app.post('/api/sync-xml-url', async (req, res) => {
 
 app.get('/api/make-admin', async (req, res) => {
   const { id, secret } = req.query;
-  if (secret !== '12345') return res.send('Wrong secret');
-  await client.query('UPDATE users SET is_admin = TRUE WHERE telegram_id = $1', [id]);
-  res.send(`User ${id} is now admin!`);
-});
-
-app.get(/.*/, (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-});
-
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+  if (secret !== '1

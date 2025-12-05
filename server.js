@@ -172,6 +172,8 @@ app.post('/api/sync-xml-url', async (req, res) => {
 
     let count = 0;
     let maxFloor = 1; // Следим за этажностью
+    let maxUnitsOnFloor = 0;
+    const floorCounts = {}; // Для подсчета квартир на этаже
 
     for (const offer of offers) {
         // Данные
@@ -181,6 +183,11 @@ app.post('/api/sync-xml-url', async (req, res) => {
         
         // Обновляем макс. этаж для проекта
         if (floor > maxFloor) maxFloor = floor;
+
+        // Считаем сколько квартир на этаже (чтобы шахматка не ехала)
+        if (!floorCounts[floor]) floorCounts[floor] = 0;
+        floorCounts[floor]++;
+        if (floorCounts[floor] > maxUnitsOnFloor) maxUnitsOnFloor = floorCounts[floor];
 
         // Комнаты
         let rooms = 1;
@@ -196,17 +203,17 @@ app.post('/api/sync-xml-url', async (req, res) => {
         const planUrl = offer['planning-image']?.[0] || offer.image?.[0] || '';
 
         // Статус (Profitbase)
-        // sale, primary-sale = FREE
-        // booked, reserved = BOOKED
-        // sold = SOLD
+        // Логика: если есть deal-status и он 'sold' или 'booked'
         let statusRaw = 'unknown'; 
         if (offer['deal-status']) statusRaw = offer['deal-status'][0];
         
         let status = 'FREE';
         const s = statusRaw.toLowerCase();
-        if (s === 'booked' || s === 'reserved' || s === 'rent') status = 'BOOKED';
-        else if (s === 'sold') status = 'SOLD';
-        else status = 'FREE'; // sale, primary-sale и т.д.
+        
+        // Расширенная проверка статусов
+        if (s.includes('booked') || s.includes('reserved') || s.includes('rent') || s.includes('бронь')) status = 'BOOKED';
+        else if (s.includes('sold') || s.includes('продано') || s.includes('busy')) status = 'SOLD';
+        else status = 'FREE'; 
 
         // 3. Запись в базу
         await client.query(`
@@ -219,10 +226,11 @@ app.post('/api/sync-xml-url', async (req, res) => {
         count++;
     }
 
-    // 4. ОБНОВЛЯЕМ ЭТАЖНОСТЬ ПРОЕКТА
-    // Чтобы шахматка знала, сколько рисовать этажей
+    // 4. ОБНОВЛЯЕМ ЭТАЖНОСТЬ И ШИРИНУ ПРОЕКТА
+    const unitsWidth = maxUnitsOnFloor > 0 ? maxUnitsOnFloor : 8;
+    
     if (maxFloor > 1) {
-        await client.query('UPDATE projects SET floors = $1, feed_url = $2 WHERE id = $3', [maxFloor, url, projectId]);
+        await client.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3 WHERE id = $4', [maxFloor, unitsWidth, url, projectId]);
     } else {
         await client.query('UPDATE projects SET feed_url = $1 WHERE id = $2', [url, projectId]);
     }

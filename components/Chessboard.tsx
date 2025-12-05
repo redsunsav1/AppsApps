@@ -21,7 +21,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                     id: p.id,
                     name: p.name,
                     floors: p.floors,
-                    unitsPerFloor: p.units_per_floor || 8,
+                    unitsPerFloor: p.units_per_floor || 8, 
                     image: p.image_url || 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00'
                 }));
                 setProjects(mapped);
@@ -41,19 +41,8 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
         return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(price);
     };
 
-    // Динамическая сетка
-    const getActualUnitsPerFloor = () => {
-        if (units.length === 0) return 4;
-        const counts: Record<number, number> = {};
-        units.forEach(u => { counts[u.floor] = (counts[u.floor] || 0) + 1; });
-        return Math.max(...Object.values(counts));
-    };
-
-    const gridCols = selectedProject ? Math.max(selectedProject.unitsPerFloor, getActualUnitsPerFloor()) : 4;
-
     return (
         <div className="fixed inset-0 z-50 flex flex-col bg-brand-cream animate-fade-in text-brand-black">
-            
             <div className="px-6 pt-8 pb-4 flex justify-between items-center bg-brand-white border-b border-brand-light">
                 {selectedProject ? (
                     <button onClick={() => setSelectedProject(null)} className="flex items-center gap-2 text-brand-black font-bold hover:text-brand-gold transition-colors">
@@ -92,46 +81,60 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                                     <div className="flex items-center gap-1"><div className="w-3 h-3 bg-brand-light rounded-sm opacity-50"></div> Продано</div>
                                 </div>
 
-                                <div className="space-y-1 min-w-max px-2">
-                                    {Array.from({length: selectedProject.floors}).map((_, i) => {
-                                        const floorNum = selectedProject.floors - i;
-                                        if (floorNum < 2) return null; // Скрываем 1 этаж
+                                {/* КОНТЕЙНЕР С ПРОКРУТКОЙ */}
+                                <div className="overflow-x-auto pb-4">
+                                    <div className="space-y-1 min-w-max px-2">
+                                        {Array.from({length: selectedProject.floors}).map((_, i) => {
+                                            const floorNum = selectedProject.floors - i;
+                                            if (floorNum < 2) return null; // Скрываем 1 этаж
 
-                                        const floorUnits = units.filter(u => u.floor === floorNum);
-                                        
-                                        floorUnits.sort((a, b) => {
-                                            const numA = parseInt(a.number.replace(/\D/g, '')) || 0;
-                                            const numB = parseInt(b.number.replace(/\D/g, '')) || 0;
-                                            return numA - numB;
-                                        });
+                                            // Берем квартиры только этого этажа
+                                            const floorUnits = units.filter(u => u.floor === floorNum);
+                                            
+                                            // Сортируем по номеру
+                                            floorUnits.sort((a, b) => {
+                                                const numA = parseInt(a.number.replace(/\D/g, '')) || 0;
+                                                const numB = parseInt(b.number.replace(/\D/g, '')) || 0;
+                                                return numA - numB;
+                                            });
 
-                                        return (
-                                            <div key={floorNum} className="flex gap-2 items-center">
-                                                <div className="w-6 text-xs font-bold text-brand-grey text-center sticky left-0 bg-brand-cream z-10">{floorNum}</div>
-                                                
-                                                <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(40px, 1fr))` }}>
-                                                    {floorUnits.map(unit => (
-                                                        <div 
-                                                            key={unit.id}
-                                                            onClick={() => setBookingUnit(unit)}
-                                                            className={`
-                                                                h-10 w-12 rounded-md flex flex-col items-center justify-center border text-[9px] transition-all cursor-pointer
-                                                                ${unit.status === 'FREE' ? 'bg-white border-brand-light hover:border-brand-gold hover:bg-brand-cream shadow-sm' : ''}
-                                                                ${unit.status === 'BOOKED' ? 'bg-brand-cream border-brand-gold/30 text-brand-gold' : ''}
-                                                                ${unit.status === 'SOLD' ? 'bg-brand-light border-transparent text-white opacity-40 cursor-default' : ''}
-                                                            `}
-                                                        >
-                                                            <span className="font-bold">{unit.rooms}к</span>
-                                                            {unit.status === 'FREE' && <span>{unit.area}</span>}
-                                                        </div>
-                                                    ))}
-                                                    {Array.from({length: Math.max(0, gridCols - floorUnits.length)}).map((_, idx) => (
-                                                        <div key={`empty-${idx}`} className="h-10 w-12 bg-gray-200/30 rounded-md border border-transparent" />
-                                                    ))}
+                                            return (
+                                                <div key={floorNum} className="flex gap-2 items-center">
+                                                    <div className="w-6 text-xs font-bold text-brand-grey text-center sticky left-0 bg-brand-cream z-10">{floorNum}</div>
+                                                    
+                                                    {/* ЖЕСТКАЯ СЕТКА ПО КОЛИЧЕСТВУ КВАРТИР В ПРОЕКТЕ */}
+                                                    <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${selectedProject.unitsPerFloor}, 45px)` }}>
+                                                        
+                                                        {/* Заполняем ячейки. Если квартир меньше чем ячеек - будут пустые в конце */}
+                                                        {Array.from({length: selectedProject.unitsPerFloor}).map((_, idx) => {
+                                                            const unit = floorUnits[idx]; // Берем квартиру по порядку
+
+                                                            if (!unit) {
+                                                                // Если квартиры нет (дырка) - рисуем пустой блок
+                                                                return <div key={`empty-${idx}`} className="h-10 rounded-md bg-transparent border border-dashed border-gray-300 opacity-30" />
+                                                            }
+
+                                                            return (
+                                                                <div 
+                                                                    key={unit.id}
+                                                                    onClick={() => setBookingUnit(unit)}
+                                                                    className={`
+                                                                        h-10 rounded-md flex flex-col items-center justify-center border text-[9px] transition-all cursor-pointer
+                                                                        ${unit.status === 'FREE' ? 'bg-white border-brand-light hover:border-brand-gold shadow-sm' : ''}
+                                                                        ${unit.status === 'BOOKED' ? 'bg-brand-cream border-brand-gold/30 text-brand-gold' : ''}
+                                                                        ${unit.status === 'SOLD' ? 'bg-gray-200 border-transparent text-gray-400 opacity-60' : ''}
+                                                                    `}
+                                                                >
+                                                                    <span className="font-bold">{unit.rooms}к</span>
+                                                                    {unit.status === 'FREE' && <span>{unit.area}</span>}
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
                                                 </div>
-                                            </div>
-                                        )
-                                    })}
+                                            )
+                                        })}
+                                    </div>
                                 </div>
                              </>
                          )}
@@ -139,6 +142,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                 )}
             </div>
 
+            {/* МОДАЛКА */}
             {bookingUnit && (
                 <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in p-4">
                     <div className="absolute inset-0" onClick={() => setBookingUnit(null)} />
@@ -146,7 +150,6 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                         <button onClick={() => setBookingUnit(null)} className="absolute top-4 right-4 text-gray-400 hover:text-black">
                             <X size={20} />
                         </button>
-
                         <div className="mb-4">
                             <div className={`inline-block px-3 py-1 rounded-full text-xs font-bold mb-2 
                                 ${bookingUnit.status === 'FREE' ? 'bg-green-100 text-green-700' : ''}
@@ -158,40 +161,20 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose }) => {
                             <h3 className="text-2xl font-bold text-brand-black">Кв. №{bookingUnit.number}</h3>
                             <p className="text-gray-500 text-sm">Этаж {bookingUnit.floor}</p>
                         </div>
-
                         <div className="space-y-3 mb-6">
                             <div className="flex justify-between border-b border-gray-100 pb-2">
                                 <span className="text-gray-500">Площадь</span>
                                 <span className="font-bold">{bookingUnit.area} м²</span>
-                            </div>
-                            <div className="flex justify-between border-b border-gray-100 pb-2">
-                                <span className="text-gray-500">Комнат</span>
-                                <span className="font-bold">{bookingUnit.rooms}</span>
                             </div>
                             <div className="flex justify-between items-center pt-2">
                                 <span className="text-gray-500">Цена</span>
                                 <span className="text-xl font-bold text-brand-gold">{formatPrice(bookingUnit.price)}</span>
                             </div>
                         </div>
-
                         <div className="flex gap-3">
-                            <button 
-                                onClick={() => setBookingUnit(null)}
-                                className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-bold active:scale-95 transition-transform"
-                            >
-                                Отмена
-                            </button>
-                            
+                            <button onClick={() => setBookingUnit(null)} className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-bold">Отмена</button>
                             {bookingUnit.status === 'FREE' && (
-                                <button 
-                                    onClick={() => {
-                                        alert('Заявка отправлена!');
-                                        setBookingUnit(null);
-                                    }}
-                                    className="flex-1 py-3 bg-brand-black text-white rounded-xl font-bold shadow-lg active:scale-95 transition-transform"
-                                >
-                                    Забронировать
-                                </button>
+                                <button onClick={() => { alert('Заявка отправлена!'); setBookingUnit(null); }} className="flex-1 py-3 bg-brand-black text-white rounded-xl font-bold shadow-lg">Забронировать</button>
                             )}
                         </div>
                     </div>

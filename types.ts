@@ -1,6 +1,6 @@
 export enum CurrencyType {
   SILVER = 'SILVER', // Regular coins (Daily tasks)
-  GOLD = 'GOLD',   // Premium coins (Sales only)
+  GOLD = 'GOLD',     // Premium coins (Sales only)
 }
 
 export interface UserProfile {
@@ -13,16 +13,18 @@ export interface UserProfile {
   silverCoins: number;
   goldCoins: number;
   dealsClosed: number;
-  // Contact Info for Business Card
+  // Contact Info
   phone: string;
-  company: string; // <--- ДОБАВИЛ ТОЛЬКО ЭТО (нужно для регистрации)
+  company: string; 
   telegram: string;
   whatsapp: string;
+  is_admin?: boolean; // <--- НУЖНО ДЛЯ АДМИНКИ
+  is_registered?: boolean; // <--- НУЖНО ДЛЯ ЛОГИКИ ВХОДА
 }
 
 export interface ProjectStat {
   id: string;
-  name: string; // "ЖК Бруклин"
+  name: string; 
   sales: number;
   totalUnits: number;
   color: string;
@@ -42,29 +44,29 @@ export interface ConstructionUpdate {
   id: string;
   title: string;
   projectName: string;
-  description: string; // Main text
-  checklist: string[]; // Bullet points for popup
+  description: string; 
+  checklist: string[]; 
   generatedText?: string;
-  images: string[]; // Array for carousel
+  images: string[]; 
   date: string;
   progress: number;
 }
 
+// Обновил под Базу Данных (было name/image, стало title/image_url)
 export interface ShopItem {
-  id: string | number;
-  name: string;
-  category?: 'TECH' | 'MERCH' | 'LUXURY' | 'EXPERIENCE';
+  id: number;
+  title: string;       // В базе это title
   price: number;
-  currency: CurrencyType; // Используем это для определения цены
-  image: string; // Тут эмодзи или ссылка
-  inStock?: boolean;
+  currency: CurrencyType;
+  image_url: string;   // В базе это image_url
+  is_active: boolean;  // В базе это поле есть
 }
 
 export interface LeaderboardEntry {
   id: string | number;
   name: string;
   deals: number;
-  company: string; // <--- ДОБАВИЛ, чтобы выводить "АН Этажи" в топе
+  company: string; // <--- ОСТАВИЛ ТВОЕ ПОЛЕ
   xp?: number;
   avatar?: string;
   trend?: 'up' | 'down' | 'neutral';
@@ -73,7 +75,7 @@ export interface LeaderboardEntry {
 export interface ChessUnit {
   id: string;
   number: string;
-  rooms: number; // 1, 2, 3, Studio (0)
+  rooms: number; 
   area: number;
   price: number;
   status: 'FREE' | 'BOOKED' | 'SOLD';
@@ -88,7 +90,7 @@ export interface ProjectData {
   image: string;
 }
 
-// Helper to calculate Rank based on deals
+// ТВОЯ ФУНКЦИЯ (ВЕРНУЛ)
 export const getRank = (deals: number): string => {
   if (deals >= 50) return 'Гуру Недвижимости';
   if (deals >= 35) return 'Мастер';

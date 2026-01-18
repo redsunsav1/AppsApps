@@ -1,17 +1,11 @@
 meta:
-  environment: node
+  environment: docker
   toolchain:
-    name: npm
-    version: 20.11.0
-
+    name: docker
 build:
-  requirements: package.json
-  execute: |
-    npm install
-    npm run build
-
+  dockerfile: Dockerfile
 run:
   persistence:
     - mountPath: /data
-  containerPort: 3000
-  command: npm start
+      hostPath: /data
+  containerPort: 8080

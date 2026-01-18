@@ -1,129 +1,158 @@
-import React, { useState } from 'react';
-import { Clock, ChevronRight, X, CheckCircle2, Building2, TrendingUp, Trash2, Pencil } from 'lucide-react';
-import WebApp from '@twa-dev/sdk';
 
-interface NewsFeedProps {
-  news: any[];
-  isAdmin: boolean;           // Новый проп: админ или нет
-  onEdit: (item: any) => void; // Функция: открыть редактирование
-  onRefresh: () => void;       // Функция: обновить список после удаления
+import React, { useState } from 'react';
+import { ConstructionUpdate } from '../types';
+import { Check, FolderOpen, Image as ImageIcon, X, ChevronLeft, ChevronRight } from 'lucide-react';
+
+interface ContentHubProps {
+  updates: ConstructionUpdate[];
+  onGenerate: (id: string) => void;
 }
 
-const NewsFeed: React.FC<NewsFeedProps> = ({ news, isAdmin, onEdit, onRefresh }) => {
-  const [selectedNews, setSelectedNews] = useState<any | null>(null);
-
-  // Функция удаления
-  const handleDelete = async (e: React.MouseEvent, id: number) => {
-    e.stopPropagation(); // Чтобы не открылась модалка новости
-    if (!window.confirm('Удалить новость?')) return;
-
-    try {
-      await fetch(`/api/news/${id}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData: WebApp.initData }) // Подтверждаем права
-      });
-      onRefresh(); // Обновляем список
-    } catch (error) {
-      alert('Ошибка удаления');
-    }
-  };
-
-  // Функция редактирования
-  const handleEdit = (e: React.MouseEvent, item: any) => {
-    e.stopPropagation();
-    onEdit(item); // Передаем наверх в App.tsx, чтобы открыть админку
-  };
+const ContentHub: React.FC<ContentHubProps> = ({ updates, onGenerate }) => {
+  const [selectedNews, setSelectedNews] = useState<ConstructionUpdate | null>(null);
 
   return (
-    <div className="pb-36 pt-6 px-4 space-y-5 animate-fade-in relative">
-      <h2 className="text-2xl font-extrabold text-[#433830] pl-2">Новости и События</h2>
-      
-      {news.length === 0 ? (
-        <div className="text-center text-gray-400 py-10">Пока новостей нет...</div>
-      ) : (
-        news.map(item => (
+    <div className="pb-36 animate-fade-in">
+      <header className="px-6 pt-8 pb-6">
+        <h2 className="text-2xl font-bold text-brand-black">Медиа-центр</h2>
+        <p className="text-brand-grey text-sm mt-1">Ход строительства и новости</p>
+      </header>
+
+      <div className="px-4 space-y-4">
+        {updates.map((item, idx) => (
           <div 
             key={item.id} 
             onClick={() => setSelectedNews(item)}
-            className="bg-white rounded-2xl shadow-sm overflow-hidden border border-[#EAE0D5] active:scale-[0.98] transition-transform cursor-pointer group relative"
+            className="bg-brand-white rounded-2xl overflow-hidden shadow-sm border border-brand-light active:scale-[0.99] transition-transform cursor-pointer"
+            style={{ animationDelay: `${idx * 100}ms` }}
           >
-            {/* --- КНОПКИ АДМИНА (Поверх картинки) --- */}
-            {isAdmin && (
-              <div className="absolute top-2 right-2 z-20 flex gap-2">
-                <button 
-                  onClick={(e) => handleEdit(e, item)}
-                  className="w-8 h-8 bg-blue-500 text-white rounded-full flex items-center justify-center shadow-lg active:scale-90"
-                >
-                  <Pencil size={14} />
-                </button>
-                <button 
-                  onClick={(e) => handleDelete(e, item.id)}
-                  className="w-8 h-8 bg-red-500 text-white rounded-full flex items-center justify-center shadow-lg active:scale-90"
-                >
-                  <Trash2 size={14} />
-                </button>
+            {/* Image Area */}
+            <div className="h-48 bg-brand-light relative overflow-hidden">
+              <img src={item.images[0]} alt={item.title} className="w-full h-full object-cover" />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent"></div>
+              <div className="absolute bottom-4 left-4">
+                <span className="text-white/90 text-xs font-medium uppercase tracking-wider">{item.projectName}</span>
+                <h3 className="text-lg font-bold text-white leading-tight">{item.title}</h3>
               </div>
-            )}
-
-            <div className="h-44 w-full overflow-hidden relative">
-              <img src={item.image_url || 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab'} alt="" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
-              
-              <div className="absolute top-4 left-4 bg-white/90 backdrop-blur-md px-3 py-1 rounded-full text-xs font-bold text-[#433830] flex items-center gap-1 shadow-sm">
-                <Building2 size={12} className="text-[#BA8F50]" />
-                {item.project_name || 'Новости'}
+              <div className="absolute top-4 right-4 bg-brand-gold text-white text-xs font-bold px-2 py-1 rounded-md shadow-md">
+                {item.progress}%
               </div>
-            </div>
-
-            <div className="p-5">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-1 text-xs text-gray-400">
-                  <Clock size={12} /> {new Date(item.created_at).toLocaleDateString()}
-                </div>
-                {item.progress > 0 && (
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-[#BA8F50]">
-                    <TrendingUp size={14} /> {item.progress}%
-                  </div>
-                )}
-              </div>
-
-              <h3 className="font-bold text-lg mb-2 text-[#433830] leading-tight">{item.title}</h3>
-              <p className="text-gray-500 text-sm leading-relaxed mb-4 line-clamp-2">{item.text}</p>
             </div>
           </div>
-        ))
-      )}
+        ))}
+        {updates.length === 0 && (
+            <div className="text-center py-10 text-brand-grey text-sm">Новостей пока нет</div>
+        )}
+      </div>
 
-      {/* --- МОДАЛКА ПРОСМОТРА (Тут ничего не меняем особо) --- */}
+      {/* Pop-up Detail Modal */}
       {selectedNews && (
-        <div className="fixed top-0 left-0 w-full h-full z-[100] flex items-center justify-center bg-[#433830]/60 backdrop-blur-sm p-4 animate-fade-in">
-          <div className="absolute inset-0" onClick={() => setSelectedNews(null)} />
-          <div className="bg-white w-full max-w-md rounded-[2rem] overflow-hidden shadow-2xl relative z-10 animate-slide-up max-h-[85vh] flex flex-col">
-            <button onClick={() => setSelectedNews(null)} className="absolute top-4 right-4 z-20 w-8 h-8 bg-black/20 backdrop-blur-md rounded-full flex items-center justify-center text-white active:scale-90"><X size={18} /></button>
-            <div className="h-56 w-full shrink-0">
-              <img src={selectedNews.image_url || 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab'} className="w-full h-full object-cover" />
-            </div>
-            <div className="p-6 overflow-y-auto custom-scrollbar">
-              <h2 className="text-2xl font-extrabold text-[#433830] mb-4">{selectedNews.title}</h2>
-              <p className="text-gray-600 text-sm mb-6 whitespace-pre-wrap">{selectedNews.text}</p>
-              
-              {/* Чеклист */}
-              {selectedNews.checklist && Array.isArray(selectedNews.checklist) && (
-                <div className="space-y-3">
-                  <h3 className="font-bold text-[#433830] text-sm uppercase">Этапы</h3>
-                  {selectedNews.checklist.map((text: string, i: number) => (
-                    <div key={i} className="flex gap-2"><CheckCircle2 size={18} className="text-[#BA8F50]"/> <span className="text-sm">{text}</span></div>
-                  ))}
-                </div>
-              )}
-              
-              <button onClick={() => setSelectedNews(null)} className="w-full mt-8 py-4 bg-[#433830] text-white rounded-xl font-bold">Закрыть</button>
-            </div>
-          </div>
-        </div>
+        <NewsDetailModal 
+            item={selectedNews} 
+            onClose={() => setSelectedNews(null)} 
+            onGenerate={onGenerate}
+        />
       )}
     </div>
   );
 };
 
-export default NewsFeed;
+const NewsDetailModal: React.FC<{ item: ConstructionUpdate, onClose: () => void, onGenerate: (id: string) => void }> = ({ item, onClose, onGenerate }) => {
+    const [currentImage, setCurrentImage] = useState(0);
+
+    const nextImage = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        setCurrentImage((prev) => (prev + 1) % item.images.length);
+    };
+
+    const prevImage = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        setCurrentImage((prev) => (prev - 1 + item.images.length) % item.images.length);
+    };
+
+    const handleOpenMaterials = () => {
+        if(item.materialsLink) {
+            window.open(item.materialsLink, '_blank');
+        } else {
+            alert('Ссылка на материалы не указана');
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-brand-black/20 backdrop-blur-sm animate-fade-in p-0 sm:p-4">
+            <div className="bg-brand-white w-full h-[90vh] sm:h-auto sm:max-w-md rounded-t-[2rem] sm:rounded-[2rem] overflow-hidden flex flex-col shadow-2xl animate-slide-up text-brand-black">
+                
+                {/* Carousel Header */}
+                <div className="relative h-64 bg-brand-light shrink-0 group">
+                    <img 
+                        src={item.images[currentImage]} 
+                        alt="Gallery" 
+                        className="w-full h-full object-cover transition-opacity duration-300" 
+                    />
+                    <button 
+                        onClick={onClose}
+                        className="absolute top-4 right-4 w-10 h-10 bg-black/20 backdrop-blur-md rounded-full flex items-center justify-center text-white z-20"
+                    >
+                        <X size={20} />
+                    </button>
+                    
+                    {/* Navigation */}
+                    {item.images.length > 1 && (
+                        <>
+                            <button onClick={prevImage} className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-black/20 backdrop-blur text-white rounded-full flex items-center justify-center"><ChevronLeft size={16}/></button>
+                            <button onClick={nextImage} className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-black/20 backdrop-blur text-white rounded-full flex items-center justify-center"><ChevronRight size={16}/></button>
+                            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-1.5">
+                                {item.images.map((_, idx) => (
+                                    <div key={idx} className={`w-1.5 h-1.5 rounded-full transition-all ${idx === currentImage ? 'bg-white scale-125' : 'bg-white/40'}`} />
+                                ))}
+                            </div>
+                        </>
+                    )}
+                </div>
+
+                {/* Content */}
+                <div className="p-6 overflow-y-auto custom-scrollbar flex-1">
+                    <div className="mb-6">
+                        <span className="text-brand-gold text-xs font-bold uppercase tracking-widest">{item.projectName}</span>
+                        <h2 className="text-2xl font-bold text-brand-black mt-1">{item.title}</h2>
+                        <p className="text-brand-grey text-xs mt-1">{item.date}</p>
+                    </div>
+
+                    {/* Check-list style description */}
+                    <div className="space-y-3 mb-8">
+                        <p className="text-brand-black text-sm font-medium leading-relaxed mb-4">
+                            {item.description}
+                        </p>
+                        {item.checklist && item.checklist.length > 0 && (
+                            <>
+                                <h4 className="text-sm font-bold text-brand-black border-b border-brand-cream pb-2">Ключевые моменты:</h4>
+                                <ul className="space-y-2">
+                                    {item.checklist.map((point, idx) => (
+                                        <li key={idx} className="flex items-start gap-3 text-sm text-brand-grey">
+                                            <div className="mt-1 w-4 h-4 rounded-full bg-brand-cream flex items-center justify-center shrink-0">
+                                                <Check size={10} className="text-brand-gold" />
+                                            </div>
+                                            {point}
+                                        </li>
+                                    ))}
+                                </ul>
+                            </>
+                        )}
+                    </div>
+
+                    {/* Action Button: Yandex Disk */}
+                    <button 
+                        onClick={handleOpenMaterials}
+                        className="w-full py-4 rounded-xl bg-brand-black text-brand-gold font-bold text-sm flex items-center justify-center gap-2 shadow-lg active:scale-[0.98]"
+                    >
+                        <FolderOpen size={18} />
+                        Актуальные материалы (Яндекс.Диск)
+                    </button>
+                    {item.materialsLink && <div className="text-[10px] text-center mt-2 text-brand-grey">Ссылка на внешнее хранилище</div>}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export default ContentHub;

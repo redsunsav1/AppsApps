@@ -1,6 +1,7 @@
+
 export enum CurrencyType {
   SILVER = 'SILVER', // Regular coins (Daily tasks)
-  GOLD = 'GOLD',     // Premium coins (Sales only)
+  GOLD = 'GOLD',   // Premium coins (Sales only)
 }
 
 export interface UserProfile {
@@ -13,18 +14,15 @@ export interface UserProfile {
   silverCoins: number;
   goldCoins: number;
   dealsClosed: number;
-  // Contact Info
+  // Contact Info for Business Card
   phone: string;
-  company: string; 
   telegram: string;
   whatsapp: string;
-  is_admin?: boolean; // <--- НУЖНО ДЛЯ АДМИНКИ
-  is_registered?: boolean; // <--- НУЖНО ДЛЯ ЛОГИКИ ВХОДА
 }
 
 export interface ProjectStat {
   id: string;
-  name: string; 
+  name: string; // "ЖК Бруклин"
   sales: number;
   totalUnits: number;
   color: string;
@@ -44,53 +42,72 @@ export interface ConstructionUpdate {
   id: string;
   title: string;
   projectName: string;
-  description: string; 
-  checklist: string[]; 
-  generatedText?: string;
-  images: string[]; 
+  description: string; // Main text
+  checklist: string[]; // Bullet points for popup
+  materialsLink?: string; // Link to Yandex.Disk
+  images: string[]; // Array for carousel
   date: string;
   progress: number;
 }
 
-// Обновил под Базу Данных (было name/image, стало title/image_url)
 export interface ShopItem {
-  id: number;
-  title: string;       // В базе это title
+  id: string;
+  name: string;
+  category: 'TECH' | 'MERCH' | 'LUXURY' | 'EXPERIENCE';
   price: number;
   currency: CurrencyType;
-  image_url: string;   // В базе это image_url
-  is_active: boolean;  // В базе это поле есть
+  image: string;
+  inStock: boolean;
 }
 
 export interface LeaderboardEntry {
-  id: string | number;
+  id: string;
   name: string;
   deals: number;
-  company: string; // <--- ОСТАВИЛ ТВОЕ ПОЛЕ
-  xp?: number;
-  avatar?: string;
-  trend?: 'up' | 'down' | 'neutral';
+  xp: number;
+  avatar: string;
+  trend: 'up' | 'down' | 'neutral';
+}
+
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  date: string;
+  time: string;
+  type: 'TOUR' | 'TRAINING' | 'PARTY';
+  spotsTotal: number;
+  spotsTaken: number;
+  isRegistered: boolean;
 }
 
 export interface ChessUnit {
   id: string;
   number: string;
-  rooms: number; 
+  rooms: number; // 1, 2, 3, Studio (0)
   area: number;
   price: number;
   status: 'FREE' | 'BOOKED' | 'SOLD';
   floor: number;
+  layoutImage?: string; // URL to layout plan
 }
 
 export interface ProjectData {
   id: string;
   name: string;
+  description?: string; // Added description
   floors: number;
   unitsPerFloor: number;
   image: string;
+  profitbaseUrl?: string; // Specific XML URL for this project
 }
 
-// ТВОЯ ФУНКЦИЯ (ВЕРНУЛ)
+export interface MortgageProgram {
+  id: string;
+  name: string;
+  rate: number;
+}
+
+// Helper to calculate Rank based on deals
 export const getRank = (deals: number): string => {
   if (deals >= 50) return 'Гуру Недвижимости';
   if (deals >= 35) return 'Мастер';

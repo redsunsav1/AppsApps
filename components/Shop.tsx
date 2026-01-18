@@ -1,130 +1,104 @@
-import React, { useState, useEffect } from 'react';
-import { ShoppingBag, Lock, Trash2 } from 'lucide-react';
-import WebApp from '@twa-dev/sdk';
+import React, { useMemo } from 'react';
 import { ShopItem, CurrencyType } from '../types';
+import { Lock } from 'lucide-react';
 
-interface Props {
-  userSilver: number;
-  userGold: number;
-  isAdmin?: boolean; 
+interface MarketplaceProps {
+  items: ShopItem[];
+  silver: number;
+  gold: number;
+  onPurchase: (item: ShopItem) => void;
 }
 
-const Shop: React.FC<Props> = ({ userSilver, userGold, isAdmin }) => {
-  const [items, setItems] = useState<ShopItem[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  const fetchProducts = () => {
-    fetch('/api/products')
-        .then(res => res.json())
-        .then(data => setItems(data))
-        .catch(console.error)
-        .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchProducts();
-  }, []);
-
-  const handleBuy = async (item: ShopItem) => {
-    if (!window.confirm(`Купить "${item.title}" за ${item.price}?`)) return;
-    
-    try {
-        const res = await fetch('/api/buy', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ initData: WebApp.initData, productId: item.id })
-        });
-        
-        if (res.ok) {
-            alert('Покупка успешна! Менеджер свяжется с вами.');
-            window.location.reload(); 
-        } else {
-            alert('Ошибка: Недостаточно средств');
-        }
-    } catch (e) {
-        alert('Ошибка сети');
-    }
-  };
-
-  const handleDelete = async (id: number) => {
-      if(!window.confirm('Удалить товар?')) return;
-      await fetch(`/api/products/${id}`, {
-          method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData: WebApp.initData })
-      });
-      fetchProducts();
-  };
+const Marketplace: React.FC<MarketplaceProps> = ({ items, silver, gold, onPurchase }) => {
+  const sortedItems = useMemo(() => {
+    return [...items].sort((a, b) => {
+        // Gold items last, then by price asc
+        if (a.currency !== b.currency) return a.currency === CurrencyType.GOLD ? 1 : -1;
+        return a.price - b.price;
+    });
+  }, [items]);
 
   return (
-    <div className="pb-36 pt-6 px-4 animate-fade-in">
-      {/* Баланс */}
-      <div className="bg-[#433830] text-white p-5 rounded-2xl mb-6 flex justify-between items-center shadow-lg relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-32 h-32 bg-[#BA8F50] opacity-10 rounded-full -mr-10 -mt-10 pointer-events-none" />
-        <span className="text-sm font-medium opacity-80">Доступно:</span>
-        <div className="flex gap-4 font-bold text-lg z-10">
-          <span className="flex items-center gap-1">{userSilver} 🪙</span>
-          <span className="flex items-center gap-1 text-[#BA8F50]">{userGold} 🏆</span>
+    <div className="pb-36 animate-fade-in">
+      <header className="px-6 pt-8 pb-6 sticky top-0 bg-brand-cream/95 z-20 backdrop-blur-md border-b border-brand-gold/10">
+        <div className="flex justify-between items-end">
+          <div>
+            <h2 className="text-2xl font-bold text-brand-black">Маркет</h2>
+            <p className="text-brand-grey text-sm mt-1">Каталог наград</p>
+          </div>
+          <div className="flex gap-2">
+             {/* Silver Badge */}
+             <div className="bg-brand-white px-3 py-1.5 rounded-full border border-brand-light flex items-center gap-1.5 shadow-sm">
+                <div className="w-3 h-3 rounded-full bg-slate-300 border border-slate-400"></div>
+                <span className="font-bold text-brand-black text-xs">{silver.toLocaleString()}</span>
+             </div>
+             {/* Gold Badge */}
+             <div className="bg-brand-black px-3 py-1.5 rounded-full border border-brand-black flex items-center gap-1.5 shadow-sm">
+                <div className="w-3 h-3 rounded-full bg-brand-gold border border-brand-black flex items-center justify-center text-[6px] font-bold text-black">X</div>
+                <span className="font-bold text-brand-gold text-xs">{gold.toLocaleString()}</span>
+             </div>
+          </div>
         </div>
-      </div>
+      </header>
 
-      <h2 className="font-extrabold text-2xl text-[#433830] mb-4 pl-2">Витрина</h2>
-      
-      {items.length === 0 ? (
-          <div className="text-center text-gray-400 mt-10">Витрина пока пуста...</div>
-      ) : (
-        <div className="grid grid-cols-2 gap-3">
-            {items.map(item => {
-            const canBuy = item.currency === 'SILVER' ? userSilver >= item.price : userGold >= item.price;
-            
-            return (
-                <div key={item.id} className="bg-white p-3 rounded-2xl border border-[#EAE0D5] shadow-sm flex flex-col relative overflow-hidden h-56 group">
-                
-                {/* Админское удаление */}
-                {isAdmin && (
-                    <button onClick={() => handleDelete(item.id)} className="absolute top-2 left-2 bg-red-500 text-white p-1 rounded z-20 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <Trash2 size={14} />
-                    </button>
-                )}
+      <div className="px-4 py-4 grid grid-cols-2 gap-3">
+        {sortedItems.map((item) => {
+          const userBalance = item.currency === CurrencyType.SILVER ? silver : gold;
+          const canAfford = userBalance >= item.price;
+          const isGold = item.currency === CurrencyType.GOLD;
 
-                {/* Бейдж валюты */}
-                <div className={`absolute top-0 right-0 px-2.5 py-1 text-[9px] font-bold rounded-bl-xl text-white ${item.currency === 'SILVER' ? 'bg-gray-400' : 'bg-[#BA8F50]'}`}>
-                    {item.currency === 'SILVER' ? 'БОНУСЫ' : 'ЗОЛОТО'}
-                </div>
+          return (
+            <div 
+              key={item.id} 
+              className={`
+                group p-4 rounded-2xl shadow-sm border flex flex-col relative overflow-hidden transition-all active:scale-[0.98]
+                ${isGold 
+                    ? 'bg-gradient-to-br from-[#D6C4A8] to-[#C5B191] border-[#C5B191]' 
+                    : 'bg-brand-white border-brand-light'}
+              `}
+            >
+              {/* Image Placeholder */}
+              <div className={`aspect-square rounded-xl mb-4 flex items-center justify-center text-5xl group-hover:scale-105 transition-transform duration-500 ${isGold ? 'bg-white/20' : 'bg-brand-cream'}`}>
+                {item.image}
+              </div>
 
-                {/* Картинка */}
-                <div className="h-24 w-full mb-2 flex items-center justify-center bg-gray-50 rounded-xl overflow-hidden">
-                    {item.image_url ? (
-                        <img src={item.image_url} className="w-full h-full object-cover" />
-                    ) : (
-                        <span className="text-2xl">🎁</span>
-                    )}
+              <div className="flex-1 flex flex-col">
+                <div className="mb-2">
+                   <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md border ${isGold ? 'text-brand-black/60 border-brand-black/10' : 'text-brand-grey border-brand-cream'}`}>
+                     {item.category}
+                   </span>
                 </div>
-                
-                <div className="flex-1 min-h-0">
-                    <h3 className="font-bold text-xs leading-tight text-[#433830] line-clamp-2">{item.title}</h3>
-                </div>
-                
-                <div className="flex items-center justify-between mt-2 pt-2 border-t border-gray-100">
-                    <span className={`font-bold text-sm ${item.currency === 'GOLD' ? 'text-[#BA8F50]' : 'text-gray-600'}`}>
-                    {item.price} {item.currency === 'SILVER' ? '🪙' : '🏆'}
-                    </span>
-                    
-                    <button 
-                    disabled={!canBuy}
-                    onClick={() => handleBuy(item)}
-                    className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${canBuy ? 'bg-[#433830] text-white active:scale-95' : 'bg-gray-100 text-gray-300'}`}
+                <h3 className={`font-bold text-sm leading-tight mb-1 ${isGold ? 'text-brand-black' : 'text-brand-black'}`}>{item.name}</h3>
+                <div className="mt-auto pt-3">
+                    <button
+                    onClick={() => onPurchase(item)}
+                    disabled={!canAfford || !item.inStock}
+                    className={`
+                        w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all
+                        ${isGold 
+                            ? (canAfford ? 'bg-brand-black text-brand-gold hover:bg-brand-black/80' : 'bg-black/10 text-black/30') 
+                            : (canAfford ? 'bg-brand-black text-brand-gold hover:bg-brand-black/80' : 'bg-brand-light text-white')}
+                    `}
                     >
-                    {canBuy ? <ShoppingBag size={14} /> : <Lock size={14} />}
+                    {!canAfford && <Lock size={12} />}
+                    {item.inStock ? (
+                        <>
+                            {item.price.toLocaleString()} 
+                            {isGold 
+                                ? <div className="w-3 h-3 rounded-full bg-brand-gold border border-brand-black flex items-center justify-center text-[6px] font-bold text-black">X</div>
+                                : <div className="w-3 h-3 rounded-full bg-slate-300 border border-slate-400"></div>
+                            }
+                        </>
+                    ) : 'Нет в наличии'}
                     </button>
                 </div>
-                </div>
-            );
-            })}
-        </div>
-      )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 };
 
-export default Shop;
+export default Marketplace;

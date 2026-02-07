@@ -56,7 +56,20 @@ const App: React.FC = () => {
   const fetchNews = () => {
     fetch('/api/news')
       .then(res => res.json())
-      .then(data => setNews(data))
+      .then(data => {
+        const mapped = data.map((item: any) => ({
+          id: String(item.id),
+          title: item.title || '',
+          projectName: item.project_name || '',
+          description: item.text || '',
+          images: item.image_url ? [item.image_url] : [],
+          progress: item.progress || 0,
+          checklist: Array.isArray(item.checklist) ? item.checklist : [],
+          date: item.created_at ? new Date(item.created_at).toLocaleDateString('ru-RU') : '',
+          materialsLink: item.materials_link || '',
+        }));
+        setNews(mapped);
+      })
       .catch(e => console.log('News error (не критично)'));
   };
 
@@ -97,6 +110,24 @@ const App: React.FC = () => {
       .catch(e => console.log('Stats error (не критично)'));
   };
 
+  const fetchProjects = () => {
+    fetch('/api/projects')
+      .then(res => res.json())
+      .then(data => {
+        const mapped: ProjectData[] = data.map((p: any) => ({
+          id: String(p.id),
+          name: p.name,
+          description: p.description || '',
+          floors: p.floors || 0,
+          unitsPerFloor: p.units_per_floor || 8,
+          image: p.image_url || '',
+          profitbaseUrl: p.feed_url || '',
+        }));
+        setProjects(mapped);
+      })
+      .catch(e => console.log('Projects error (не критично)'));
+  };
+
   useEffect(() => {
     try {
       WebApp.ready();
@@ -107,6 +138,7 @@ const App: React.FC = () => {
 
     fetchNews();
     fetchStats();
+    fetchProjects();
 
     const initData = WebApp.initData;
 

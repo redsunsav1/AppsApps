@@ -1,6 +1,7 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { ShopItem, CurrencyType } from '../types';
 import { Lock } from 'lucide-react';
+import WebApp from '@twa-dev/sdk';
 
 interface MarketplaceProps {
   items?: ShopItem[];
@@ -12,12 +13,51 @@ interface MarketplaceProps {
   onPurchase?: (item: ShopItem) => void;
 }
 
-const Marketplace: React.FC<MarketplaceProps> = ({ items = [], silver: silverProp, gold: goldProp, userSilver, userGold, isAdmin, onPurchase = () => {} }) => {
+const Marketplace: React.FC<MarketplaceProps> = ({ items: propItems, silver: silverProp, gold: goldProp, userSilver, userGold, isAdmin, onPurchase }) => {
   const silver = userSilver ?? silverProp ?? 0;
   const gold = userGold ?? goldProp ?? 0;
+
+  const [fetchedItems, setFetchedItems] = useState<ShopItem[]>([]);
+
+  useEffect(() => {
+    fetch('/api/products')
+      .then(res => res.json())
+      .then(data => {
+        const mapped: ShopItem[] = data.map((p: any) => ({
+          id: String(p.id),
+          name: p.title || '',
+          category: p.category || 'MERCH',
+          price: p.price || 0,
+          currency: p.currency === 'GOLD' ? CurrencyType.GOLD : CurrencyType.SILVER,
+          image: p.image_url || '🎁',
+          inStock: p.is_active !== false,
+        }));
+        setFetchedItems(mapped);
+      })
+      .catch(e => console.error('Products fetch error:', e));
+  }, []);
+
+  const items = propItems && propItems.length > 0 ? propItems : fetchedItems;
+
+  const handlePurchase = (item: ShopItem) => {
+    if (onPurchase) { onPurchase(item); return; }
+    const initData = WebApp.initData;
+    if (!initData) return;
+    fetch('/api/buy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData, productId: parseInt(item.id) }),
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) alert('Покупка успешна!');
+      else alert(data.error || 'Ошибка покупки');
+    })
+    .catch(() => alert('Ошибка сети'));
+  };
+
   const sortedItems = useMemo(() => {
     return [...items].sort((a, b) => {
-        // Gold items last, then by price asc
         if (a.currency !== b.currency) return a.currency === CurrencyType.GOLD ? 1 : -1;
         return a.price - b.price;
     });
@@ -47,6 +87,9 @@ const Marketplace: React.FC<MarketplaceProps> = ({ items = [], silver: silverPro
       </header>
 
       <div className="px-4 py-4 grid grid-cols-2 gap-3">
+        {sortedItems.length === 0 && (
+          <div className="col-span-2 text-center py-10 text-brand-grey text-sm">Товаров пока нет</div>
+        )}
         {sortedItems.map((item) => {
           const userBalance = item.currency === CurrencyType.SILVER ? silver : gold;
           const canAfford = userBalance >= item.price;
@@ -76,7 +119,7 @@ const Marketplace: React.FC<MarketplaceProps> = ({ items = [], silver: silverPro
                 <h3 className={`font-bold text-sm leading-tight mb-1 ${isGold ? 'text-brand-black' : 'text-brand-black'}`}>{item.name}</h3>
                 <div className="mt-auto pt-3">
                     <button
-                    onClick={() => onPurchase(item)}
+                    onClick={() => handlePurchase(item)}
                     disabled={!canAfford || !item.inStock}
                     className={`
                         w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all

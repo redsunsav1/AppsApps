@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useRef, useState } from 'react';
 import BookingChecklist from './BookingChecklist';
 import { UserProfile, DailyQuest, ProjectStat, CurrencyType, getRank } from '../types';
-import { ChevronRight, CheckCircle2, Circle, Zap, Phone, Send, MessageCircle, FileText } from 'lucide-react';
+import { ChevronRight, CheckCircle2, Circle, Zap, Phone, Send, MessageCircle, FileText, Camera } from 'lucide-react';
+import WebApp from '@twa-dev/sdk';
 
 interface DashboardProps {
   user: UserProfile;
@@ -13,6 +14,33 @@ interface DashboardProps {
 const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest }) => {
   const progressPercent = (user.currentXP / user.nextLevelXP) * 100;
   const currentRank = getRank(user.dealsClosed);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [avatarUrl, setAvatarUrl] = useState(user.avatar || '');
+
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 500 * 1024) {
+      alert('Фото слишком большое (макс. 500KB)');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const base64 = ev.target?.result as string;
+      setAvatarUrl(base64);
+      try {
+        await fetch('/api/avatar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData: WebApp.initData, avatarData: base64 }),
+        });
+      } catch (e) {
+        console.error('Avatar upload error:', e);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   return (
     <div className="pb-36 animate-fade-in">
@@ -33,8 +61,14 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
 
          <div className="flex items-center gap-5 mb-8">
              <div className="relative shrink-0">
-                <div className="w-20 h-20 rounded-full p-1 bg-gradient-to-br from-brand-gold to-brand-beige">
-                    <img src={user.avatar} alt="Profile" className="w-full h-full rounded-full object-cover border-2 border-white" />
+                <div className="relative shrink-0">
+                    <div className="w-20 h-20 rounded-full p-1 bg-gradient-to-br from-brand-gold to-brand-beige">
+                        <img src={avatarUrl || 'https://images.unsplash.com/photo-1560250097-0b93528c311a?ixlib=rb-4.0.3&auto=format&fit=crop&w=256&q=80'} alt="Profile" className="w-full h-full rounded-full object-cover border-2 border-white" />
+                    </div>
+                    <button onClick={() => fileInputRef.current?.click()} className="absolute bottom-0 right-0 w-7 h-7 bg-brand-gold rounded-full flex items-center justify-center text-white shadow-md border-2 border-white hover:scale-110 transition-transform">
+                        <Camera size={14} />
+                    </button>
+                    <input ref={fileInputRef} type="file" accept="image/*" onChange={handleAvatarChange} className="hidden" />
                 </div>
                 <div className="absolute -bottom-2 -right-2 bg-brand-white text-brand-black text-xs font-bold px-2.5 py-1 rounded-lg border border-brand-light shadow-sm">
                     Lvl {user.level}

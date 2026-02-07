@@ -162,9 +162,10 @@ const App: React.FC = () => {
             ...MOCK_DEFAULTS,
             id: String(sUser.telegram_id),
             name: sUser.first_name,
+            avatar: sUser.avatar_url || MOCK_DEFAULTS.avatar,
             silverCoins: sUser.balance,
-            goldCoins: sUser.gold_balance || 0,       // ФАЗА 2.1: ИСПРАВЛЕНО — теперь берём gold_balance
-            dealsClosed: sUser.deals_closed || 0,       // Реальные данные из БД
+            goldCoins: sUser.gold_balance || 0,
+            dealsClosed: sUser.deals_closed || 0,
             is_registered: sUser.is_registered,
             phone: sUser.phone,
             company: sUser.company,

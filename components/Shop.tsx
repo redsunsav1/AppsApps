@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { ShopItem, CurrencyType } from '../types';
-import { Lock } from 'lucide-react';
+import { Lock, Trash2 } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
 
 interface MarketplaceProps {
@@ -56,6 +56,18 @@ const Marketplace: React.FC<MarketplaceProps> = ({ items: propItems, silver: sil
     .catch(() => alert('Ошибка сети'));
   };
 
+  const handleDelete = async (productId: string) => {
+    if (!confirm('Удалить товар?')) return;
+    try {
+      await fetch(`/api/products/${productId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: WebApp.initData }),
+      });
+      setFetchedItems(prev => prev.filter(i => i.id !== productId));
+    } catch (e) { console.error('Delete error:', e); }
+  };
+
   const sortedItems = useMemo(() => {
     return [...items].sort((a, b) => {
         if (a.currency !== b.currency) return a.currency === CurrencyType.GOLD ? 1 : -1;
@@ -96,18 +108,31 @@ const Marketplace: React.FC<MarketplaceProps> = ({ items: propItems, silver: sil
           const isGold = item.currency === CurrencyType.GOLD;
 
           return (
-            <div 
-              key={item.id} 
+            <div
+              key={item.id}
               className={`
                 group p-4 rounded-2xl shadow-sm border flex flex-col relative overflow-hidden transition-all active:scale-[0.98]
-                ${isGold 
-                    ? 'bg-gradient-to-br from-[#D6C4A8] to-[#C5B191] border-[#C5B191]' 
+                ${isGold
+                    ? 'bg-gradient-to-br from-[#D6C4A8] to-[#C5B191] border-[#C5B191]'
                     : 'bg-brand-white border-brand-light'}
               `}
             >
+              {isAdmin && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
+                  className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center z-10 shadow"
+                >
+                  <Trash2 size={12} />
+                </button>
+              )}
+
               {/* Image Placeholder */}
-              <div className={`aspect-square rounded-xl mb-4 flex items-center justify-center text-5xl group-hover:scale-105 transition-transform duration-500 ${isGold ? 'bg-white/20' : 'bg-brand-cream'}`}>
-                {item.image}
+              <div className={`h-24 rounded-xl mb-3 flex items-center justify-center overflow-hidden ${isGold ? 'bg-white/20' : 'bg-brand-cream'}`}>
+                {item.image && item.image.startsWith('http') ? (
+                  <img src={item.image} alt={item.name} className="w-full h-full object-cover rounded-xl" />
+                ) : (
+                  <span className="text-4xl">{item.image || '🎁'}</span>
+                )}
               </div>
 
               <div className="flex-1 flex flex-col">
@@ -116,7 +141,7 @@ const Marketplace: React.FC<MarketplaceProps> = ({ items: propItems, silver: sil
                      {item.category}
                    </span>
                 </div>
-                <h3 className={`font-bold text-sm leading-tight mb-1 ${isGold ? 'text-brand-black' : 'text-brand-black'}`}>{item.name}</h3>
+                <h3 className="font-bold text-sm leading-tight mb-1 line-clamp-2 text-brand-black">{item.name}</h3>
                 <div className="mt-auto pt-3">
                     <button
                     onClick={() => handlePurchase(item)}

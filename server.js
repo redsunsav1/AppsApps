@@ -193,6 +193,9 @@ const initDb = async () => {
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS company_type TEXT DEFAULT 'agency';");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS approval_status TEXT DEFAULT 'none';");
 
+    // --- Аватарки ---
+    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;');
+
     // --- ФАЗА 3: Расширение bookings ---
     await client.query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS stage TEXT DEFAULT 'INIT';");
     await client.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS passport_sent BOOLEAN DEFAULT FALSE;');
@@ -294,6 +297,22 @@ app.post('/api/auth', async (req, res) => {
     console.error('Auth error:', e);
     res.status(500).json({ error: 'Auth error' });
   }
+});
+
+// =============================================
+// АВАТАРКА
+// =============================================
+app.post('/api/avatar', async (req, res) => {
+  try {
+    const { initData, avatarData } = req.body;
+    const tgUser = parseTelegramUser(initData);
+    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
+    if (!avatarData) return res.status(400).json({ error: 'No avatar data' });
+    // Limit size to ~500KB base64
+    if (avatarData.length > 700000) return res.status(400).json({ error: 'Image too large' });
+    await client.query('UPDATE users SET avatar_url = $1 WHERE telegram_id = $2', [avatarData, tgUser.id]);
+    res.json({ success: true, avatar_url: avatarData });
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
 // =============================================
@@ -575,6 +594,18 @@ app.post('/api/make-admin', async (req, res) => {
     if (!telegramId) return res.status(400).json({ error: 'No telegramId' });
     await client.query('UPDATE users SET is_admin = TRUE WHERE telegram_id = $1', [telegramId]);
     res.json({ success: true, message: `User ${telegramId} is now admin` });
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// Очистка пользователей (кроме указанного)
+app.post('/api/admin/clear-users', async (req, res) => {
+  try {
+    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    const tgUser = parseTelegramUser(req.body.initData);
+    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
+    // Delete all users except the current admin
+    const result = await client.query('DELETE FROM users WHERE telegram_id != $1', [tgUser.id]);
+    res.json({ success: true, deleted: result.rowCount });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 

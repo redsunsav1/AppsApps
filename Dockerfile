@@ -1,23 +1,26 @@
 # 1. Берем Linux с Node.js
 FROM node:20-alpine
 
-# 2. Создаем папку
+# 2. Устанавливаем инструменты для сборки нативных модулей (better-sqlite3)
+RUN apk add --no-cache python3 make g++
+
+# 3. Создаем папку
 WORKDIR /app
 
-# 3. Копируем package.json
+# 4. Копируем package.json
 COPY package.json ./
 
-# 4. Устанавливаем зависимости
-RUN npm install --network-timeout 100000
+# 5. Устанавливаем зависимости
+RUN npm install --network-timeout=100000
 
-# 5. Копируем весь остальной код
+# 6. Копируем весь остальной код
 COPY . .
 
-# 6. Собираем Фронтенд
+# 7. Собираем Фронтенд
 RUN npm run build
 
-# 7. Открываем порт 8080
+# 8. Открываем порт 8080
 EXPOSE 8080
 
-# 8. Запускаем сервер
+# 9. Запускаем сервер
 CMD ["node", "server.js"]

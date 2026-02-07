@@ -1,113 +1,14 @@
-
 <!DOCTYPE html>
 <html lang="ru">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <title>PartnerBuild - Club</title>
-    <!-- CRITICAL: Telegram WebApp Script -->
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <script>
-      tailwind.config = {
-        theme: {
-          extend: {
-            colors: {
-              brand: {
-                gold: '#BA8F50',
-                black: '#433830', /* Dark Coffee */
-                beige: '#E0CCAF',
-                cream: '#F2EBDF',
-                grey: '#939392',
-                light: '#EAE0D5',
-                white: '#FDFBF7',
-                sand: '#D6C4A8',
-              }
-            },
-            fontFamily: {
-              sans: ['Manrope', 'sans-serif'],
-            },
-            screens: {
-              'xs': '375px',
-              'pro-max': '428px',
-            }
-          }
-        }
-      }
-    </script>
-    <style>
-      body { 
-        font-family: 'Manrope', sans-serif; 
-        background-color: #F2EBDF;
-        color: #433830;
-        -webkit-font-smoothing: antialiased;
-        overscroll-behavior-y: none; /* Prevent pull-to-refresh in simple web views */
-      }
-      
-      /* Safe Area Insets for iPhone */
-      .pb-safe {
-        padding-bottom: env(safe-area-inset-bottom, 20px);
-      }
-      .pt-safe {
-        padding-top: env(safe-area-inset-top, 20px);
-      }
-      
-      /* Premium Scrollbar */
-      ::-webkit-scrollbar { width: 0px; background: transparent; }
-      
-      /* Animations */
-      @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(10px); }
-        to { opacity: 1; transform: translateY(0); }
-      }
-      
-      @keyframes slideUp {
-        from { transform: translateY(100%); }
-        to { transform: translateY(0); }
-      }
-
-      .animate-fade-in { animation: fadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      .animate-slide-up { animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      
-      /* Glass effect - Warmer */
-      .glass {
-        background: rgba(253, 251, 247, 0.9);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border-top: 1px solid rgba(255, 255, 255, 0.5);
-      }
-
-      .glass-card {
-        background: rgba(255, 255, 255, 0.6);
-        backdrop-filter: blur(12px);
-        border: 1px solid rgba(255, 255, 255, 0.4);
-      }
-      
-      /* Touch optim */
-      button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
-    </style>
-  <script type="importmap">
-{
-  "imports": {
-    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
-    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.554.0",
-    "react/": "https://aistudiocdn.com/react@^19.2.0/",
-    "react": "https://aistudiocdn.com/react@^19.2.0",
-    "url": "https://esm.sh/url@^0.11.4",
-    "fs": "https://esm.sh/fs@^0.0.1-security",
-    "path": "https://esm.sh/path@^0.12.7",
-    "express": "https://esm.sh/express@^5.2.1",
-    "cors": "https://esm.sh/cors@^2.8.5",
-    "better-sqlite3": "https://esm.sh/better-sqlite3@^12.6.0"
-  }
-}
-</script>
-<link rel="stylesheet" href="/index.css">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>Клуб Партнеров</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
-  <body class="bg-brand-cream text-brand-black h-screen w-screen overflow-hidden selection:bg-brand-gold selection:text-white flex flex-col">
-    <div id="root" class="h-full w-full flex flex-col"></div>
+<body>
+  <div id="root"></div>
   <script type="module" src="/index.tsx"></script>
 </body>
 </html>

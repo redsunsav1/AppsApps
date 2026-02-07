@@ -16,8 +16,14 @@ export interface UserProfile {
   dealsClosed: number;
   // Contact Info for Business Card
   phone: string;
+  company: string;
   telegram: string;
   whatsapp: string;
+  is_admin?: boolean; // <--- НУЖНО ДЛЯ АДМИНКИ
+  is_registered?: boolean; // <--- НУЖНО ДЛЯ ЛОГИКИ ВХОДА
+  approval_status?: 'none' | 'pending' | 'approved' | 'rejected';
+  last_name?: string;
+  company_type?: 'agency' | 'ip';
 }
 
 export interface ProjectStat {
@@ -116,3 +122,32 @@ export const getRank = (deals: number): string => {
   if (deals >= 5) return 'Агент';
   return 'Новичок';
 };
+
+export interface BookingRecord {
+  id: number;
+  unit_id: string;
+  unit_number: string;
+  unit_floor: number;
+  unit_area: number;
+  unit_rooms: number;
+  unit_price: number;
+  project_name: string;
+  stage: 'INIT' | 'PASSPORT_SENT' | 'DOCS_SENT' | 'COMPLETE';
+  passport_sent: boolean;
+  docs_sent: boolean;
+  buyer_name?: string;
+  buyer_phone?: string;
+  created_at: string;
+}
+
+export interface Application {
+  id: number;
+  telegram_id: number;
+  first_name: string;
+  last_name: string;
+  company: string;
+  company_type: string;
+  phone: string;
+  approval_status: string;
+  created_at: string;
+}

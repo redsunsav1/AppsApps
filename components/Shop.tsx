@@ -3,13 +3,18 @@ import { ShopItem, CurrencyType } from '../types';
 import { Lock } from 'lucide-react';
 
 interface MarketplaceProps {
-  items: ShopItem[];
-  silver: number;
-  gold: number;
-  onPurchase: (item: ShopItem) => void;
+  items?: ShopItem[];
+  silver?: number;
+  gold?: number;
+  userSilver?: number;
+  userGold?: number;
+  isAdmin?: boolean;
+  onPurchase?: (item: ShopItem) => void;
 }
 
-const Marketplace: React.FC<MarketplaceProps> = ({ items, silver, gold, onPurchase }) => {
+const Marketplace: React.FC<MarketplaceProps> = ({ items = [], silver: silverProp, gold: goldProp, userSilver, userGold, isAdmin, onPurchase = () => {} }) => {
+  const silver = userSilver ?? silverProp ?? 0;
+  const gold = userGold ?? goldProp ?? 0;
   const sortedItems = useMemo(() => {
     return [...items].sort((a, b) => {
         // Gold items last, then by price asc

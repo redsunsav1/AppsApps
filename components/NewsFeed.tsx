@@ -4,11 +4,16 @@ import { ConstructionUpdate } from '../types';
 import { Check, FolderOpen, Image as ImageIcon, X, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface ContentHubProps {
-  updates: ConstructionUpdate[];
-  onGenerate: (id: string) => void;
+  news?: any[];
+  updates?: ConstructionUpdate[];
+  isAdmin?: boolean;
+  onEdit?: (item: any) => void;
+  onRefresh?: () => void;
+  onGenerate?: (id: string) => void;
 }
 
-const ContentHub: React.FC<ContentHubProps> = ({ updates, onGenerate }) => {
+const ContentHub: React.FC<ContentHubProps> = ({ news, updates, isAdmin, onEdit, onRefresh, onGenerate }) => {
+  const items: ConstructionUpdate[] = (news as ConstructionUpdate[]) || updates || [];
   const [selectedNews, setSelectedNews] = useState<ConstructionUpdate | null>(null);
 
   return (
@@ -19,7 +24,7 @@ const ContentHub: React.FC<ContentHubProps> = ({ updates, onGenerate }) => {
       </header>
 
       <div className="px-4 space-y-4">
-        {updates.map((item, idx) => (
+        {items.map((item, idx) => (
           <div 
             key={item.id} 
             onClick={() => setSelectedNews(item)}
@@ -40,7 +45,7 @@ const ContentHub: React.FC<ContentHubProps> = ({ updates, onGenerate }) => {
             </div>
           </div>
         ))}
-        {updates.length === 0 && (
+        {items.length === 0 && (
             <div className="text-center py-10 text-brand-grey text-sm">Новостей пока нет</div>
         )}
       </div>
@@ -50,7 +55,7 @@ const ContentHub: React.FC<ContentHubProps> = ({ updates, onGenerate }) => {
         <NewsDetailModal 
             item={selectedNews} 
             onClose={() => setSelectedNews(null)} 
-            onGenerate={onGenerate}
+            onGenerate={onGenerate || (() => {})}
         />
       )}
     </div>

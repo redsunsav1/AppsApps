@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import WebApp from '@twa-dev/sdk';
-import { X, ArrowLeft, Loader2, Camera } from 'lucide-react';
+import { X, ArrowLeft, Loader2, Camera, Building2 } from 'lucide-react';
 import { ProjectData, ChessUnit } from '../types';
 
 interface ChessboardProps {
@@ -279,6 +279,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects }) => {
                                     </div>
                                 )}
                             </div>
+                        </div>
 
                         {/* Форма бронирования (только для свободных) */}
                         {bookingUnit.status === 'FREE' && !bookingResult?.ok && (

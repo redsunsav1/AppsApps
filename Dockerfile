@@ -4,11 +4,11 @@ FROM node:20-alpine
 # 2. Создаем папку
 WORKDIR /app
 
-# 3. ВАЖНО: Копируем ТОЛЬКО package.json (игнорируем package-lock.json намеренно)
+# 3. Копируем package.json
 COPY package.json ./
 
-# 4. Устанавливаем зависимости с нуля
-RUN npm install
+# 4. Устанавливаем зависимости
+RUN npm install --network-timeout 100000
 
 # 5. Копируем весь остальной код
 COPY . .
@@ -20,4 +20,4 @@ RUN npm run build
 EXPOSE 8080
 
 # 8. Запускаем сервер
-CMD ["npm", "start"]
+CMD ["node", "server.js"]

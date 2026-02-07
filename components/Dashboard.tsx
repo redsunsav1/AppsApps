@@ -1,6 +1,7 @@
 import React from 'react';
+import BookingChecklist from './BookingChecklist';
 import { UserProfile, DailyQuest, ProjectStat, CurrencyType, getRank } from '../types';
-import { ChevronRight, CheckCircle2, Circle, Zap, Phone, Send, MessageCircle } from 'lucide-react';
+import { ChevronRight, CheckCircle2, Circle, Zap, Phone, Send, MessageCircle, FileText } from 'lucide-react';
 
 interface DashboardProps {
   user: UserProfile;
@@ -22,7 +23,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
                  <h1 className="text-2xl font-extrabold text-brand-black">Мой профиль</h1>
                  <p className="text-brand-grey text-xs font-medium mt-1">Клуб партнеров</p>
             </div>
-            {/* Rank Display */}
             <div className="flex flex-col items-end">
                 <div className="bg-brand-gold/10 px-3 py-1.5 rounded-lg border border-brand-gold/20">
                     <span className="text-xs font-bold text-brand-gold uppercase tracking-wider block text-right">{currentRank}</span>
@@ -41,7 +41,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
                 </div>
              </div>
              <div className="flex-1 space-y-3">
-                 {/* Silver Balance */}
                  <div className="flex items-center justify-between bg-brand-cream p-2 rounded-xl border border-brand-beige">
                     <span className="text-xs font-semibold text-brand-black/60 uppercase">Silver</span>
                     <div className="flex items-center gap-1.5">
@@ -49,7 +48,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
                         <div className="w-4 h-4 rounded-full bg-slate-300 border border-slate-400"></div>
                     </div>
                  </div>
-                 {/* Gold Balance */}
                  <div className="flex items-center justify-between bg-gradient-to-r from-brand-gold/20 to-brand-gold/5 p-2 rounded-xl border border-brand-gold/20">
                     <span className="text-xs font-semibold text-brand-gold uppercase">Gold</span>
                     <div className="flex items-center gap-1.5">
@@ -60,7 +58,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
              </div>
          </div>
 
-         {/* Level Progress */}
          <div className="flex justify-between text-[10px] font-bold text-brand-grey uppercase tracking-wide mb-1">
             <span>До уровня {user.level + 1}</span>
             <span>{user.currentXP} / {user.nextLevelXP} XP</span>
@@ -70,13 +67,13 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
          </div>
       </div>
 
-      {/* Business Card / Contacts (Replaces Goal) */}
+      {/* Business Card / Contacts */}
       <div className="mt-6 mx-4">
          <div className="bg-white rounded-2xl p-5 shadow-sm border border-brand-light">
             <h3 className="text-sm font-bold text-brand-black mb-4 uppercase tracking-wide opacity-70">Визитка</h3>
-            
+
             <div className="grid grid-cols-3 gap-3">
-                <a href={`https://t.me/${user.telegram.replace('@', '')}`} target="_blank" rel="noreferrer" 
+                <a href={`https://t.me/${(user.telegram || '').replace('@', '')}`} target="_blank" rel="noreferrer"
                    className="flex flex-col items-center justify-center gap-2 py-4 bg-blue-50 rounded-xl border border-blue-100 active:scale-[0.97] transition-transform">
                     <div className="w-10 h-10 bg-blue-500 text-white rounded-full flex items-center justify-center shadow-md shadow-blue-200">
                         <Send size={18} className="-ml-0.5 mt-0.5" />
@@ -84,7 +81,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
                     <span className="text-[10px] font-bold text-blue-600">Telegram</span>
                 </a>
 
-                <a href={`https://wa.me/${user.whatsapp.replace(/[^0-9]/g, '')}`} target="_blank" rel="noreferrer"
+                <a href={`https://wa.me/${(user.whatsapp || '').replace(/[^0-9]/g, '')}`} target="_blank" rel="noreferrer"
                    className="flex flex-col items-center justify-center gap-2 py-4 bg-green-50 rounded-xl border border-green-100 active:scale-[0.97] transition-transform">
                     <div className="w-10 h-10 bg-green-500 text-white rounded-full flex items-center justify-center shadow-md shadow-green-200">
                         <MessageCircle size={18} />
@@ -92,7 +89,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
                     <span className="text-[10px] font-bold text-green-600">WhatsApp</span>
                 </a>
 
-                <a href={`tel:${user.phone}`} 
+                <a href={`tel:${user.phone}`}
                    className="flex flex-col items-center justify-center gap-2 py-4 bg-brand-cream rounded-xl border border-brand-beige active:scale-[0.97] transition-transform">
                     <div className="w-10 h-10 bg-brand-black text-brand-gold rounded-full flex items-center justify-center shadow-md">
                         <Phone size={18} />
@@ -100,10 +97,20 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
                     <span className="text-[10px] font-bold text-brand-black">Позвонить</span>
                 </a>
             </div>
-            
+
             <div className="mt-4 flex justify-center">
                 <p className="text-xs text-brand-grey font-medium">{user.phone}</p>
             </div>
+         </div>
+      </div>
+
+      {/* My Bookings */}
+      <div className="mt-6 mx-4">
+         <div className="bg-white rounded-2xl p-5 shadow-sm border border-brand-light">
+            <h3 className="text-sm font-bold text-brand-black mb-4 uppercase tracking-wide opacity-70 flex items-center gap-2">
+                <FileText size={16} /> Мои бронирования
+            </h3>
+            <BookingChecklist />
          </div>
       </div>
 
@@ -112,10 +119,10 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
         <h3 className="text-lg font-bold text-brand-black mb-4 flex items-center gap-2">
             Задачи <Zap size={16} className="text-brand-gold fill-current" />
         </h3>
-        
+
         <div className="space-y-3">
             {quests.map(quest => (
-                <div 
+                <div
                     key={quest.id}
                     onClick={() => !quest.isCompleted && onClaimQuest(quest.id)}
                     className={`
@@ -152,15 +159,15 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
                               <span className="text-xs font-medium text-brand-grey">{stat.sales} / {stat.totalUnits} кв.</span>
                           </div>
                           <div className="h-2 w-full bg-brand-cream rounded-full overflow-hidden">
-                              <div 
-                                className={`h-full rounded-full ${stat.color}`} 
-                                style={{ width: `${(stat.sales / 20) * 100}%` }} // Normalized for demo
+                              <div
+                                className={`h-full rounded-full ${stat.color}`}
+                                style={{ width: `${(stat.sales / 20) * 100}%` }}
                               ></div>
                           </div>
                       </div>
                   ))}
               </div>
-              
+
               <div className="mt-6 pt-4 border-t border-brand-light flex justify-between items-center">
                   <span className="text-xs text-brand-grey font-medium">Всего за месяц</span>
                   <span className="text-xl font-black text-brand-black">{user.dealsClosed} сделок</span>

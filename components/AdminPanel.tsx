@@ -1,413 +1,339 @@
-
-import React, { useState } from 'react';
-import { ConstructionUpdate, ProjectData, CalendarEvent, MortgageProgram, ShopItem, CurrencyType } from '../types';
-import { Trash2, Save, X, Edit2, Link as LinkIcon, ShoppingBag } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import WebApp from '@twa-dev/sdk';
+import { Newspaper, Building2, Link, ShoppingBag, Zap, Trash2, UserCheck } from 'lucide-react';
 
 interface AdminPanelProps {
+  onNewsAdded: () => void;
   onClose: () => void;
-  // State Setters
-  updates: ConstructionUpdate[];
-  setUpdates: React.Dispatch<React.SetStateAction<ConstructionUpdate[]>>;
-  projects: ProjectData[];
-  setProjects: React.Dispatch<React.SetStateAction<ProjectData[]>>;
-  events: CalendarEvent[];
-  setEvents: React.Dispatch<React.SetStateAction<CalendarEvent[]>>;
-  programs: MortgageProgram[];
-  setPrograms: React.Dispatch<React.SetStateAction<MortgageProgram[]>>;
-  shopItems: ShopItem[];
-  setShopItems: React.Dispatch<React.SetStateAction<ShopItem[]>>;
+  editData?: any;
 }
 
-const AdminPanel: React.FC<AdminPanelProps> = ({ 
-    onClose, updates, setUpdates, projects, setProjects, events, setEvents, programs, setPrograms, shopItems, setShopItems 
-}) => {
-    const [activeTab, setActiveTab] = useState<'NEWS' | 'PROJECTS' | 'CALENDAR' | 'MORTGAGE' | 'SHOP'>('NEWS');
+interface QuestItem {
+  id: number;
+  title: string;
+  type: string;
+  reward_xp: number;
+  reward_amount: number;
+  reward_currency: string;
+  is_active: boolean;
+}
 
-    return (
-        <div className="fixed inset-0 z-[100] bg-brand-cream flex flex-col animate-fade-in">
-            {/* Header */}
-            <div className="px-6 pt-12 pb-4 bg-brand-black text-brand-gold flex justify-between items-center shadow-md">
-                <h2 className="text-xl font-extrabold">Админ-панель</h2>
-                <button onClick={onClose} className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-white">
-                    <X size={18} />
-                </button>
-            </div>
+interface ApplicationItem {
+  id: number;
+  telegram_id: number;
+  first_name: string;
+  last_name: string;
+  company: string;
+  company_type: string;
+  phone: string;
+  approval_status: string;
+  created_at: string;
+}
 
-            {/* Tabs */}
-            <div className="flex bg-brand-white border-b border-brand-light overflow-x-auto">
-                <AdminTab label="Медиа" active={activeTab === 'NEWS'} onClick={() => setActiveTab('NEWS')} />
-                <AdminTab label="Объекты" active={activeTab === 'PROJECTS'} onClick={() => setActiveTab('PROJECTS')} />
-                <AdminTab label="Календарь" active={activeTab === 'CALENDAR'} onClick={() => setActiveTab('CALENDAR')} />
-                <AdminTab label="Ипотека" active={activeTab === 'MORTGAGE'} onClick={() => setActiveTab('MORTGAGE')} />
-                <AdminTab label="Маркет" active={activeTab === 'SHOP'} onClick={() => setActiveTab('SHOP')} />
-            </div>
+export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) => {
+  const [activeTab, setActiveTab] = useState<'news' | 'import' | 'shop' | 'quests' | 'applications'>('news');
 
-            {/* Content */}
-            <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-                {activeTab === 'NEWS' && <NewsEditor updates={updates} setUpdates={setUpdates} />}
-                {activeTab === 'PROJECTS' && <ProjectsEditor projects={projects} setProjects={setProjects} />}
-                {activeTab === 'CALENDAR' && <EventsEditor events={events} setEvents={setEvents} />}
-                {activeTab === 'MORTGAGE' && <MortgageEditor programs={programs} setPrograms={setPrograms} />}
-                {activeTab === 'SHOP' && <ShopEditor items={shopItems} setItems={setShopItems} />}
-            </div>
+  // News
+  const [title, setTitle] = useState('');
+  const [projectName, setProjectName] = useState('');
+  const [progress, setProgress] = useState(0);
+  const [text, setText] = useState('');
+  const [image, setImage] = useState('');
+  const [checklistRaw, setChecklistRaw] = useState('');
+
+  // Import
+  const [importProjectId, setImportProjectId] = useState('');
+  const [importUrl, setImportUrl] = useState('');
+
+  // Shop
+  const [shopTitle, setShopTitle] = useState('');
+  const [shopPrice, setShopPrice] = useState(0);
+  const [shopCurrency, setShopCurrency] = useState('SILVER');
+  const [shopImage, setShopImage] = useState('');
+
+  // Quests
+  const [questsList, setQuestsList] = useState<QuestItem[]>([]);
+  const [questTitle, setQuestTitle] = useState('');
+  const [questType, setQuestType] = useState('SHARE');
+  const [questRewardXp, setQuestRewardXp] = useState(50);
+  const [questRewardAmount, setQuestRewardAmount] = useState(10);
+  const [questRewardCurrency, setQuestRewardCurrency] = useState('SILVER');
+
+  // Applications
+  const [applications, setApplications] = useState<ApplicationItem[]>([]);
+
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (editData) {
+      setActiveTab('news');
+      setTitle(editData.title);
+      setProjectName(editData.project_name || '');
+      setProgress(editData.progress || 0);
+      setText(editData.text);
+      setImage(editData.image_url || '');
+      if (Array.isArray(editData.checklist)) {
+        setChecklistRaw(editData.checklist.join('\n'));
+      }
+    }
+  }, [editData]);
+
+  useEffect(() => {
+    if (activeTab === 'quests') fetchQuests();
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 'applications') fetchApplications();
+  }, [activeTab]);
+
+  const fetchQuests = () => {
+    fetch('/api/quests')
+      .then(res => res.json())
+      .then(data => setQuestsList(data))
+      .catch(e => console.error('Quests fetch error:', e));
+  };
+
+  const fetchApplications = () => {
+    fetch('/api/applications')
+      .then(res => res.json())
+      .then(data => setApplications(data))
+      .catch(e => console.error('Applications fetch error:', e));
+  };
+
+  const handleSubmitNews = async () => {
+    if (!title || !text) return alert('Заполни поля');
+    setLoading(true);
+    const body = {
+      initData: WebApp.initData,
+      title, text, image_url: image,
+      project_name: projectName,
+      progress: Number(progress),
+      checklist: checklistRaw.split('\n').filter(l => l.trim())
+    };
+    try {
+      const url = editData ? `/api/news/${editData.id}` : '/api/news';
+      const method = editData ? 'PUT' : 'POST';
+      await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      alert('Готово!'); onClose(); onNewsAdded();
+    } catch (e) { alert('Ошибка'); } finally { setLoading(false); }
+  };
+
+  const handleImportXml = async () => {
+    if (!importProjectId || !importUrl) return alert('Заполни поля');
+    setLoading(true);
+    try {
+        const res = await fetch('/api/sync-xml-url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData: WebApp.initData, projectId: importProjectId, url: importUrl })
+        });
+        const data = await res.json();
+        if (data.success) {
+            alert(`Успешно! Загружено: ${data.count}`);
+            setImportUrl('');
+        } else { alert('Ошибка: ' + JSON.stringify(data)); }
+    } catch (e) { alert('Ошибка сети'); } finally { setLoading(false); }
+  };
+
+  const handleSubmitProduct = async () => {
+    if (!shopTitle || !shopPrice) return alert('Заполни название и цену');
+    setLoading(true);
+    try {
+        await fetch('/api/products', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                initData: WebApp.initData,
+                title: shopTitle,
+                price: Number(shopPrice),
+                currency: shopCurrency,
+                image_url: shopImage
+            })
+        });
+        alert('Товар добавлен!');
+        setShopTitle(''); setShopPrice(0); setShopImage('');
+    } catch (e) { alert('Ошибка'); } finally { setLoading(false); }
+  };
+
+  const handleCreateQuest = async () => {
+    if (!questTitle) return alert('Заполни название квеста');
+    setLoading(true);
+    try {
+      const res = await fetch('/api/quests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          initData: WebApp.initData,
+          title: questTitle, type: questType,
+          reward_xp: Number(questRewardXp),
+          reward_amount: Number(questRewardAmount),
+          reward_currency: questRewardCurrency,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) { alert('Квест создан!'); setQuestTitle(''); fetchQuests(); }
+      else { alert('Ошибка: ' + (data.error || 'Неизвестная')); }
+    } catch (e) { alert('Ошибка сети'); } finally { setLoading(false); }
+  };
+
+  const handleDeleteQuest = async (questId: number) => {
+    if (!confirm('Деактивировать квест?')) return;
+    try {
+      await fetch(`/api/quests/${questId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
+      fetchQuests();
+    } catch (e) { alert('Ошибка удаления'); }
+  };
+
+  const handleApproveUser = async (userId: number) => {
+    try {
+      await fetch(`/api/applications/${userId}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
+      fetchApplications();
+    } catch (e) { alert('Ошибка'); }
+  };
+
+  const handleRejectUser = async (userId: number) => {
+    if (!confirm('Отклонить заявку?')) return;
+    try {
+      await fetch(`/api/applications/${userId}/reject`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
+      fetchApplications();
+    } catch (e) { alert('Ошибка'); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 z-[200] flex justify-center items-center p-4 animate-fade-in">
+      <div className="bg-white rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-5 flex flex-col gap-3">
+
+        <div className="flex justify-between items-center mb-2 border-b pb-3">
+            <h3 className="text-xl font-bold text-black">Админка</h3>
+            <button onClick={onClose} className="text-gray-400 hover:text-black text-sm font-bold">Закрыть</button>
         </div>
-    );
-};
 
-const AdminTab: React.FC<{ label: string, active: boolean, onClick: () => void }> = ({ label, active, onClick }) => (
-    <button 
-        onClick={onClick} 
-        className={`px-4 py-3 text-xs font-bold uppercase tracking-wider whitespace-nowrap border-b-2 transition-colors ${active ? 'border-brand-gold text-brand-black' : 'border-transparent text-brand-grey'}`}
-    >
-        {label}
-    </button>
-);
-
-// --- EDITORS ---
-
-// 1. NEWS EDITOR
-const NewsEditor: React.FC<{ updates: ConstructionUpdate[], setUpdates: React.Dispatch<React.SetStateAction<ConstructionUpdate[]>> }> = ({ updates, setUpdates }) => {
-    const [editingId, setEditingId] = useState<string | null>(null);
-    const [form, setForm] = useState<Partial<ConstructionUpdate>>({});
-
-    const handleEdit = (item: ConstructionUpdate) => {
-        setEditingId(item.id);
-        setForm(item);
-    };
-
-    const handleDelete = (id: string) => {
-        if(window.confirm('Удалить новость?')) {
-            setUpdates((prev: ConstructionUpdate[]) => prev.filter(i => i.id !== id));
-        }
-    };
-
-    const handleSave = () => {
-        if (!form.title || !form.projectName) return alert('Заполните название и проект');
-        
-        if (editingId) {
-            setUpdates((prev: ConstructionUpdate[]) => prev.map(i => i.id === editingId ? { ...i, ...form } as ConstructionUpdate : i));
-        } else {
-            const newItem: ConstructionUpdate = {
-                id: Date.now().toString(),
-                title: form.title || '',
-                projectName: form.projectName || '',
-                description: form.description || '',
-                checklist: form.checklist || [],
-                materialsLink: form.materialsLink || '',
-                images: form.images || ['https://via.placeholder.com/400'],
-                date: new Date().toLocaleDateString('ru-RU'),
-                progress: form.progress || 0
-            };
-            setUpdates((prev: ConstructionUpdate[]) => [newItem, ...prev]);
-        }
-        setEditingId(null);
-        setForm({});
-    };
-
-    return (
-        <div className="space-y-6">
-            <div className="bg-white p-4 rounded-xl border border-brand-light shadow-sm">
-                <h3 className="font-bold text-brand-black mb-3">{editingId ? 'Редактировать' : 'Добавить новость'}</h3>
-                <input className="w-full mb-2 p-2 border rounded-lg text-sm" placeholder="Заголовок" value={form.title || ''} onChange={e => setForm({...form, title: e.target.value})} />
-                <input className="w-full mb-2 p-2 border rounded-lg text-sm" placeholder="Название ЖК" value={form.projectName || ''} onChange={e => setForm({...form, projectName: e.target.value})} />
-                <textarea className="w-full mb-2 p-2 border rounded-lg text-sm" placeholder="Текст новости..." rows={3} value={form.description || ''} onChange={e => setForm({...form, description: e.target.value})} />
-                <input className="w-full mb-2 p-2 border rounded-lg text-sm" placeholder="Ссылка на Яндекс.Диск" value={form.materialsLink || ''} onChange={e => setForm({...form, materialsLink: e.target.value})} />
-                <input className="w-full mb-2 p-2 border rounded-lg text-sm" placeholder="Ссылка на картинку" value={form.images?.[0] || ''} onChange={e => setForm({...form, images: [e.target.value]})} />
-                
-                <div className="flex gap-2 mt-2">
-                    <button onClick={handleSave} className="flex-1 bg-brand-black text-brand-gold py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2"><Save size={14}/> Сохранить</button>
-                    {editingId && <button onClick={() => {setEditingId(null); setForm({})}} className="px-4 bg-brand-light text-brand-black rounded-lg text-xs font-bold">Отмена</button>}
-                </div>
-            </div>
-
-            <div className="space-y-2">
-                {updates.map(item => (
-                    <div key={item.id} className="flex justify-between items-center bg-white p-3 rounded-lg border border-brand-light">
-                        <div className="overflow-hidden">
-                            <div className="font-bold text-sm truncate">{item.title}</div>
-                            <div className="text-xs text-brand-grey">{item.projectName}</div>
-                        </div>
-                        <div className="flex gap-2">
-                            <button onClick={() => handleEdit(item)} className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Edit2 size={14}/></button>
-                            <button onClick={() => handleDelete(item.id)} className="p-2 bg-red-50 text-red-600 rounded-lg"><Trash2 size={14}/></button>
-                        </div>
-                    </div>
-                ))}
-            </div>
+        {/* Tabs */}
+        <div className="flex bg-gray-100 rounded-lg p-1 overflow-x-auto">
+            <button onClick={() => setActiveTab('news')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'news' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Newspaper size={14}/> Новости</button>
+            <button onClick={() => setActiveTab('import')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'import' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Building2 size={14}/> Импорт</button>
+            <button onClick={() => setActiveTab('shop')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'shop' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><ShoppingBag size={14}/> Товары</button>
+            <button onClick={() => setActiveTab('applications')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'applications' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><UserCheck size={14}/> Заявки</button>
+            <button onClick={() => setActiveTab('quests')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'quests' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Zap size={14}/> Квесты</button>
         </div>
-    );
-};
 
-// 2. PROJECTS EDITOR
-const ProjectsEditor: React.FC<{ projects: ProjectData[], setProjects: React.Dispatch<React.SetStateAction<ProjectData[]>> }> = ({ projects, setProjects }) => {
-    const [editingId, setEditingId] = useState<string | null>(null);
-    const [form, setForm] = useState<Partial<ProjectData>>({});
-
-    const handleEdit = (item: ProjectData) => {
-        setEditingId(item.id);
-        setForm(item);
-    };
-
-    const handleDelete = (id: string) => {
-        if(window.confirm('Удалить проект?')) setProjects((prev: ProjectData[]) => prev.filter(i => i.id !== id));
-    };
-
-    const handleSave = () => {
-        if (!form.name) return alert('Заполните название');
-        
-        if (editingId) {
-            setProjects((prev: ProjectData[]) => prev.map(i => i.id === editingId ? { ...i, ...form } as ProjectData : i));
-        } else {
-            const newItem: ProjectData = {
-                id: Date.now().toString(),
-                name: form.name || '',
-                description: form.description || '',
-                profitbaseUrl: form.profitbaseUrl || '',
-                floors: Number(form.floors) || 10,
-                unitsPerFloor: Number(form.unitsPerFloor) || 5,
-                image: form.image || ''
-            };
-            setProjects((prev: ProjectData[]) => [...prev, newItem]);
-        }
-        setEditingId(null);
-        setForm({});
-    };
-
-    return (
-        <div className="space-y-6">
-            <div className="bg-white p-4 rounded-xl border border-brand-light shadow-sm">
-                <h3 className="font-bold text-brand-black mb-3">{editingId ? 'Редактировать проект' : 'Добавить проект'}</h3>
-                <input className="w-full mb-2 p-2 border rounded-lg text-sm" placeholder="Название ЖК" value={form.name || ''} onChange={e => setForm({...form, name: e.target.value})} />
-                <input className="w-full mb-2 p-2 border rounded-lg text-sm" placeholder="Описание" value={form.description || ''} onChange={e => setForm({...form, description: e.target.value})} />
-                <input className="w-full mb-2 p-2 border rounded-lg text-sm" placeholder="Ссылка на XML Profitbase" value={form.profitbaseUrl || ''} onChange={e => setForm({...form, profitbaseUrl: e.target.value})} />
+        {activeTab === 'news' && (
+            <div className="flex flex-col gap-3 animate-fade-in">
+                <input placeholder="Заголовок" value={title} onChange={e => setTitle(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
                 <div className="flex gap-2">
-                    <input className="w-1/2 mb-2 p-2 border rounded-lg text-sm" type="number" placeholder="Этажей" value={form.floors || ''} onChange={e => setForm({...form, floors: Number(e.target.value)})} />
-                    <input className="w-1/2 mb-2 p-2 border rounded-lg text-sm" type="number" placeholder="Кв. на этаж" value={form.unitsPerFloor || ''} onChange={e => setForm({...form, unitsPerFloor: Number(e.target.value)})} />
-                </div>
-                <input className="w-full mb-2 p-2 border rounded-lg text-sm" placeholder="Ссылка на картинку" value={form.image || ''} onChange={e => setForm({...form, image: e.target.value})} />
-                
-                <div className="flex gap-2 mt-2">
-                    <button onClick={handleSave} className="flex-1 bg-brand-black text-brand-gold py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2"><Save size={14}/> Сохранить</button>
-                    {editingId && <button onClick={() => {setEditingId(null); setForm({})}} className="px-4 bg-brand-light text-brand-black rounded-lg text-xs font-bold">Отмена</button>}
-                </div>
-            </div>
-
-            <div className="space-y-2">
-                {projects.map(item => (
-                    <div key={item.id} className="flex justify-between items-center bg-white p-3 rounded-lg border border-brand-light">
-                        <div>
-                            <div className="font-bold text-sm">{item.name}</div>
-                            {item.profitbaseUrl && <div className="text-[10px] text-green-600 flex items-center gap-1"><LinkIcon size={10}/> XML подключен</div>}
-                        </div>
-                        <div className="flex gap-2">
-                            <button onClick={() => handleEdit(item)} className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Edit2 size={14}/></button>
-                            <button onClick={() => handleDelete(item.id)} className="p-2 bg-red-50 text-red-600 rounded-lg"><Trash2 size={14}/></button>
-                        </div>
+                    <input placeholder="Проект (ЖК...)" value={projectName} onChange={e => setProjectName(e.target.value)} className="p-3 border rounded-lg flex-1 text-black bg-gray-50" />
+                    <div className="w-1/3 flex items-center border rounded-lg px-2 bg-gray-50">
+                        <span className="text-xs text-gray-500 mr-1">Готов:</span>
+                        <input type="number" min="0" max="100" value={progress} onChange={e => setProgress(Number(e.target.value))} className="w-full bg-transparent outline-none text-black font-bold" /><span className="text-sm">%</span>
                     </div>
-                ))}
-            </div>
-        </div>
-    );
-};
-
-// 3. EVENTS EDITOR
-const EventsEditor: React.FC<{ events: CalendarEvent[], setEvents: React.Dispatch<React.SetStateAction<CalendarEvent[]>> }> = ({ events, setEvents }) => {
-    const [form, setForm] = useState<Partial<CalendarEvent>>({});
-    
-    const handleSave = () => {
-        if (!form.title) return;
-        const newItem: CalendarEvent = {
-            id: Date.now().toString(),
-            title: form.title || '',
-            date: form.date || '01 Янв',
-            time: form.time || '10:00',
-            type: form.type || 'TOUR',
-            spotsTotal: Number(form.spotsTotal) || 20,
-            spotsTaken: 0,
-            isRegistered: false
-        };
-        setEvents((prev: CalendarEvent[]) => [...prev, newItem]);
-        setForm({});
-    };
-
-    const handleDelete = (id: string) => {
-        if(window.confirm('Удалить событие?')) setEvents((prev: CalendarEvent[]) => prev.filter(e => e.id !== id));
-    };
-
-    return (
-        <div className="space-y-6">
-             <div className="bg-white p-4 rounded-xl border border-brand-light shadow-sm">
-                <h3 className="font-bold text-brand-black mb-3">Добавить событие</h3>
-                <input className="w-full mb-2 p-2 border rounded-lg text-sm" placeholder="Название" value={form.title || ''} onChange={e => setForm({...form, title: e.target.value})} />
-                <div className="flex gap-2 mb-2">
-                    <input className="w-1/2 p-2 border rounded-lg text-sm" placeholder="Дата (25 Окт)" value={form.date || ''} onChange={e => setForm({...form, date: e.target.value})} />
-                    <input className="w-1/2 p-2 border rounded-lg text-sm" placeholder="Время" value={form.time || ''} onChange={e => setForm({...form, time: e.target.value})} />
                 </div>
-                <select className="w-full mb-2 p-2 border rounded-lg text-sm bg-white" value={form.type || 'TOUR'} onChange={e => setForm({...form, type: e.target.value as any})}>
-                    <option value="TOUR">Экскурсия</option>
-                    <option value="TRAINING">Обучение</option>
-                    <option value="PARTY">Вечеринка</option>
-                </select>
-                <input className="w-full mb-2 p-2 border rounded-lg text-sm" type="number" placeholder="Всего мест" value={form.spotsTotal || ''} onChange={e => setForm({...form, spotsTotal: Number(e.target.value)})} />
-                
-                <button onClick={handleSave} className="w-full bg-brand-black text-brand-gold py-2 rounded-lg font-bold text-xs"><Save size={14} className="inline mr-2"/> Добавить</button>
+                <textarea placeholder="Текст..." value={text} onChange={e => setText(e.target.value)} className="p-3 border rounded-lg w-full h-24 text-black bg-gray-50" />
+                <input placeholder="Ссылка на картинку" value={image} onChange={e => setImage(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
+                <div><label className="text-xs font-bold text-gray-500 uppercase">Чек-лист:</label><textarea value={checklistRaw} onChange={e => setChecklistRaw(e.target.value)} className="p-3 border rounded-lg w-full h-24 text-black bg-gray-50 mt-1" /></div>
+                <div className="flex gap-2 mt-2 pt-2 border-t">
+                    <button onClick={handleSubmitNews} disabled={loading} className="flex-1 bg-[#BA8F50] text-white p-3 rounded-lg font-bold shadow-md">{loading ? '...' : 'Сохранить'}</button>
+                    <button onClick={onClose} className="bg-gray-200 text-black p-3 rounded-lg font-medium">Отмена</button>
+                </div>
             </div>
+        )}
 
-            <div className="space-y-2">
-                {events.map(item => (
-                    <div key={item.id} className="flex justify-between items-center bg-white p-3 rounded-lg border border-brand-light">
-                        <div>
-                            <div className="font-bold text-sm">{item.title}</div>
-                            <div className="text-xs text-brand-grey">{item.date} в {item.time}</div>
-                        </div>
-                        <button onClick={() => handleDelete(item.id)} className="p-2 bg-red-50 text-red-600 rounded-lg"><Trash2 size={14}/></button>
-                    </div>
-                ))}
+        {activeTab === 'import' && (
+            <div className="flex flex-col gap-4 animate-fade-in">
+                <input placeholder="ID Проекта (brk)" value={importProjectId} onChange={e => setImportProjectId(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50 font-mono" />
+                <div className="relative">
+                    <Link size={16} className="absolute top-4 left-3 text-gray-400" />
+                    <input placeholder="https://profitbase.ru/feed/..." value={importUrl} onChange={e => setImportUrl(e.target.value)} className="p-3 pl-10 border rounded-lg w-full text-black bg-gray-50 font-mono text-sm" />
+                </div>
+                <div className="flex gap-2 mt-4 pt-4 border-t">
+                    <button onClick={handleImportXml} disabled={loading} className="flex-1 bg-blue-600 text-white p-3 rounded-lg font-bold shadow-md">{loading ? '...' : 'Загрузить'}</button>
+                    <button onClick={onClose} className="bg-gray-200 text-black p-3 rounded-lg font-medium">Закрыть</button>
+                </div>
             </div>
-        </div>
-    );
-};
+        )}
 
-// 4. MORTGAGE EDITOR
-const MortgageEditor: React.FC<{ programs: MortgageProgram[], setPrograms: React.Dispatch<React.SetStateAction<MortgageProgram[]>> }> = ({ programs, setPrograms }) => {
-    const [form, setForm] = useState<Partial<MortgageProgram>>({});
-
-    const handleSave = () => {
-        if (!form.name) return;
-        const newItem: MortgageProgram = {
-            id: Date.now().toString(),
-            name: form.name || '',
-            rate: Number(form.rate) || 0
-        };
-        setPrograms((prev: MortgageProgram[]) => [...prev, newItem]);
-        setForm({});
-    };
-    
-    const handleDelete = (id: string) => {
-         setPrograms((prev: MortgageProgram[]) => prev.filter(e => e.id !== id));
-    };
-
-    return (
-        <div className="space-y-6">
-             <div className="bg-white p-4 rounded-xl border border-brand-light shadow-sm">
-                <h3 className="font-bold text-brand-black mb-3">Добавить программу</h3>
-                <input className="w-full mb-2 p-2 border rounded-lg text-sm" placeholder="Название (IT Ипотека)" value={form.name || ''} onChange={e => setForm({...form, name: e.target.value})} />
-                <input className="w-full mb-2 p-2 border rounded-lg text-sm" type="number" step="0.1" placeholder="Ставка %" value={form.rate || ''} onChange={e => setForm({...form, rate: Number(e.target.value)})} />
-                <button onClick={handleSave} className="w-full bg-brand-black text-brand-gold py-2 rounded-lg font-bold text-xs"><Save size={14} className="inline mr-2"/> Добавить</button>
-            </div>
-
-            <div className="space-y-2">
-                {programs.map(item => (
-                    <div key={item.id} className="flex justify-between items-center bg-white p-3 rounded-lg border border-brand-light">
-                        <div>
-                            <div className="font-bold text-sm">{item.name}</div>
-                            <div className="text-xs text-brand-grey">{item.rate}%</div>
-                        </div>
-                        <button onClick={() => handleDelete(item.id)} className="p-2 bg-red-50 text-red-600 rounded-lg"><Trash2 size={14}/></button>
-                    </div>
-                ))}
-            </div>
-        </div>
-    );
-};
-
-// 5. SHOP EDITOR
-const ShopEditor: React.FC<{ items: ShopItem[], setItems: React.Dispatch<React.SetStateAction<ShopItem[]>> }> = ({ items, setItems }) => {
-    const [editingId, setEditingId] = useState<string | null>(null);
-    const [form, setForm] = useState<Partial<ShopItem>>({ currency: CurrencyType.SILVER, category: 'MERCH', inStock: true });
-
-    const handleEdit = (item: ShopItem) => {
-        setEditingId(item.id);
-        setForm(item);
-    };
-
-    const handleDelete = (id: string) => {
-        if(window.confirm('Удалить товар?')) setItems((prev: ShopItem[]) => prev.filter(i => i.id !== id));
-    };
-
-    const handleSave = () => {
-        if (!form.name || !form.price) return alert('Заполните название и цену');
-        
-        if (editingId) {
-            setItems((prev: ShopItem[]) => prev.map(i => i.id === editingId ? { ...i, ...form } as ShopItem : i));
-        } else {
-            const newItem: ShopItem = {
-                id: Date.now().toString(),
-                name: form.name || '',
-                price: Number(form.price) || 0,
-                currency: form.currency || CurrencyType.SILVER,
-                category: form.category || 'MERCH',
-                image: form.image || '🛍️',
-                inStock: form.inStock ?? true
-            };
-            setItems((prev: ShopItem[]) => [newItem, ...prev]);
-        }
-        setEditingId(null);
-        setForm({ currency: CurrencyType.SILVER, category: 'MERCH', inStock: true });
-    };
-
-    return (
-        <div className="space-y-6">
-            <div className="bg-white p-4 rounded-xl border border-brand-light shadow-sm">
-                <h3 className="font-bold text-brand-black mb-3">{editingId ? 'Редактировать товар' : 'Добавить товар'}</h3>
-                
-                <input className="w-full mb-2 p-2 border rounded-lg text-sm" placeholder="Название" value={form.name || ''} onChange={e => setForm({...form, name: e.target.value})} />
-                
-                <div className="flex gap-2 mb-2">
-                    <input className="w-1/2 p-2 border rounded-lg text-sm" type="number" placeholder="Цена" value={form.price || ''} onChange={e => setForm({...form, price: Number(e.target.value)})} />
-                    <select className="w-1/2 p-2 border rounded-lg text-sm bg-white" value={form.currency} onChange={e => setForm({...form, currency: e.target.value as CurrencyType})}>
-                        <option value={CurrencyType.SILVER}>Silver</option>
-                        <option value={CurrencyType.GOLD}>Gold</option>
+        {activeTab === 'shop' && (
+            <div className="flex flex-col gap-3 animate-fade-in">
+                <input placeholder="Название товара (Худи)" value={shopTitle} onChange={e => setShopTitle(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
+                <div className="flex gap-2">
+                    <input type="number" placeholder="Цена" value={shopPrice} onChange={e => setShopPrice(Number(e.target.value))} className="p-3 border rounded-lg w-1/2 text-black bg-gray-50" />
+                    <select value={shopCurrency} onChange={e => setShopCurrency(e.target.value)} className="p-3 border rounded-lg w-1/2 text-black bg-gray-50">
+                        <option value="SILVER">Серебро</option>
+                        <option value="GOLD">Золото</option>
                     </select>
                 </div>
-
-                <div className="flex gap-2 mb-2">
-                    <select className="w-1/2 p-2 border rounded-lg text-sm bg-white" value={form.category} onChange={e => setForm({...form, category: e.target.value as any})}>
-                        <option value="MERCH">Мерч</option>
-                        <option value="TECH">Техника</option>
-                        <option value="LUXURY">Luxury</option>
-                        <option value="EXPERIENCE">Впечатления</option>
-                    </select>
-                    <div className="w-1/2 flex items-center px-2">
-                        <label className="flex items-center gap-2 text-sm text-brand-black cursor-pointer">
-                            <input type="checkbox" checked={form.inStock} onChange={e => setForm({...form, inStock: e.target.checked})} className="accent-brand-gold w-4 h-4"/>
-                            В наличии
-                        </label>
-                    </div>
-                </div>
-
-                <input className="w-full mb-2 p-2 border rounded-lg text-sm" placeholder="URL картинки или Эмодзи (🧥)" value={form.image || ''} onChange={e => setForm({...form, image: e.target.value})} />
-                
-                <div className="flex gap-2 mt-2">
-                    <button onClick={handleSave} className="flex-1 bg-brand-black text-brand-gold py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-2"><Save size={14}/> Сохранить</button>
-                    {editingId && <button onClick={() => {setEditingId(null); setForm({ currency: CurrencyType.SILVER, category: 'MERCH', inStock: true })}} className="px-4 bg-brand-light text-brand-black rounded-lg text-xs font-bold">Отмена</button>}
+                <input placeholder="Ссылка на фото" value={shopImage} onChange={e => setShopImage(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
+                <div className="flex gap-2 mt-2 pt-2 border-t">
+                    <button onClick={handleSubmitProduct} disabled={loading} className="flex-1 bg-green-600 text-white p-3 rounded-lg font-bold shadow-md">{loading ? '...' : 'Добавить товар'}</button>
+                    <button onClick={onClose} className="bg-gray-200 text-black p-3 rounded-lg font-medium">Закрыть</button>
                 </div>
             </div>
+        )}
 
-            <div className="space-y-2">
-                {items.map(item => (
-                    <div key={item.id} className="flex justify-between items-center bg-white p-3 rounded-lg border border-brand-light">
-                        <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 bg-brand-cream rounded-lg flex items-center justify-center text-xl overflow-hidden">
-                                {item.image.startsWith('http') ? <img src={item.image} alt="" className="w-full h-full object-cover"/> : item.image}
-                            </div>
-                            <div>
-                                <div className="font-bold text-sm">{item.name}</div>
-                                <div className="text-xs text-brand-grey font-medium flex gap-2">
-                                    <span>{item.price} {item.currency === CurrencyType.GOLD ? 'Gold' : 'Silver'}</span>
-                                    {!item.inStock && <span className="text-red-500">Нет в наличии</span>}
+        {activeTab === 'quests' && (
+            <div className="flex flex-col gap-3 animate-fade-in">
+                <h4 className="font-bold text-black text-sm">Новый квест</h4>
+                <input placeholder="Название квеста" value={questTitle} onChange={e => setQuestTitle(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
+                <div className="flex gap-2">
+                    <select value={questType} onChange={e => setQuestType(e.target.value)} className="p-3 border rounded-lg flex-1 text-black bg-gray-50">
+                        <option value="SHARE">Поделиться</option><option value="TEST">Тест</option><option value="DEAL">Сделка</option><option value="REVIEW">Отзыв</option>
+                    </select>
+                    <select value={questRewardCurrency} onChange={e => setQuestRewardCurrency(e.target.value)} className="p-3 border rounded-lg flex-1 text-black bg-gray-50">
+                        <option value="SILVER">Серебро</option><option value="GOLD">Золото</option>
+                    </select>
+                </div>
+                <div className="flex gap-2">
+                    <div className="flex-1"><label className="text-[10px] font-bold text-gray-500 uppercase">Награда XP</label><input type="number" value={questRewardXp} onChange={e => setQuestRewardXp(Number(e.target.value))} className="p-3 border rounded-lg w-full text-black bg-gray-50" /></div>
+                    <div className="flex-1"><label className="text-[10px] font-bold text-gray-500 uppercase">Награда монеты</label><input type="number" value={questRewardAmount} onChange={e => setQuestRewardAmount(Number(e.target.value))} className="p-3 border rounded-lg w-full text-black bg-gray-50" /></div>
+                </div>
+                <button onClick={handleCreateQuest} disabled={loading} className="bg-purple-600 text-white p-3 rounded-lg font-bold shadow-md">{loading ? '...' : 'Создать квест'}</button>
+                <div className="border-t pt-3 mt-2">
+                    <h4 className="font-bold text-black text-sm mb-2">Активные квесты</h4>
+                    {questsList.length === 0 ? (
+                        <p className="text-gray-400 text-sm text-center py-4">Квестов пока нет</p>
+                    ) : (
+                        <div className="space-y-2">
+                            {questsList.filter(q => q.is_active).map(q => (
+                                <div key={q.id} className="flex items-center justify-between bg-gray-50 p-3 rounded-lg">
+                                    <div className="flex-1 min-w-0">
+                                        <div className="font-bold text-black text-sm truncate">{q.title}</div>
+                                        <div className="text-[10px] text-gray-400">{q.type} · {q.reward_amount} {q.reward_currency === 'GOLD' ? 'золота' : 'серебра'} · {q.reward_xp} XP</div>
+                                    </div>
+                                    <button onClick={() => handleDeleteQuest(q.id)} className="ml-2 p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={16} /></button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+        )}
+
+        {activeTab === 'applications' && (
+            <div className="flex flex-col gap-3 animate-fade-in">
+                <h4 className="font-bold text-black text-sm">Заявки на регистрацию</h4>
+                {applications.length === 0 ? (
+                    <p className="text-gray-400 text-sm text-center py-8">Нет новых заявок</p>
+                ) : (
+                    <div className="space-y-2">
+                        {applications.map(app => (
+                            <div key={app.id} className="bg-gray-50 p-4 rounded-lg">
+                                <div className="flex justify-between items-start mb-2">
+                                    <div>
+                                        <div className="font-bold text-black text-sm">{app.first_name} {app.last_name}</div>
+                                        <div className="text-xs text-gray-500 mt-0.5">{app.company_type === 'ip' ? 'ИП' : 'Агентство'}: {app.company}</div>
+                                        <div className="text-xs text-gray-400 mt-0.5">{app.phone}</div>
+                                    </div>
+                                </div>
+                                <div className="flex gap-2 mt-3">
+                                    <button onClick={() => handleApproveUser(app.id)} className="flex-1 py-2 bg-green-600 text-white rounded-lg text-xs font-bold">Одобрить</button>
+                                    <button onClick={() => handleRejectUser(app.id)} className="flex-1 py-2 bg-red-500 text-white rounded-lg text-xs font-bold">Отклонить</button>
                                 </div>
                             </div>
-                        </div>
-                        <div className="flex gap-2">
-                            <button onClick={() => handleEdit(item)} className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Edit2 size={14}/></button>
-                            <button onClick={() => handleDelete(item.id)} className="p-2 bg-red-50 text-red-600 rounded-lg"><Trash2 size={14}/></button>
-                        </div>
+                        ))}
                     </div>
-                ))}
+                )}
             </div>
-        </div>
-    );
+        )}
+      </div>
+    </div>
+  );
 };
-
-export default AdminPanel;

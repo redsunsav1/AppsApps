@@ -1,7 +1,8 @@
 
 import React, { useState } from 'react';
 import { ConstructionUpdate } from '../types';
-import { Check, FolderOpen, Image as ImageIcon, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Check, FolderOpen, Image as ImageIcon, X, ChevronLeft, ChevronRight, Edit3, Trash2 } from 'lucide-react';
+import WebApp from '@twa-dev/sdk';
 
 interface ContentHubProps {
   news?: any[];
@@ -15,6 +16,18 @@ interface ContentHubProps {
 const ContentHub: React.FC<ContentHubProps> = ({ news, updates, isAdmin, onEdit, onRefresh, onGenerate }) => {
   const items: ConstructionUpdate[] = (news as ConstructionUpdate[]) || updates || [];
   const [selectedNews, setSelectedNews] = useState<ConstructionUpdate | null>(null);
+
+  const handleDeleteNews = async (newsId: string) => {
+    if (!confirm('Удалить новость?')) return;
+    try {
+      await fetch(`/api/news/${newsId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: WebApp.initData }),
+      });
+      if (onRefresh) onRefresh();
+    } catch (e) { console.error('Delete news error:', e); }
+  };
 
   return (
     <div className="pb-36 animate-fade-in">
@@ -42,6 +55,22 @@ const ContentHub: React.FC<ContentHubProps> = ({ news, updates, isAdmin, onEdit,
               <div className="absolute top-4 right-4 bg-brand-gold text-white text-xs font-bold px-2 py-1 rounded-md shadow-md">
                 {item.progress}%
               </div>
+              {isAdmin && (
+                <div className="absolute top-4 left-4 flex gap-2 z-20">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onEdit && onEdit(item); }}
+                    className="w-8 h-8 bg-white/90 backdrop-blur text-brand-black rounded-full flex items-center justify-center shadow"
+                  >
+                    <Edit3 size={14} />
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDeleteNews(item.id); }}
+                    className="w-8 h-8 bg-red-500 text-white rounded-full flex items-center justify-center shadow"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         ))}

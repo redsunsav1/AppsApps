@@ -597,6 +597,39 @@ app.post('/api/make-admin', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// Список всех пользователей (админ)
+app.get('/api/admin/users', async (req, res) => {
+  try {
+    const result = await client.query(
+      `SELECT id, telegram_id, username, first_name, last_name, company, company_type, phone,
+              is_registered, is_admin, approval_status, balance, gold_balance, xp_points, deals_closed, created_at
+       FROM users ORDER BY created_at DESC`
+    );
+    res.json(result.rows);
+  } catch (e) {
+    console.error('Admin users error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Удаление одного пользователя (админ)
+app.delete('/api/admin/users/:id', async (req, res) => {
+  try {
+    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    // Нельзя удалить самого себя
+    const tgUser = parseTelegramUser(req.body.initData);
+    const targetUser = await client.query('SELECT telegram_id FROM users WHERE id = $1', [req.params.id]);
+    if (targetUser.rows.length > 0 && String(targetUser.rows[0].telegram_id) === String(tgUser.id)) {
+      return res.status(400).json({ error: 'Нельзя удалить самого себя' });
+    }
+    await client.query('DELETE FROM users WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Delete user error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Очистка пользователей (кроме указанного)
 app.post('/api/admin/clear-users', async (req, res) => {
   try {

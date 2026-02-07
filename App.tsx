@@ -10,30 +10,7 @@ import { AdminPanel } from './components/AdminPanel';
 import { UserProfile, DailyQuest, ConstructionUpdate, ShopItem, ProjectStat, CurrencyType, ProjectData } from './types';
 import React, { useState, useEffect } from 'react';
 import { User, Newspaper, ShoppingBag, Grid3X3, Menu, Trophy, X, Lock, Calendar, Calculator, Settings } from 'lucide-react';
-
-declare const WebApp: any;
-
-// Telegram WebApp Type declaration
-declare global {
-  interface Window {
-    Telegram: {
-      WebApp: {
-        ready: () => void;
-        initData: string;
-        initDataUnsafe: {
-            user?: {
-                id: number;
-                first_name: string;
-                last_name?: string;
-                username?: string;
-                photo_url?: string;
-            }
-        };
-        expand: () => void;
-      }
-    }
-  }
-}
+import WebApp from '@twa-dev/sdk';
 
 enum Tab {
   PROFILE = 'PROFILE',

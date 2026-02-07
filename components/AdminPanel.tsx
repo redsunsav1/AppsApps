@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import WebApp from '@twa-dev/sdk';
-import { Newspaper, Building2, Link, ShoppingBag, Zap, Trash2, UserCheck } from 'lucide-react';
+import { Newspaper, Building2, Link, ShoppingBag, Zap, Trash2, UserCheck, Users } from 'lucide-react';
 
 interface AdminPanelProps {
   onNewsAdded: () => void;
@@ -31,7 +31,7 @@ interface ApplicationItem {
 }
 
 export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) => {
-  const [activeTab, setActiveTab] = useState<'news' | 'import' | 'shop' | 'quests' | 'applications'>('news');
+  const [activeTab, setActiveTab] = useState<'news' | 'import' | 'shop' | 'quests' | 'applications' | 'users'>('news');
 
   // News
   const [title, setTitle] = useState('');
@@ -62,6 +62,9 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   // Applications
   const [applications, setApplications] = useState<ApplicationItem[]>([]);
 
+  // Users
+  const [usersList, setUsersList] = useState<any[]>([]);
+
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -86,6 +89,10 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     if (activeTab === 'applications') fetchApplications();
   }, [activeTab]);
 
+  useEffect(() => {
+    if (activeTab === 'users') fetchUsers();
+  }, [activeTab]);
+
   const fetchQuests = () => {
     fetch('/api/quests')
       .then(res => res.json())
@@ -98,6 +105,25 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
       .then(res => res.json())
       .then(data => setApplications(data))
       .catch(e => console.error('Applications fetch error:', e));
+  };
+
+  const fetchUsers = () => {
+    fetch('/api/admin/users')
+      .then(res => res.json())
+      .then(data => setUsersList(data))
+      .catch(e => console.error('Users fetch error:', e));
+  };
+
+  const handleDeleteUser = async (userId: number) => {
+    if (!confirm('Удалить пользователя?')) return;
+    try {
+      await fetch(`/api/admin/users/${userId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: WebApp.initData }),
+      });
+      fetchUsers();
+    } catch (e) { alert('Ошибка удаления'); }
   };
 
   const handleSubmitNews = async () => {
@@ -215,6 +241,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
             <button onClick={() => setActiveTab('shop')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'shop' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><ShoppingBag size={14}/> Товары</button>
             <button onClick={() => setActiveTab('applications')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'applications' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><UserCheck size={14}/> Заявки</button>
             <button onClick={() => setActiveTab('quests')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'quests' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Zap size={14}/> Квесты</button>
+            <button onClick={() => setActiveTab('users')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'users' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Users size={14}/> Юзеры</button>
         </div>
 
         {activeTab === 'news' && (
@@ -304,6 +331,42 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                         </div>
                     )}
                 </div>
+            </div>
+        )}
+
+        {activeTab === 'users' && (
+            <div className="flex flex-col gap-3 animate-fade-in">
+                <h4 className="font-bold text-black text-sm">Все пользователи ({usersList.length})</h4>
+                {usersList.length === 0 ? (
+                    <p className="text-gray-400 text-sm text-center py-8">Пользователей пока нет</p>
+                ) : (
+                    <div className="space-y-2">
+                        {usersList.map(u => (
+                            <div key={u.id} className="bg-gray-50 p-3 rounded-lg flex items-center justify-between">
+                                <div className="flex-1 min-w-0">
+                                    <div className="font-bold text-black text-sm truncate">
+                                        {u.first_name || ''} {u.last_name || ''}
+                                        {u.is_admin && <span className="ml-1 text-[10px] bg-yellow-200 text-yellow-800 px-1.5 py-0.5 rounded font-bold">ADMIN</span>}
+                                    </div>
+                                    <div className="text-[10px] text-gray-500 mt-0.5">
+                                        {u.company_type === 'ip' ? 'ИП' : 'АН'}: {u.company || '—'} · {u.phone || '—'}
+                                    </div>
+                                    <div className="text-[10px] text-gray-400">
+                                        TG: {u.telegram_id} · {u.approval_status || 'none'} · {u.is_registered ? 'Активен' : 'Не зарег.'}
+                                    </div>
+                                    <div className="text-[10px] text-gray-400">
+                                        Серебро: {u.balance || 0} · Золото: {u.gold_balance || 0} · XP: {u.xp_points || 0} · Сделки: {u.deals_closed || 0}
+                                    </div>
+                                </div>
+                                {!u.is_admin && (
+                                    <button onClick={() => handleDeleteUser(u.id)} className="ml-2 p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors flex-shrink-0">
+                                        <Trash2 size={16} />
+                                    </button>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
             </div>
         )}
 

@@ -24,7 +24,9 @@ app.use(express.static(path.join(__dirname, 'dist')));
 
 const client = new Client({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
+  connectionTimeoutMillis: 10000,
+  query_timeout: 15000,
 });
 
 // =============================================
@@ -246,7 +248,6 @@ const initDb = async () => {
 
   } catch (err) { console.error('❌ DB Error:', err); }
 };
-initDb();
 
 // =============================================
 // XML SYNC
@@ -1063,4 +1064,11 @@ app.get(/.*/, (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+// Сначала подключаемся к БД, потом принимаем запросы
+initDb().then(() => {
+  app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+}).catch(err => {
+  console.error('❌ Fatal: could not init DB, starting anyway...', err);
+  app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT} (DB may be unavailable)`));
+});

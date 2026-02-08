@@ -303,6 +303,18 @@ cron.schedule('0 10 * * *', async () => {
 });
 
 // =============================================
+// HEALTH CHECK
+// =============================================
+app.get('/api/ping', async (req, res) => {
+  try {
+    const dbCheck = await client.query('SELECT 1');
+    res.json({ status: 'ok', db: 'connected', time: new Date().toISOString() });
+  } catch (e) {
+    res.json({ status: 'error', db: 'disconnected', error: e.message });
+  }
+});
+
+// =============================================
 // API: АВТОРИЗАЦИЯ
 // =============================================
 

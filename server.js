@@ -132,6 +132,28 @@ async function sendDocumentEmail(subject, files, bookingInfo) {
 // =============================================
 // TELEGRAM BOT NOTIFICATIONS (Фаза 2.2)
 // =============================================
+async function notifyUserTelegram(telegramId, text, inlineKeyboard) {
+  const BOT_TOKEN = process.env.BOT_TOKEN;
+  if (!BOT_TOKEN || !telegramId) return;
+  try {
+    const body = {
+      chat_id: telegramId,
+      text,
+      parse_mode: 'HTML',
+    };
+    if (inlineKeyboard) {
+      body.reply_markup = JSON.stringify({ inline_keyboard: inlineKeyboard });
+    }
+    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+  } catch (e) {
+    console.error('Telegram user notify error:', e.message);
+  }
+}
+
 async function notifyAdminTelegram(text, inlineKeyboard) {
   const BOT_TOKEN = process.env.BOT_TOKEN;
   const ADMIN_CHAT_ID = process.env.ADMIN_TELEGRAM_ID;
@@ -195,6 +217,9 @@ const initDb = async () => {
 
     // --- Аватарки ---
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;');
+
+    // --- Уведомления: трекинг последнего просмотра новостей ---
+    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_news_at TIMESTAMP;');
 
     // --- ФАЗА 3: Расширение bookings ---
     await client.query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS stage TEXT DEFAULT 'INIT';");
@@ -375,6 +400,17 @@ app.post('/api/applications/:userId/approve', async (req, res) => {
       `UPDATE users SET is_registered = TRUE, approval_status = 'approved' WHERE id = $1`,
       [req.params.userId]
     );
+
+    // Уведомление пользователю в Telegram
+    const userRes = await client.query('SELECT telegram_id, first_name FROM users WHERE id = $1', [req.params.userId]);
+    if (userRes.rows.length > 0) {
+      const u = userRes.rows[0];
+      const welcomeText = `🎉 <b>Добро пожаловать в Клуб Партнёров!</b>\n\nПривет, ${u.first_name || 'партнёр'}! Ваша заявка одобрена. Теперь вам доступны все разделы приложения: новости, маркет, шахматка и многое другое.`;
+      const BOT_USERNAME = process.env.BOT_USERNAME || 'repcrew_bot';
+      const keyboard = [[{ text: '🚀 Открыть приложение', web_app: { url: process.env.WEBAPP_URL || `https://t.me/${BOT_USERNAME}?profile` } }]];
+      notifyUserTelegram(u.telegram_id, welcomeText, keyboard);
+    }
+
     res.json({ success: true });
   } catch (e) {
     console.error('Approve error:', e);
@@ -473,8 +509,45 @@ app.post('/api/news', async (req, res) => {
     if (await isAdmin(req.body.initData)) {
       const { title, text, image_url, project_name, progress, checklist } = req.body;
       await client.query('INSERT INTO news (title, text, image_url, project_name, progress, checklist) VALUES ($1, $2, $3, $4, $5, $6)', [title, text, image_url, project_name, progress, JSON.stringify(checklist)]);
+
+      // Рассылка уведомлений зарегистрированным пользователям
+      const usersRes = await client.query('SELECT telegram_id FROM users WHERE is_registered = TRUE');
+      const projectLabel = project_name ? ` (${project_name})` : '';
+      const newsText = `📰 <b>Новая новость${projectLabel}</b>\n\n${title}\n\n${(text || '').slice(0, 150)}${(text || '').length > 150 ? '...' : ''}`;
+      for (const u of usersRes.rows) {
+        notifyUserTelegram(u.telegram_id, newsText);
+      }
+
       res.json({ success: true });
     } else res.status(403).json({ error: 'Forbidden' });
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// Количество непрочитанных новостей
+app.post('/api/news/unread-count', async (req, res) => {
+  try {
+    const tgUser = parseTelegramUser(req.body.initData);
+    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
+    const userRes = await client.query('SELECT last_seen_news_at FROM users WHERE telegram_id = $1', [tgUser.id]);
+    if (userRes.rows.length === 0) return res.json({ count: 0 });
+    const lastSeen = userRes.rows[0].last_seen_news_at;
+    let countRes;
+    if (lastSeen) {
+      countRes = await client.query('SELECT COUNT(*) FROM news WHERE created_at > $1', [lastSeen]);
+    } else {
+      countRes = await client.query('SELECT COUNT(*) FROM news');
+    }
+    res.json({ count: parseInt(countRes.rows[0].count) });
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// Пометить новости как просмотренные
+app.post('/api/news/mark-seen', async (req, res) => {
+  try {
+    const tgUser = parseTelegramUser(req.body.initData);
+    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
+    await client.query('UPDATE users SET last_seen_news_at = NOW() WHERE telegram_id = $1', [tgUser.id]);
+    res.json({ success: true });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 

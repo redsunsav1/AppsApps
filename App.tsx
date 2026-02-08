@@ -52,6 +52,7 @@ const App: React.FC = () => {
   const [showCalculator, setShowCalculator] = useState(false);
   const [showAdminLogin, setShowAdminLogin] = useState(false);
   const [adminPin, setAdminPin] = useState('');
+  const [unreadNewsCount, setUnreadNewsCount] = useState(0);
 
   const fetchNews = () => {
     fetch('/api/news')
@@ -108,6 +109,31 @@ const App: React.FC = () => {
         setStats(mapped);
       })
       .catch(e => console.log('Stats error (не критично)'));
+  };
+
+  const fetchUnreadCount = () => {
+    const initData = WebApp.initData;
+    if (!initData) return;
+    fetch('/api/news/unread-count', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData }),
+    })
+      .then(res => res.json())
+      .then(data => setUnreadNewsCount(data.count || 0))
+      .catch(() => {});
+  };
+
+  const markNewsSeen = () => {
+    const initData = WebApp.initData;
+    if (!initData) return;
+    fetch('/api/news/mark-seen', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData }),
+    })
+      .then(() => setUnreadNewsCount(0))
+      .catch(() => {});
   };
 
   const fetchProjects = () => {
@@ -178,6 +204,8 @@ const App: React.FC = () => {
           setApprovalStatus(sUser.approval_status || 'none');
           // Загружаем квесты с userId для отметки выполненных
           fetchQuests(sUser.id);
+          // Проверяем непрочитанные новости
+          fetchUnreadCount();
         } else {
           throw new Error("Сервер не вернул пользователя (data.user is missing)");
         }
@@ -352,7 +380,7 @@ const App: React.FC = () => {
       <div className="fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-gray-200 pb-6 pt-2">
         <div className="flex justify-around items-center h-[60px] px-2 max-w-md mx-auto">
           <NavBtn icon={User} label="Профиль" active={activeTab === Tab.PROFILE} onClick={() => setActiveTab(Tab.PROFILE)} />
-          <NavBtn icon={Newspaper} label="Новости" active={activeTab === Tab.CONTENT} onClick={() => setActiveTab(Tab.CONTENT)} />
+          <NavBtn icon={Newspaper} label="Новости" active={activeTab === Tab.CONTENT} onClick={() => { setActiveTab(Tab.CONTENT); markNewsSeen(); }} badge={unreadNewsCount} />
           <button onClick={() => setIsChessboardOpen(true)} className="flex flex-col items-center justify-center w-14 h-full -mt-8 group relative z-10">
             <div className="w-12 h-12 bg-brand-black text-brand-gold rounded-full flex items-center justify-center shadow-lg border-4 border-white group-active:scale-95 transition-transform"><Grid3X3 size={22} /></div>
             <span className="text-[9px] font-bold text-brand-black mt-1">Проекты</span>
@@ -444,19 +472,24 @@ const App: React.FC = () => {
   );
 };
 
-const NavBtn: React.FC<{ icon: React.ElementType, label: string, active: boolean, onClick: () => void, highlight?: boolean }> = ({ icon: Icon, label, active, onClick, highlight }) => (
+const NavBtn: React.FC<{ icon: React.ElementType, label: string, active: boolean, onClick: () => void, highlight?: boolean, badge?: number }> = ({ icon: Icon, label, active, onClick, highlight, badge }) => (
   <button
     onClick={onClick}
     className={`
-      flex flex-col items-center justify-center w-full py-2 transition-all duration-300 rounded-xl
+      flex flex-col items-center justify-center w-full py-2 transition-all duration-300 rounded-xl relative
       ${active ? 'text-brand-black' : 'text-brand-grey hover:text-brand-black/70'}
     `}
   >
     <div className={`
-      p-1.5 rounded-xl transition-all duration-300 mb-0.5
+      p-1.5 rounded-xl transition-all duration-300 mb-0.5 relative
       ${highlight ? 'bg-brand-black text-brand-gold shadow-lg shadow-brand-black/20 -translate-y-2' : active ? 'bg-brand-cream' : 'bg-transparent'}
     `}>
       <Icon size={24} strokeWidth={active || highlight ? 2.5 : 1.5} />
+      {badge && badge > 0 ? (
+        <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1 shadow-sm">
+          {badge > 99 ? '99+' : badge}
+        </span>
+      ) : null}
     </div>
     <span className={`text-[10px] font-medium ${active ? 'font-bold' : ''}`}>{label}</span>
   </button>

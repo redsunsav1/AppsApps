@@ -136,7 +136,8 @@ async function sendDocumentEmail(subject, files, bookingInfo) {
 // =============================================
 async function notifyUserTelegram(telegramId, text, inlineKeyboard) {
   const BOT_TOKEN = process.env.BOT_TOKEN;
-  if (!BOT_TOKEN || !telegramId) return;
+  if (!BOT_TOKEN) { console.warn('⚠️ notifyUser: BOT_TOKEN не задан'); return { ok: false, error: 'no BOT_TOKEN' }; }
+  if (!telegramId) { console.warn('⚠️ notifyUser: telegramId пустой'); return { ok: false, error: 'no telegramId' }; }
   try {
     const body = {
       chat_id: telegramId,
@@ -146,13 +147,22 @@ async function notifyUserTelegram(telegramId, text, inlineKeyboard) {
     if (inlineKeyboard) {
       body.reply_markup = JSON.stringify({ inline_keyboard: inlineKeyboard });
     }
-    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    console.log(`📤 Sending notification to ${telegramId}...`);
+    const resp = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
+    const result = await resp.json();
+    if (!result.ok) {
+      console.error(`❌ Telegram API error for ${telegramId}:`, result.description || JSON.stringify(result));
+    } else {
+      console.log(`✅ Notification sent to ${telegramId}`);
+    }
+    return result;
   } catch (e) {
     console.error('Telegram user notify error:', e.message);
+    return { ok: false, error: e.message };
   }
 }
 
@@ -312,6 +322,19 @@ app.get('/api/ping', async (req, res) => {
     res.json({ status: 'ok', db: 'connected', time: new Date().toISOString() });
   } catch (e) {
     res.json({ status: 'error', db: 'disconnected', error: e.message });
+  }
+});
+
+// Тест уведомлений (отправь себе)
+app.get('/api/test-notify', async (req, res) => {
+  try {
+    const usersRes = await client.query('SELECT telegram_id, first_name FROM users WHERE is_admin = TRUE LIMIT 1');
+    if (usersRes.rows.length === 0) return res.json({ error: 'No admin found' });
+    const admin = usersRes.rows[0];
+    const result = await notifyUserTelegram(admin.telegram_id, '🔔 <b>Тестовое уведомление</b>\n\nЕсли ты это видишь — уведомления работают!');
+    res.json({ sent_to: admin.telegram_id, name: admin.first_name, telegram_response: result });
+  } catch (e) {
+    res.json({ error: e.message });
   }
 });
 

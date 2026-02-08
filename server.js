@@ -418,10 +418,8 @@ app.post('/api/applications/:userId/approve', async (req, res) => {
     const userRes = await client.query('SELECT telegram_id, first_name FROM users WHERE id = $1', [req.params.userId]);
     if (userRes.rows.length > 0) {
       const u = userRes.rows[0];
-      const welcomeText = `🎉 <b>Добро пожаловать в Клуб Партнёров!</b>\n\nПривет, ${u.first_name || 'партнёр'}! Ваша заявка одобрена. Теперь вам доступны все разделы приложения: новости, маркет, шахматка и многое другое.`;
-      const BOT_USERNAME = process.env.BOT_USERNAME || 'repcrew_bot';
-      const keyboard = [[{ text: '🚀 Открыть приложение', web_app: { url: process.env.WEBAPP_URL || `https://t.me/${BOT_USERNAME}?profile` } }]];
-      notifyUserTelegram(u.telegram_id, welcomeText, keyboard);
+      const welcomeText = `🎉 <b>Добро пожаловать в Клуб Партнёров!</b>\n\nПривет, ${u.first_name || 'партнёр'}! Ваша заявка одобрена. Теперь вам доступны все разделы приложения: новости, маркет, шахматка и многое другое.\n\nОткройте бота и нажмите кнопку внизу, чтобы войти.`;
+      notifyUserTelegram(u.telegram_id, welcomeText);
     }
 
     res.json({ success: true });

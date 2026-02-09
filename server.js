@@ -285,17 +285,53 @@ const initDb = async () => {
 // =============================================
 // XML SYNC
 // =============================================
+// Извлечь изображение из Avito-формата (<Image url="..."/> или <Image>url</Image>)
+function extractAvitoImage(item) {
+  const imgBlock = item.Images?.[0]?.Image || item.images?.[0]?.image || [];
+  for (const img of imgBlock) {
+    if (typeof img === 'string' && img.startsWith('http')) return img;
+    if (img?.$?.url) return img.$.url;
+    if (img?._ && typeof img._ === 'string') return img._;
+  }
+  // Также проверим <PlanImages>, <PlanImage> — Profitbase может добавлять отдельно
+  const planBlock = item.PlanImages?.[0]?.PlanImage || item.PlanImages?.[0]?.Image || [];
+  for (const img of planBlock) {
+    if (typeof img === 'string' && img.startsWith('http')) return img;
+    if (img?.$?.url) return img.$.url;
+  }
+  return '';
+}
+
+// Извлечь номер квартиры из Avito-объявления
+function extractAvitoNumber(item) {
+  // Прямые теги номера квартиры (Profitbase может добавлять)
+  const candidates = [
+    item.FlatNumber?.[0], item.flatNumber?.[0], item['flat-number']?.[0],
+    item.Apartment?.[0], item.apartment?.[0], item.ApartmentNumber?.[0],
+    item.ObjectNumber?.[0], item.Number?.[0], item.RoomNumber?.[0],
+  ];
+  for (const c of candidates) {
+    if (c && c !== '0' && c !== '') return String(c);
+  }
+  // Попробовать извлечь из Address: "..., кв. 42" или "..., кв 42"
+  const addr = item.Address?.[0] || '';
+  const kvMatch = addr.match(/кв\.?\s*(\d+)/i);
+  if (kvMatch) return kvMatch[1];
+  return null; // вернём null — номер будет назначен автоматически
+}
+
 async function syncProjectWithXml(projectId, url) {
   console.log(`🔄 Syncing ${projectId} from ${url}`);
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to fetch XML: ${response.status}`);
   const xmlText = await response.text();
-  const parser = new xml2js.Parser({ explicitArray: true });
+  const parser = new xml2js.Parser({ explicitArray: true, trim: true });
   const result = await parser.parseStringPromise(xmlText);
 
-  // Auto-detect format: Avito (<Ads><Ad>), Profitbase/Yandex (<realty-feed><offer>), or CIAN (<feed><offer>)
+  // Auto-detect format
   let rawItems = [];
   let feedFormat = 'unknown';
+  let buildingFloors = 0; // из тега <Floors> в Avito
   if (result?.['realty-feed']?.offer) {
     rawItems = result['realty-feed'].offer;
     feedFormat = 'yandex';
@@ -306,37 +342,56 @@ async function syncProjectWithXml(projectId, url) {
     rawItems = result.feed.offer;
     feedFormat = 'cian';
   }
-  console.log(`📋 Detected feed format: ${feedFormat}, items: ${rawItems.length}`);
+
+  console.log(`📋 Format: ${feedFormat}, raw items: ${rawItems.length}`);
   if (rawItems.length === 0) {
-    console.warn(`⚠️ 0 items found. Root keys: ${Object.keys(result || {}).join(', ')}`);
+    console.warn(`⚠️ 0 items. Root keys: ${Object.keys(result || {}).join(', ')}`);
+    // Логируем первый уровень вложенности для отладки
+    for (const key of Object.keys(result || {})) {
+      const sub = result[key];
+      if (sub && typeof sub === 'object') console.warn(`  "${key}" → sub-keys: ${Object.keys(sub).join(', ')}`);
+    }
     return 0;
   }
 
-  // Normalize items to a common shape regardless of format
-  const units = rawItems.map(item => {
+  // Логируем ВСЕ теги первого элемента для диагностики
+  const firstItem = rawItems[0];
+  console.log(`🔍 First item keys: ${Object.keys(firstItem).join(', ')}`);
+  console.log(`🔍 First item sample: ${JSON.stringify(firstItem).slice(0, 800)}`);
+
+  // Normalize items
+  const units = rawItems.map((item, idx) => {
     if (feedFormat === 'avito') {
-      // Avito: <Ad><Id>, <Price>, <Rooms>, <Square>, <Floor>, <Images><Image url="..."/>
-      const images = item.Images?.[0]?.Image || [];
-      const firstImage = images[0]?.$?.url || images[0] || '';
+      // Avito: <Ad> → <Id>, <Price>, <Rooms>, <Square>, <Floor>, <Floors>, <Images>
+      const floorsTag = parseInt(item.Floors?.[0] || '0');
+      if (floorsTag > buildingFloors) buildingFloors = floorsTag;
+
+      const planUrl = extractAvitoImage(item);
+      const number = extractAvitoNumber(item);
+      const roomsRaw = (item.Rooms?.[0] || '').toString();
+      let rooms = parseInt(roomsRaw.replace(/\D/g, '') || '0');
+      if (roomsRaw.toLowerCase().includes('студ') || roomsRaw === '0') rooms = 0; // студия
+
       return {
-        id: item.Id?.[0] || `avito-${Math.random().toString(36).slice(2, 10)}`,
+        id: item.Id?.[0] || `avito-${idx}`,
         floor: parseInt(item.Floor?.[0] || '0'),
-        number: item.FlatNumber?.[0] || item.Id?.[0] || '0',
-        rooms: parseInt((item.Rooms?.[0] || '0').toString().replace(/\D/g, '') || '0'),
-        area: parseFloat(item.Square?.[0] || '0'),
-        price: parseFloat((item.Price?.[0] || '0').toString().replace(/\s/g, '')),
-        planUrl: typeof firstImage === 'string' ? firstImage : (firstImage?.$?.url || ''),
-        statusRaw: [item.AdStatus?.[0], item.Description?.[0]].filter(Boolean).join(' ').toLowerCase(),
+        number: number, // null = назначим автоматически
+        rooms, area: parseFloat(item.Square?.[0] || item.TotalArea?.[0] || '0'),
+        price: parseFloat((item.Price?.[0] || '0').toString().replace(/[\s\u00a0]/g, '')),
+        planUrl,
+        statusRaw: [item.AdStatus?.[0], item.Status?.[0], item.Description?.[0]].filter(Boolean).join(' ').toLowerCase(),
       };
     } else {
-      // Yandex / Profitbase XML / CIAN: <offer internal-id="...">, <price><value>, <area><value>, etc.
+      // Yandex / Profitbase XML / CIAN
+      const studioCheck = item.studio?.[0];
+      const roomsVal = studioCheck === '1' || studioCheck === 'true' ? 0 : parseInt((item.rooms?.[0] || '0').toString().replace(/\D/g, '') || '0');
       return {
-        id: item.$?.['internal-id'] || `yrl-${Math.random().toString(36).slice(2, 10)}`,
+        id: item.$?.['internal-id'] || `yrl-${idx}`,
         floor: parseInt(item.floor?.[0] || '0'),
-        number: item['flat-number']?.[0] || item.apartment?.[0] || item.location?.[0]?.apartment?.[0] || '0',
-        rooms: parseInt((item.rooms?.[0] || item.studio?.[0] === '1' ? '0' : item.rooms?.[0] || '0').toString().replace(/\D/g, '') || '0'),
-        area: parseFloat(item.area?.[0]?.value?.[0] || item.area?.[0] || '0'),
-        price: parseFloat(item.price?.[0]?.value?.[0] || item.price?.[0] || '0'),
+        number: item['flat-number']?.[0] || item.apartment?.[0] || item.location?.[0]?.apartment?.[0] || null,
+        rooms: roomsVal,
+        area: parseFloat(item.area?.[0]?.value?.[0] || (typeof item.area?.[0] === 'string' ? item.area[0] : '0')),
+        price: parseFloat(item.price?.[0]?.value?.[0] || (typeof item.price?.[0] === 'string' ? item.price[0] : '0')),
         planUrl: item['planning-image']?.[0] || item['plan-image']?.[0] || item.image?.[0] || '',
         statusRaw: [
           item['deal-status'] ? JSON.stringify(item['deal-status']) : '',
@@ -348,30 +403,49 @@ async function syncProjectWithXml(projectId, url) {
     }
   });
 
+  // Логируем первые 3 распарсенных юнита
+  units.slice(0, 3).forEach((u, i) => console.log(`🏠 Unit[${i}]: floor=${u.floor}, num=${u.number}, rooms=${u.rooms}, area=${u.area}, price=${u.price}, img=${u.planUrl ? '✅' : '❌'}`));
+
   await pool.query('DELETE FROM units WHERE project_id = $1', [projectId]);
 
-  let count = 0; let maxFloor = 1; const floorCounts = {};
+  // Группируем по этажам для подсчёта и авто-нумерации
+  let maxFloor = buildingFloors || 1;
+  const floorCounts = {};
+  const floorCounters = {}; // для авто-нумерации квартир без номера
+
+  // Сначала посчитаем этажи
   for (const u of units) {
     if (u.floor < 1) continue;
     if (u.floor > maxFloor) maxFloor = u.floor;
     if (!floorCounts[u.floor]) floorCounts[u.floor] = 0;
     floorCounts[u.floor]++;
+  }
+
+  // Авто-нумерация: если у квартиры нет номера, назначаем "этаж*100 + порядковый"
+  let count = 0;
+  for (const u of units) {
+    if (u.floor < 1) continue;
+    if (!floorCounters[u.floor]) floorCounters[u.floor] = 0;
+    floorCounters[u.floor]++;
+
+    const unitNumber = u.number || String(u.floor * 100 + floorCounters[u.floor]);
 
     let status = 'FREE';
-    if (u.statusRaw.includes('sold') || u.statusRaw.includes('продано') || u.statusRaw.includes('busy') || u.price < 100) status = 'SOLD';
-    else if (u.statusRaw.includes('book') || u.statusRaw.includes('reserv') || u.statusRaw.includes('бронь')) status = 'BOOKED';
+    const s = u.statusRaw;
+    if (s.includes('sold') || s.includes('продано') || s.includes('busy') || s.includes('занят')) status = 'SOLD';
+    else if (s.includes('book') || s.includes('reserv') || s.includes('бронь') || s.includes('забронир')) status = 'BOOKED';
 
     await pool.query(
       `INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (id) DO UPDATE SET floor=$3, number=$4, rooms=$5, area=$6, price=$7, status=$8, plan_image_url=$9, updated_at=NOW()`,
-      [u.id, projectId, u.floor, u.number, u.rooms, u.area, u.price, status, u.planUrl]
+      [u.id, projectId, u.floor, unitNumber, u.rooms, u.area, u.price, status, u.planUrl]
     );
     count++;
   }
 
-  const maxUnitsOnFloor = Math.max(...Object.values(floorCounts).map(Number), 4);
+  const maxUnitsOnFloor = Math.max(...Object.values(floorCounts).map(Number), 1);
   await pool.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3 WHERE id = $4', [maxFloor, maxUnitsOnFloor, url, projectId]);
-  console.log(`✅ Synced ${count} units for ${projectId} (format: ${feedFormat})`);
+  console.log(`✅ Synced ${count} units for ${projectId} (format: ${feedFormat}, floors: ${maxFloor}, max/floor: ${maxUnitsOnFloor})`);
   return count;
 }
 
@@ -704,14 +778,20 @@ app.post('/api/debug-feed', async (req, res) => {
     const response = await fetch(url);
     if (!response.ok) return res.status(400).json({ error: `Feed returned ${response.status}` });
     const xmlText = await response.text();
-    const parser = new xml2js.Parser({ explicitArray: true });
+    const parser = new xml2js.Parser({ explicitArray: true, trim: true });
     const result = await parser.parseStringPromise(xmlText);
     const rootKeys = Object.keys(result || {});
-    let format = 'unknown'; let itemCount = 0; let sampleItem = null;
-    if (result?.['realty-feed']?.offer) { format = 'yandex'; itemCount = result['realty-feed'].offer.length; sampleItem = result['realty-feed'].offer[0]; }
-    else if (result?.Ads?.Ad) { format = 'avito'; itemCount = result.Ads.Ad.length; sampleItem = result.Ads.Ad[0]; }
-    else if (result?.feed?.offer) { format = 'cian'; itemCount = result.feed.offer.length; sampleItem = result.feed.offer[0]; }
-    res.json({ format, rootKeys, itemCount, sampleItemKeys: sampleItem ? Object.keys(sampleItem) : [], sampleItem: sampleItem ? JSON.stringify(sampleItem).slice(0, 2000) : null });
+    let format = 'unknown'; let itemCount = 0; let sampleItems = [];
+    if (result?.['realty-feed']?.offer) { format = 'yandex'; itemCount = result['realty-feed'].offer.length; sampleItems = result['realty-feed'].offer.slice(0, 3); }
+    else if (result?.Ads?.Ad) { format = 'avito'; itemCount = result.Ads.Ad.length; sampleItems = result.Ads.Ad.slice(0, 3); }
+    else if (result?.feed?.offer) { format = 'cian'; itemCount = result.feed.offer.length; sampleItems = result.feed.offer.slice(0, 3); }
+    // Показываем все ключи первого элемента и 3 примера в полном виде
+    const firstKeys = sampleItems[0] ? Object.keys(sampleItems[0]) : [];
+    res.json({
+      format, rootKeys, itemCount, firstItemKeys: firstKeys,
+      samples: sampleItems.map(s => JSON.stringify(s).slice(0, 3000)),
+      xmlPreview: xmlText.slice(0, 500), // первые 500 символов сырого XML
+    });
   } catch (e) { res.status(500).json({ error: 'Debug failed: ' + e.message }); }
 });
 

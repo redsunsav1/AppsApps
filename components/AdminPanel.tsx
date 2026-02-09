@@ -50,7 +50,7 @@ interface MortgageProgramItem {
 }
 
 export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) => {
-  const [activeTab, setActiveTab] = useState<'news' | 'import' | 'shop' | 'quests' | 'applications' | 'users' | 'events' | 'mortgage'>('news');
+  const [activeTab, setActiveTab] = useState<'news' | 'import' | 'shop' | 'quests' | 'applications' | 'users' | 'events' | 'mortgage' | 'projects'>('news');
 
   // News
   const [title, setTitle] = useState('');
@@ -102,6 +102,11 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [mpDescription, setMpDescription] = useState('');
   const [editingMortgageId, setEditingMortgageId] = useState<number | null>(null);
 
+  // Projects
+  const [projectsList, setProjectsList] = useState<any[]>([]);
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [editProjectName, setEditProjectName] = useState('');
+
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -124,7 +129,40 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     if (activeTab === 'users') fetchUsers();
     if (activeTab === 'events') fetchEvents();
     if (activeTab === 'mortgage') fetchMortgagePrograms();
+    if (activeTab === 'projects') fetchProjects();
   }, [activeTab]);
+
+  const fetchProjects = () => {
+    fetch('/api/projects').then(r => r.json()).then(data => setProjectsList(data)).catch(e => console.error(e));
+  };
+
+  const handleDeleteProject = async (id: string) => {
+    if (!confirm(`Удалить проект "${id}" и все его квартиры?`)) return;
+    try {
+      await fetch(`/api/projects/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
+      showToast('Проект удалён', 'success'); fetchProjects();
+    } catch { showToast('Ошибка удаления', 'error'); }
+  };
+
+  const handleRenameProject = async (id: string) => {
+    if (!editProjectName.trim()) return;
+    try {
+      await fetch(`/api/projects/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData, name: editProjectName }) });
+      showToast('Переименовано', 'success'); setEditingProjectId(null); fetchProjects();
+    } catch { showToast('Ошибка', 'error'); }
+  };
+
+  const handleResyncProject = async (id: string) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/projects/${id}/resync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
+      const data = await res.json();
+      const d = data.diag || {};
+      showToast(`Обновлено: ${data.count} кв. (${d.format}, этажей: ${d.floors}, без этажа: ${d.noFloorCount || 0})`, data.count > 0 ? 'success' : 'error');
+      fetchProjects();
+    } catch { showToast('Ошибка синхронизации', 'error'); }
+    finally { setLoading(false); }
+  };
 
   const fetchQuests = () => {
     fetch('/api/quests')
@@ -217,8 +255,10 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
         });
         const data = await res.json();
         if (data.success) {
-            showToast(`Загружено: ${data.count} квартир (${data.projectId})`, 'success');
-            setImportUrl(''); setImportProjectName('');
+            const d = data.diag || {};
+            const msg = `${data.count} кв. (формат: ${d.format || '?'}, фид: ${d.rawCount || '?'}, этажей: ${d.floors || '?'}, без этажа: ${d.noFloorCount || 0})`;
+            showToast(msg, data.count > 0 ? 'success' : 'error');
+            if (data.count > 0) { setImportUrl(''); setImportProjectName(''); }
         } else { showToast('Ошибка: ' + JSON.stringify(data), 'error'); }
     } catch (e) { showToast('Ошибка сети', 'error'); } finally { setLoading(false); }
   };
@@ -399,6 +439,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
             <button onClick={() => setActiveTab('users')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'users' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Users size={14}/> Юзеры</button>
             <button onClick={() => setActiveTab('events')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'events' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Calendar size={14}/> События</button>
             <button onClick={() => setActiveTab('mortgage')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'mortgage' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Calculator size={14}/> Ипотека</button>
+            <button onClick={() => setActiveTab('projects')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'projects' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Building2 size={14}/> Проекты</button>
         </div>
 
         {activeTab === 'news' && (
@@ -652,6 +693,53 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                         </div>
                     )}
                 </div>
+            </div>
+        )}
+
+        {activeTab === 'projects' && (
+            <div className="flex flex-col gap-3 animate-fade-in">
+                <h4 className="font-bold text-black text-sm">Проекты ({projectsList.length})</h4>
+                {projectsList.length === 0 ? (
+                    <p className="text-gray-400 text-sm text-center py-4">Проектов нет. Добавьте через вкладку «Импорт»</p>
+                ) : (
+                    <div className="space-y-3">
+                        {projectsList.map((p: any) => (
+                            <div key={p.id} className="bg-gray-50 p-4 rounded-xl border">
+                                {editingProjectId === p.id ? (
+                                    <div className="flex gap-2 items-center">
+                                        <input value={editProjectName} onChange={e => setEditProjectName(e.target.value)}
+                                            className="flex-1 p-2 border rounded-lg text-black bg-white text-sm" placeholder="Новое название" />
+                                        <button onClick={() => handleRenameProject(p.id)} className="bg-blue-600 text-white px-3 py-2 rounded-lg text-xs font-bold">✓</button>
+                                        <button onClick={() => setEditingProjectId(null)} className="bg-gray-200 px-3 py-2 rounded-lg text-xs">✕</button>
+                                    </div>
+                                ) : (
+                                    <div>
+                                        <div className="flex items-center justify-between mb-2">
+                                            <div>
+                                                <span className="font-bold text-black">{p.name}</span>
+                                                <span className="text-xs text-gray-400 ml-2 font-mono">({p.id})</span>
+                                            </div>
+                                        </div>
+                                        <div className="text-xs text-gray-500 mb-3 space-y-1">
+                                            <div>Этажей: {p.floors} • Кв/этаж: {p.units_per_floor}</div>
+                                            {p.feed_url && <div className="truncate">Фид: {p.feed_url.slice(0, 50)}...</div>}
+                                        </div>
+                                        <div className="flex gap-2 flex-wrap">
+                                            <button onClick={() => { setEditingProjectId(p.id); setEditProjectName(p.name); }}
+                                                className="bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg text-xs font-bold">Переименовать</button>
+                                            {p.feed_url && (
+                                                <button onClick={() => handleResyncProject(p.id)} disabled={loading}
+                                                    className="bg-green-100 text-green-700 px-3 py-1.5 rounded-lg text-xs font-bold">{loading ? '...' : 'Обновить фид'}</button>
+                                            )}
+                                            <button onClick={() => handleDeleteProject(p.id)}
+                                                className="bg-red-100 text-red-700 px-3 py-1.5 rounded-lg text-xs font-bold">Удалить</button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
             </div>
         )}
       </div>

@@ -320,116 +320,152 @@ function extractAvitoNumber(item) {
   return null; // вернём null — номер будет назначен автоматически
 }
 
+// Универсальный поиск тега — ищет в item по нескольким вариантам имён
+function findTag(item, ...names) {
+  for (const name of names) {
+    const val = item[name]?.[0];
+    if (val !== undefined && val !== null && val !== '') return val;
+  }
+  return null;
+}
+
 async function syncProjectWithXml(projectId, url) {
   console.log(`🔄 Syncing ${projectId} from ${url}`);
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`Failed to fetch XML: ${response.status}`);
+  if (!response.ok) throw new Error(`Feed HTTP ${response.status}`);
   const xmlText = await response.text();
+  const xmlSize = xmlText.length;
   const parser = new xml2js.Parser({ explicitArray: true, trim: true });
   const result = await parser.parseStringPromise(xmlText);
 
-  // Auto-detect format
+  // Диагностика — вернём вместе с count
+  const diag = { format: 'unknown', xmlSize, rawCount: 0, savedCount: 0, noFloorCount: 0, firstItemKeys: [], sampleUnit: null };
+
+  // Auto-detect: пробуем ВСЕ возможные корневые структуры
   let rawItems = [];
-  let feedFormat = 'unknown';
-  let buildingFloors = 0; // из тега <Floors> в Avito
+  const rootKeys = Object.keys(result || {});
   if (result?.['realty-feed']?.offer) {
-    rawItems = result['realty-feed'].offer;
-    feedFormat = 'yandex';
+    rawItems = result['realty-feed'].offer; diag.format = 'yandex';
   } else if (result?.Ads?.Ad) {
-    rawItems = result.Ads.Ad;
-    feedFormat = 'avito';
+    rawItems = result.Ads.Ad; diag.format = 'avito';
+  } else if (result?.ads?.ad) {
+    rawItems = result.ads.ad; diag.format = 'avito-lower';
   } else if (result?.feed?.offer) {
-    rawItems = result.feed.offer;
-    feedFormat = 'cian';
-  }
-
-  console.log(`📋 Format: ${feedFormat}, raw items: ${rawItems.length}`);
-  if (rawItems.length === 0) {
-    console.warn(`⚠️ 0 items. Root keys: ${Object.keys(result || {}).join(', ')}`);
-    // Логируем первый уровень вложенности для отладки
-    for (const key of Object.keys(result || {})) {
+    rawItems = result.feed.offer; diag.format = 'cian';
+  } else {
+    // Последняя попытка: берём первый массив в любом корне
+    for (const key of rootKeys) {
       const sub = result[key];
-      if (sub && typeof sub === 'object') console.warn(`  "${key}" → sub-keys: ${Object.keys(sub).join(', ')}`);
+      if (sub && typeof sub === 'object') {
+        for (const subKey of Object.keys(sub)) {
+          if (Array.isArray(sub[subKey]) && sub[subKey].length > 0 && typeof sub[subKey][0] === 'object') {
+            rawItems = sub[subKey];
+            diag.format = `auto:${key}.${subKey}`;
+            break;
+          }
+        }
+      }
+      if (rawItems.length) break;
     }
-    return 0;
   }
 
-  // Логируем ВСЕ теги первого элемента для диагностики
-  const firstItem = rawItems[0];
-  console.log(`🔍 First item keys: ${Object.keys(firstItem).join(', ')}`);
-  console.log(`🔍 First item sample: ${JSON.stringify(firstItem).slice(0, 800)}`);
-
-  // Normalize items
-  const units = rawItems.map((item, idx) => {
-    if (feedFormat === 'avito') {
-      // Avito: <Ad> → <Id>, <Price>, <Rooms>, <Square>, <Floor>, <Floors>, <Images>
-      const floorsTag = parseInt(item.Floors?.[0] || '0');
-      if (floorsTag > buildingFloors) buildingFloors = floorsTag;
-
-      const planUrl = extractAvitoImage(item);
-      const number = extractAvitoNumber(item);
-      const roomsRaw = (item.Rooms?.[0] || '').toString();
-      let rooms = parseInt(roomsRaw.replace(/\D/g, '') || '0');
-      if (roomsRaw.toLowerCase().includes('студ') || roomsRaw === '0') rooms = 0; // студия
-
-      return {
-        id: item.Id?.[0] || `avito-${idx}`,
-        floor: parseInt(item.Floor?.[0] || '0'),
-        number: number, // null = назначим автоматически
-        rooms, area: parseFloat(item.Square?.[0] || item.TotalArea?.[0] || '0'),
-        price: parseFloat((item.Price?.[0] || '0').toString().replace(/[\s\u00a0]/g, '')),
-        planUrl,
-        statusRaw: [item.AdStatus?.[0], item.Status?.[0], item.Description?.[0]].filter(Boolean).join(' ').toLowerCase(),
-      };
-    } else {
-      // Yandex / Profitbase XML / CIAN
-      const studioCheck = item.studio?.[0];
-      const roomsVal = studioCheck === '1' || studioCheck === 'true' ? 0 : parseInt((item.rooms?.[0] || '0').toString().replace(/\D/g, '') || '0');
-      return {
-        id: item.$?.['internal-id'] || `yrl-${idx}`,
-        floor: parseInt(item.floor?.[0] || '0'),
-        number: item['flat-number']?.[0] || item.apartment?.[0] || item.location?.[0]?.apartment?.[0] || null,
-        rooms: roomsVal,
-        area: parseFloat(item.area?.[0]?.value?.[0] || (typeof item.area?.[0] === 'string' ? item.area[0] : '0')),
-        price: parseFloat(item.price?.[0]?.value?.[0] || (typeof item.price?.[0] === 'string' ? item.price[0] : '0')),
-        planUrl: item['planning-image']?.[0] || item['plan-image']?.[0] || item.image?.[0] || '',
-        statusRaw: [
-          item['deal-status'] ? JSON.stringify(item['deal-status']) : '',
-          item['sales-status'] ? JSON.stringify(item['sales-status']) : '',
-          item['status-id'] ? JSON.stringify(item['status-id']) : '',
-          item.description ? JSON.stringify(item.description) : ''
-        ].join(' ').toLowerCase(),
-      };
+  diag.rawCount = rawItems.length;
+  if (!rawItems.length) {
+    diag.rootKeys = rootKeys;
+    // Вложенные ключи для диагностики
+    diag.subKeys = {};
+    for (const k of rootKeys) {
+      if (result[k] && typeof result[k] === 'object') diag.subKeys[k] = Object.keys(result[k]);
     }
+    console.warn(`⚠️ 0 items. Root: ${rootKeys}`, diag.subKeys);
+    return diag;
+  }
+
+  const firstItem = rawItems[0];
+  diag.firstItemKeys = Object.keys(firstItem);
+  console.log(`📋 Format: ${diag.format}, items: ${rawItems.length}, keys: ${diag.firstItemKeys.join(', ')}`);
+  console.log(`🔍 Sample: ${JSON.stringify(firstItem).slice(0, 1000)}`);
+
+  // Извлечь этаж здания из Avito <Floors>
+  let buildingFloors = 0;
+
+  // Normalize
+  const units = rawItems.map((item, idx) => {
+    // Этаж — ищем во всех вариантах
+    const floorRaw = findTag(item, 'Floor', 'floor', 'Этаж', 'this_floor', 'floor_number');
+    const floor = parseInt(floorRaw || '0') || 0;
+
+    // Общее кол-во этажей здания
+    const floorsRaw = findTag(item, 'Floors', 'floors', 'floors-total', 'total_floors', 'building_floors');
+    const totalFloors = parseInt(floorsRaw || '0') || 0;
+    if (totalFloors > buildingFloors) buildingFloors = totalFloors;
+
+    // ID
+    const id = findTag(item, 'Id', 'id', 'ID') || item.$?.['internal-id'] || `unit-${idx}`;
+
+    // Номер квартиры
+    const number = extractAvitoNumber(item)
+      || findTag(item, 'flat-number', 'apartment', 'flat_number', 'object_number')
+      || (item.location?.[0]?.apartment?.[0])
+      || null;
+
+    // Комнаты
+    const roomsRaw = (findTag(item, 'Rooms', 'rooms', 'room_count') || '').toString();
+    let rooms = parseInt(roomsRaw.replace(/\D/g, '') || '0');
+    if (roomsRaw.toLowerCase().includes('студ') || findTag(item, 'studio', 'is-studio', 'IsStudio') === '1') rooms = 0;
+
+    // Площадь
+    const areaTag = item.area?.[0];
+    const area = parseFloat(
+      findTag(item, 'Square', 'square', 'TotalArea', 'total_area')
+      || (typeof areaTag === 'object' ? areaTag?.value?.[0] : areaTag)
+      || '0'
+    );
+
+    // Цена
+    const priceTag = item.price?.[0];
+    const price = parseFloat(
+      (findTag(item, 'Price', 'price_value') || (typeof priceTag === 'object' ? priceTag?.value?.[0] : priceTag) || '0')
+      .toString().replace(/[\s\u00a0,]/g, '')
+    );
+
+    // Изображение
+    const planUrl = extractAvitoImage(item)
+      || findTag(item, 'planning-image', 'plan-image', 'plan_image', 'PlanImage')
+      || findTag(item, 'image', 'Image', 'photo')
+      || '';
+
+    // Статус
+    const statusParts = [
+      findTag(item, 'AdStatus', 'Status', 'status', 'deal-status', 'sales-status', 'status-id'),
+      findTag(item, 'Description', 'description')
+    ].filter(Boolean);
+    const statusRaw = statusParts.map(s => typeof s === 'object' ? JSON.stringify(s) : s).join(' ').toLowerCase();
+
+    return { id: String(id), floor, number, rooms, area, price, planUrl, statusRaw };
   });
 
-  // Логируем первые 3 распарсенных юнита
-  units.slice(0, 3).forEach((u, i) => console.log(`🏠 Unit[${i}]: floor=${u.floor}, num=${u.number}, rooms=${u.rooms}, area=${u.area}, price=${u.price}, img=${u.planUrl ? '✅' : '❌'}`));
+  // Логируем первые 3 юнита
+  units.slice(0, 3).forEach((u, i) => console.log(`🏠 [${i}]: fl=${u.floor} num=${u.number} rm=${u.rooms} area=${u.area} price=${u.price} img=${u.planUrl ? '✅' : '❌'}`));
 
   await pool.query('DELETE FROM units WHERE project_id = $1', [projectId]);
 
-  // Группируем по этажам для подсчёта и авто-нумерации
   let maxFloor = buildingFloors || 1;
   const floorCounts = {};
-  const floorCounters = {}; // для авто-нумерации квартир без номера
-
-  // Сначала посчитаем этажи
-  for (const u of units) {
-    if (u.floor < 1) continue;
-    if (u.floor > maxFloor) maxFloor = u.floor;
-    if (!floorCounts[u.floor]) floorCounts[u.floor] = 0;
-    floorCounts[u.floor]++;
-  }
-
-  // Авто-нумерация: если у квартиры нет номера, назначаем "этаж*100 + порядковый"
+  const floorCounters = {};
   let count = 0;
+
   for (const u of units) {
-    if (u.floor < 1) continue;
-    if (!floorCounters[u.floor]) floorCounters[u.floor] = 0;
-    floorCounters[u.floor]++;
+    // Если этаж не определён — ставим 1, НЕ пропускаем
+    const floor = u.floor > 0 ? u.floor : 1;
+    if (u.floor < 1) diag.noFloorCount++;
+    if (floor > maxFloor) maxFloor = floor;
+    if (!floorCounts[floor]) floorCounts[floor] = 0;
+    floorCounts[floor]++;
+    if (!floorCounters[floor]) floorCounters[floor] = 0;
+    floorCounters[floor]++;
 
-    const unitNumber = u.number || String(u.floor * 100 + floorCounters[u.floor]);
-
+    const unitNumber = u.number || String(floor * 100 + floorCounters[floor]);
     let status = 'FREE';
     const s = u.statusRaw;
     if (s.includes('sold') || s.includes('продано') || s.includes('busy') || s.includes('занят')) status = 'SOLD';
@@ -438,15 +474,20 @@ async function syncProjectWithXml(projectId, url) {
     await pool.query(
       `INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (id) DO UPDATE SET floor=$3, number=$4, rooms=$5, area=$6, price=$7, status=$8, plan_image_url=$9, updated_at=NOW()`,
-      [u.id, projectId, u.floor, unitNumber, u.rooms, u.area, u.price, status, u.planUrl]
+      [u.id, projectId, floor, unitNumber, u.rooms, u.area, u.price, status, u.planUrl]
     );
     count++;
   }
 
   const maxUnitsOnFloor = Math.max(...Object.values(floorCounts).map(Number), 1);
   await pool.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3 WHERE id = $4', [maxFloor, maxUnitsOnFloor, url, projectId]);
-  console.log(`✅ Synced ${count} units for ${projectId} (format: ${feedFormat}, floors: ${maxFloor}, max/floor: ${maxUnitsOnFloor})`);
-  return count;
+
+  diag.savedCount = count;
+  diag.sampleUnit = units[0] || null;
+  diag.floors = maxFloor;
+  diag.maxPerFloor = maxUnitsOnFloor;
+  console.log(`✅ Synced ${count}/${rawItems.length} for ${projectId} (${diag.format}, ${maxFloor} fl, ${maxUnitsOnFloor}/fl, noFloor=${diag.noFloorCount})`);
+  return diag;
 }
 
 cron.schedule('0 10 * * *', async () => {
@@ -752,6 +793,42 @@ app.get('/api/projects', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// Редактирование проекта (название)
+app.put('/api/projects/:id', async (req, res) => {
+  try {
+    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'Name required' });
+    await pool.query('UPDATE projects SET name = $1 WHERE id = $2', [name, req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// Удаление проекта + его квартиры + бронирования
+app.delete('/api/projects/:id', async (req, res) => {
+  try {
+    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    const pid = req.params.id;
+    await pool.query('DELETE FROM bookings WHERE project_id = $1', [pid]);
+    await pool.query('DELETE FROM units WHERE project_id = $1', [pid]);
+    await pool.query('DELETE FROM projects WHERE id = $1', [pid]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// Пересинхронизировать проект из сохранённого feed_url
+app.post('/api/projects/:id/resync', async (req, res) => {
+  try {
+    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    const project = (await pool.query('SELECT * FROM projects WHERE id = $1', [req.params.id])).rows[0];
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    if (!project.feed_url) return res.status(400).json({ error: 'No feed_url saved' });
+    const diag = await syncProjectWithXml(project.id, project.feed_url);
+    const count = typeof diag === 'object' ? diag.savedCount : diag;
+    res.json({ success: true, count, diag });
+  } catch (e) { res.status(500).json({ error: 'Resync failed: ' + e.message }); }
+});
+
 app.get('/api/units/:projectId', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM units WHERE project_id = $1', [req.params.projectId]);
@@ -771,8 +848,9 @@ app.post('/api/sync-xml-url', async (req, res) => {
        ON CONFLICT (id) DO UPDATE SET feed_url = $3`,
       [projectId, projectName || projectId, url]
     );
-    const count = await syncProjectWithXml(projectId, url);
-    res.json({ success: true, count, projectId });
+    const diag = await syncProjectWithXml(projectId, url);
+    const count = typeof diag === 'object' ? diag.savedCount : diag;
+    res.json({ success: true, count, projectId, diag });
   } catch (e) { res.status(500).json({ error: 'Sync failed: ' + e.message }); }
 });
 

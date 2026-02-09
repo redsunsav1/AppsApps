@@ -470,8 +470,16 @@ async function syncProjectWithXml(projectId, url) {
     return { id: String(id), floor, number, rooms, area, price, planUrl, statusId, statusRaw, section };
   });
 
-  // Логируем первые 3 юнита
-  units.slice(0, 3).forEach((u, i) => console.log(`🏠 [${i}]: fl=${u.floor} sec=${u.section} num=${u.number} rm=${u.rooms} area=${u.area} price=${u.price} sid=${u.statusId} img=${u.planUrl ? '✅' : '❌'}`));
+  // Логируем первые 5 юнитов с полной статус-информацией
+  units.slice(0, 5).forEach((u, i) => console.log(`🏠 [${i}]: fl=${u.floor} sec=${u.section} num=${u.number} rm=${u.rooms} area=${u.area} price=${u.price} statusId="${u.statusId}" statusRaw="${u.statusRaw}" img=${u.planUrl ? '✅' : '❌'}`));
+
+  // Статистика по status_id из фида
+  const feedStatusMap = {};
+  for (const u of units) {
+    const key = `sid=${u.statusId}|raw=${u.statusRaw.slice(0, 40)}`;
+    feedStatusMap[key] = (feedStatusMap[key] || 0) + 1;
+  }
+  console.log('📊 Feed status distribution:', JSON.stringify(feedStatusMap));
 
   await pool.query('DELETE FROM units WHERE project_id = $1', [projectId]);
 
@@ -492,17 +500,26 @@ async function syncProjectWithXml(projectId, url) {
 
     const unitNumber = u.number || String(floor * 100 + floorCounters[floor]);
 
-    // Статус: Profitbase status_id (1=FREE, 2=SOLD, 3=BOOKED) или текстовый парсинг
+    // === СТАТУС: многоуровневая логика ===
     let status = 'FREE';
-    if (u.statusId) {
-      const sid = parseInt(u.statusId);
-      if (sid === 2) status = 'SOLD';
-      else if (sid === 3) status = 'BOOKED';
-      else if (sid === 4 || sid === 5) status = 'SOLD'; // не для продажи / снята с продажи
-    } else {
-      const s = u.statusRaw;
-      if (s.includes('sold') || s.includes('продано') || s.includes('busy') || s.includes('занят')) status = 'SOLD';
-      else if (s.includes('book') || s.includes('reserv') || s.includes('бронь') || s.includes('забронир')) status = 'BOOKED';
+    const sid = u.statusId ? parseInt(u.statusId) : null;
+    const s = u.statusRaw;
+
+    // 1. Profitbase status_id (стандарт: 1=свободно, 2=продано, 3=забронировано)
+    if (sid === 2 || sid === 4 || sid === 5) {
+      status = 'SOLD';
+    } else if (sid === 3) {
+      status = 'BOOKED';
+    }
+
+    // 2. Текстовый парсинг — дополняет или перекрывает status_id
+    // (потому что status_id может быть кастомным, а текст — точнее)
+    if (status === 'FREE' && s) {
+      if (s.includes('sold') || s.includes('продан') || s.includes('busy') || s.includes('занят') || s.includes('реализован') || s.includes('не для продажи') || s.includes('снят')) {
+        status = 'SOLD';
+      } else if (s.includes('book') || s.includes('reserv') || s.includes('бронь') || s.includes('забронир') || s.includes('резерв')) {
+        status = 'BOOKED';
+      }
     }
 
     await pool.query(
@@ -519,13 +536,19 @@ async function syncProjectWithXml(projectId, url) {
   // Секции
   const sections = [...new Set(units.map(u => u.section).filter(Boolean))];
 
+  // Подсчёт сохранённых статусов из БД (после парсинга)
+  const savedRes = await pool.query('SELECT status, count(*) as c FROM units WHERE project_id = $1 GROUP BY status', [projectId]);
+  const savedStatuses = {};
+  for (const r of savedRes.rows) savedStatuses[r.status] = parseInt(r.c);
+
   diag.savedCount = count;
   diag.sampleUnit = units[0] || null;
   diag.floors = maxFloor;
   diag.maxPerFloor = maxUnitsOnFloor;
   diag.sections = sections;
-  diag.statusBreakdown = { free: units.filter(u => !u.statusId || parseInt(u.statusId) === 1).length, sold: units.filter(u => parseInt(u.statusId) === 2).length, booked: units.filter(u => parseInt(u.statusId) === 3).length };
-  console.log(`✅ Synced ${count}/${rawItems.length} for ${projectId} (${diag.format}, ${maxFloor} fl, ${maxUnitsOnFloor}/fl, sections=${sections.join(',')}, noFloor=${diag.noFloorCount})`);
+  diag.feedStatusMap = feedStatusMap;
+  diag.savedStatuses = savedStatuses;
+  console.log(`✅ Synced ${count}/${rawItems.length} for ${projectId} (${diag.format}, ${maxFloor} fl, ${maxUnitsOnFloor}/fl, sections=${sections.join(',')}, statuses=${JSON.stringify(savedStatuses)}, noFloor=${diag.noFloorCount})`);
   return diag;
 }
 

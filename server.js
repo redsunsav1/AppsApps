@@ -793,13 +793,18 @@ app.get('/api/projects', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
-// Редактирование проекта (название)
+// Редактирование проекта (название, этажи, кв/этаж)
 app.put('/api/projects/:id', async (req, res) => {
   try {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
-    const { name } = req.body;
-    if (!name) return res.status(400).json({ error: 'Name required' });
-    await pool.query('UPDATE projects SET name = $1 WHERE id = $2', [name, req.params.id]);
+    const { name, floors, unitsPerFloor } = req.body;
+    const sets = []; const vals = []; let idx = 1;
+    if (name) { sets.push(`name = $${idx++}`); vals.push(name); }
+    if (floors) { sets.push(`floors = $${idx++}`); vals.push(parseInt(floors)); }
+    if (unitsPerFloor) { sets.push(`units_per_floor = $${idx++}`); vals.push(parseInt(unitsPerFloor)); }
+    if (sets.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+    vals.push(req.params.id);
+    await pool.query(`UPDATE projects SET ${sets.join(', ')} WHERE id = $${idx}`, vals);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });

@@ -164,7 +164,8 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
       const res = await fetch(`/api/projects/${id}/resync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
       const data = await res.json();
       const d = data.diag || {};
-      showToast(`Обновлено: ${data.count} кв. (${d.format}, этажей: ${d.floors}, без этажа: ${d.noFloorCount || 0})`, data.count > 0 ? 'success' : 'error');
+      const ss = d.savedStatuses || {};
+      showToast(`Обновлено: ${data.count} кв. (${d.format}, ${d.floors} эт., своб:${ss.FREE||0} прод:${ss.SOLD||0} бронь:${ss.BOOKED||0}, секций: ${(d.sections||[]).length})`, data.count > 0 ? 'success' : 'error');
       fetchProjects();
     } catch { showToast('Ошибка синхронизации', 'error'); }
     finally { setLoading(false); }
@@ -272,7 +273,8 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
         const data = await res.json();
         if (data.success) {
             const d = data.diag || {};
-            const msg = `${data.count} кв. (формат: ${d.format || '?'}, фид: ${d.rawCount || '?'}, этажей: ${d.floors || '?'}, без этажа: ${d.noFloorCount || 0})`;
+            const ss = d.savedStatuses || {};
+            const msg = `${data.count} кв. (${d.format || '?'}, ${d.floors || '?'} эт., своб:${ss.FREE||0} прод:${ss.SOLD||0} бронь:${ss.BOOKED||0}, секций: ${(d.sections||[]).length})`;
             showToast(msg, data.count > 0 ? 'success' : 'error');
             if (data.count > 0) { setImportUrl(''); setImportProjectName(''); }
         } else { showToast('Ошибка: ' + JSON.stringify(data), 'error'); }

@@ -257,6 +257,13 @@ const initDb = async () => {
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS buyer_name TEXT;');
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS buyer_phone TEXT;');
     await pool.query('ALTER TABLE units ADD COLUMN IF NOT EXISTS section TEXT;');
+    // 152-ФЗ: согласия на обработку ПДн
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_pd BOOLEAN DEFAULT FALSE;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_pd_at TIMESTAMP;');
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS consent_transfer BOOLEAN DEFAULT FALSE;');
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS consent_transfer_at TIMESTAMP;');
+    // 38-ФЗ: застройщик проекта (рекламная пометка)
+    await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS developer_name TEXT;');
 
     // --- Индексы ---
     await pool.query('CREATE INDEX IF NOT EXISTS idx_users_tg ON users(telegram_id);');
@@ -272,6 +279,11 @@ const initDb = async () => {
     if (parseInt(projCheck.rows[0].count) === 0) {
       await pool.query(`INSERT INTO projects (id, name, floors, units_per_floor, image_url) VALUES ('brk', 'ЖК Бруклин', 12, 6, 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00') ON CONFLICT DO NOTHING`);
     }
+    // Обновляем developer_name для известных проектов
+    await pool.query(`UPDATE projects SET developer_name = 'ООО СЗ «ХОРОШО»' WHERE id = 'brk' AND developer_name IS NULL`);
+    await pool.query(`UPDATE projects SET developer_name = 'ООО СЗ «ХОРОШОЗДЕСЬ»' WHERE id = 'mnh' AND developer_name IS NULL`);
+    await pool.query(`UPDATE projects SET developer_name = 'ООО СЗ «ХОРОШОАЛЬЯНС»' WHERE id = 'bbk' AND developer_name IS NULL`);
+
     const questCheck = await pool.query('SELECT count(*) FROM quests');
     if (parseInt(questCheck.rows[0].count) === 0) {
       await pool.query(`INSERT INTO quests (type, title, reward_xp, reward_amount, reward_currency) VALUES
@@ -622,12 +634,13 @@ app.post('/api/avatar', async (req, res) => {
 // РЕГИСТРАЦИЯ С МОДЕРАЦИЕЙ
 // =============================================
 app.post('/api/register', async (req, res) => {
-  const { initData, firstName, lastName, companyType, company, phone } = req.body;
+  const { initData, firstName, lastName, companyType, company, phone, consentPd } = req.body;
   try {
     const tgUser = parseTelegramUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
+    if (!consentPd) return res.status(400).json({ error: 'Необходимо согласие на обработку персональных данных' });
     await pool.query(
-      `UPDATE users SET first_name = $1, last_name = $2, company_type = $3, company = $4, phone = $5, approval_status = 'pending' WHERE telegram_id = $6`,
+      `UPDATE users SET first_name = $1, last_name = $2, company_type = $3, company = $4, phone = $5, approval_status = 'pending', consent_pd = TRUE, consent_pd_at = NOW() WHERE telegram_id = $6`,
       [firstName, lastName, companyType || 'agency', company, phone, tgUser.id]
     );
     const userRes = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [tgUser.id]);
@@ -1309,7 +1322,7 @@ app.post('/api/bookings', async (req, res) => {
 // Шаг 1: Загрузка паспорта → квартира BOOKED
 app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, res) => {
   try {
-    const { initData, buyerName, buyerPhone } = req.body;
+    const { initData, buyerName, buyerPhone, consentTransfer } = req.body;
     const tgUser = parseTelegramUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
 
@@ -1334,8 +1347,8 @@ app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, re
 
     await withTransaction(async (client) => {
       await client.query(
-        `UPDATE bookings SET passport_sent = TRUE, passport_sent_at = NOW(), buyer_name = $1, buyer_phone = $2, stage = 'PASSPORT_SENT' WHERE id = $3`,
-        [buyerName, buyerPhone, req.params.id]
+        `UPDATE bookings SET passport_sent = TRUE, passport_sent_at = NOW(), buyer_name = $1, buyer_phone = $2, stage = 'PASSPORT_SENT', consent_transfer = $3, consent_transfer_at = CASE WHEN $3 THEN NOW() ELSE NULL END WHERE id = $4`,
+        [buyerName, buyerPhone, consentTransfer === 'true' || consentTransfer === true, req.params.id]
       );
       await client.query(`UPDATE units SET status = 'BOOKED' WHERE id = $1`, [booking.unit_id]);
     });

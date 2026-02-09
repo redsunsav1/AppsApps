@@ -107,6 +107,7 @@ export interface ProjectData {
   unitsPerFloor: number;
   image: string;
   profitbaseUrl?: string;
+  developerName?: string;
 }
 
 export interface MortgageProgram {

@@ -6,17 +6,19 @@ import Leaderboard from './components/Leaderboard';
 import ChessboardModal from './components/Chessboard';
 import EventCalendar from './components/tools/EventCalendar';
 import MortgageCalc from './components/tools/MortgageCalc';
+import SectionsHub, { SectionView } from './components/SectionsHub';
 import { AdminPanel } from './components/AdminPanel';
-import { UserProfile, DailyQuest, ConstructionUpdate, ShopItem, ProjectStat, CurrencyType, ProjectData } from './types';
+import { UserProfile, DailyQuest, ConstructionUpdate, ShopItem, ProjectStat, CurrencyType, ProjectData, MortgageProgram } from './types';
 import React, { useState, useEffect } from 'react';
-import { User, Newspaper, ShoppingBag, Grid3X3, Menu, Trophy, X, Lock, Calendar, Calculator, Settings } from 'lucide-react';
+import { User, Newspaper, ShoppingBag, Grid3X3, LayoutGrid, ArrowLeft, Settings } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
+import { showToast } from './utils/toast';
 
 enum Tab {
   PROFILE = 'PROFILE',
   CONTENT = 'CONTENT',
   MARKET = 'MARKET',
-  LEADERBOARD = 'LEADERBOARD',
+  SECTIONS = 'SECTIONS',
 }
 
 // --- ЗАГЛУШКИ (Для полей, которые не приходят с сервера) ---
@@ -48,11 +50,25 @@ const App: React.FC = () => {
   const [approvalStatus, setApprovalStatus] = useState<string>('none');
   const [user, setUser] = useState<any>(null);
   const [projects, setProjects] = useState<ProjectData[]>([]);
-  const [isToolsMenuOpen, setIsToolsMenuOpen] = useState(false);
-  const [showCalculator, setShowCalculator] = useState(false);
-  const [showAdminLogin, setShowAdminLogin] = useState(false);
-  const [adminPin, setAdminPin] = useState('');
   const [unreadNewsCount, setUnreadNewsCount] = useState(0);
+
+  // Sections sub-navigation
+  const [sectionView, setSectionView] = useState<SectionView>('hub');
+
+  // Mortgage programs (shared between sections and chessboard)
+  const [mortgagePrograms, setMortgagePrograms] = useState<MortgageProgram[]>([]);
+
+  const fetchMortgagePrograms = () => {
+    fetch('/api/mortgage-programs')
+      .then(res => res.json())
+      .then(data => {
+        const mapped: MortgageProgram[] = data.map((p: any) => ({
+          id: String(p.id), name: p.name, rate: Number(p.rate), description: p.description || '',
+        }));
+        setMortgagePrograms(mapped);
+      })
+      .catch(() => {});
+  };
 
   const fetchNews = () => {
     fetch('/api/news')
@@ -74,7 +90,6 @@ const App: React.FC = () => {
       .catch(e => console.log('News error (не критично)'));
   };
 
-  // ФАЗА 5: Загрузка квестов
   const fetchQuests = (dbUserId?: number) => {
     const url = dbUserId ? `/api/quests?userId=${dbUserId}` : '/api/quests';
     fetch(url)
@@ -94,7 +109,6 @@ const App: React.FC = () => {
       .catch(e => console.log('Quests error (не критично)'));
   };
 
-  // ФАЗА 6: Загрузка статистики
   const fetchStats = () => {
     fetch('/api/statistics')
       .then(res => res.json())
@@ -165,6 +179,7 @@ const App: React.FC = () => {
     fetchNews();
     fetchStats();
     fetchProjects();
+    fetchMortgagePrograms();
 
     const initData = WebApp.initData;
 
@@ -202,9 +217,7 @@ const App: React.FC = () => {
           });
           if (sUser.first_name) setRegName(sUser.first_name);
           setApprovalStatus(sUser.approval_status || 'none');
-          // Загружаем квесты с userId для отметки выполненных
           fetchQuests(sUser.id);
-          // Проверяем непрочитанные новости
           fetchUnreadCount();
         } else {
           throw new Error("Сервер не вернул пользователя (data.user is missing)");
@@ -244,14 +257,13 @@ const App: React.FC = () => {
         }
       }
     })
-    .catch(err => alert("Ошибка сохранения"))
+    .catch(err => showToast('Ошибка сохранения', 'error'))
     .finally(() => setIsSubmitting(false));
   };
 
   const handleOpenCreate = () => { setEditingItem(null); setIsAdminModalOpen(true); };
   const handleOpenEdit = (item: any) => { setEditingItem(item); setIsAdminModalOpen(true); };
 
-  // ФАЗА 5.3: Реальный обработчик выполнения квеста
   const onClaimQuest = (questId: string) => {
     fetch('/api/quests/claim', {
       method: 'POST',
@@ -261,17 +273,30 @@ const App: React.FC = () => {
     .then(res => res.json())
     .then(data => {
       if (data.success && data.user) {
-        // Обновляем баланс юзера
         setUser((prev: any) => ({
           ...prev,
           silverCoins: data.user.balance,
           goldCoins: data.user.gold_balance || 0,
         }));
-        // Помечаем квест как выполненный
         setQuests(prev => prev.map(q => q.id === questId ? { ...q, isCompleted: true } : q));
       }
     })
     .catch(err => console.error('Quest claim error:', err));
+  };
+
+  // Handle sections sub-navigation
+  const handleSectionNavigate = (view: SectionView) => {
+    setSectionView(view);
+  };
+
+  const handleBackToSections = () => {
+    setSectionView('hub');
+  };
+
+  // When switching to SECTIONS tab, reset to hub view
+  const handleSectionsTabClick = () => {
+    setActiveTab(Tab.SECTIONS);
+    setSectionView('hub');
   };
 
   // --- ЭКРАН С ОШИБКОЙ ---
@@ -365,18 +390,66 @@ const App: React.FC = () => {
     );
   }
 
+  // Рендер содержимого вкладки «Разделы»
+  const renderSectionsContent = () => {
+    if (sectionView === 'leaderboard') {
+      return (
+        <div>
+          <div className="px-4 pt-4">
+            <button onClick={handleBackToSections} className="flex items-center gap-2 text-brand-grey font-bold text-sm mb-2 active:opacity-60">
+              <ArrowLeft size={18} /> Назад
+            </button>
+          </div>
+          <Leaderboard />
+        </div>
+      );
+    }
+    if (sectionView === 'calendar') {
+      return (
+        <div>
+          <div className="px-4 pt-4">
+            <button onClick={handleBackToSections} className="flex items-center gap-2 text-brand-grey font-bold text-sm mb-2 active:opacity-60">
+              <ArrowLeft size={18} /> Назад
+            </button>
+          </div>
+          <EventCalendar />
+        </div>
+      );
+    }
+    if (sectionView === 'mortgage') {
+      return (
+        <div>
+          <div className="px-4 pt-4">
+            <button onClick={handleBackToSections} className="flex items-center gap-2 text-brand-grey font-bold text-sm mb-2 active:opacity-60">
+              <ArrowLeft size={18} /> Назад
+            </button>
+          </div>
+          <MortgageCalc programs={mortgagePrograms} embedded />
+        </div>
+      );
+    }
+    return <SectionsHub onNavigate={handleSectionNavigate} />;
+  };
+
   return (
     <div className="flex flex-col h-[100dvh] w-full max-w-md mx-auto bg-brand-cream relative shadow-2xl overflow-hidden text-brand-black">
       <div className="flex-1 overflow-y-auto custom-scrollbar pb-24">
         {activeTab === Tab.PROFILE && <Dashboard user={user} quests={quests} stats={stats} onClaimQuest={onClaimQuest} />}
         {activeTab === Tab.CONTENT && <ContentHub news={news} isAdmin={user.is_admin} onEdit={handleOpenEdit} onRefresh={fetchNews} />}
         {activeTab === Tab.MARKET && <Marketplace userSilver={user.silverCoins} userGold={user.goldCoins} isAdmin={user.is_admin} />}
-        {activeTab === Tab.LEADERBOARD && <Leaderboard />}
+        {activeTab === Tab.SECTIONS && renderSectionsContent()}
       </div>
+
+      {/* Admin FAB - only for is_admin users */}
       {user.is_admin && !isAdminModalOpen && (
-        <button onClick={handleOpenCreate} style={{ position: 'fixed', bottom: '90px', right: '20px', background: '#e74c3c', color: 'white', border: 'none', borderRadius: '50%', width: '50px', height: '50px', fontSize: '24px', zIndex: 100, cursor: 'pointer', boxShadow: '0 4px 10px rgba(0,0,0,0.3)' }}>⚙️</button>
+        <button onClick={handleOpenCreate} style={{ position: 'fixed', bottom: '90px', right: '20px', background: '#433830', color: '#BA8F50', border: 'none', borderRadius: '50%', width: '50px', height: '50px', fontSize: '24px', zIndex: 100, cursor: 'pointer', boxShadow: '0 4px 10px rgba(0,0,0,0.3)' }}>
+          <Settings size={20} style={{ margin: 'auto' }} />
+        </button>
       )}
+
       {isAdminModalOpen && <AdminPanel onNewsAdded={fetchNews} onClose={() => setIsAdminModalOpen(false)} editData={editingItem} />}
+
+      {/* Bottom Navigation */}
       <div className="fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-gray-200 pb-6 pt-2">
         <div className="flex justify-around items-center h-[60px] px-2 max-w-md mx-auto">
           <NavBtn icon={User} label="Профиль" active={activeTab === Tab.PROFILE} onClick={() => setActiveTab(Tab.PROFILE)} />
@@ -386,88 +459,18 @@ const App: React.FC = () => {
             <span className="text-[9px] font-bold text-brand-black mt-1">Проекты</span>
           </button>
           <NavBtn icon={ShoppingBag} label="Маркет" active={activeTab === Tab.MARKET} onClick={() => setActiveTab(Tab.MARKET)} />
-          <NavBtn icon={Trophy} label="Топ" active={activeTab === Tab.LEADERBOARD} onClick={() => setActiveTab(Tab.LEADERBOARD)} />
+          <NavBtn icon={LayoutGrid} label="Разделы" active={activeTab === Tab.SECTIONS} onClick={handleSectionsTabClick} />
         </div>
       </div>
 
-      {isToolsMenuOpen && (
-        <div className="absolute inset-0 z-[40] bg-black/40 backdrop-blur-sm flex items-end animate-fade-in" onClick={() => setIsToolsMenuOpen(false)}>
-            <div className="w-full bg-brand-white rounded-t-3xl p-6 pb-28 animate-slide-up shadow-2xl" onClick={e => e.stopPropagation()}>
-                <div className="flex justify-between items-center mb-6">
-                    <h3 className="font-extrabold text-xl text-brand-black">Инструменты</h3>
-                    <button onClick={() => setIsToolsMenuOpen(false)} className="p-2 bg-brand-cream rounded-full"><X size={20}/></button>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                    <button
-                        onClick={() => { setActiveTab(Tab.PROFILE); setIsToolsMenuOpen(false); }}
-                        className="flex flex-col items-center gap-3 p-4 bg-brand-cream rounded-2xl border border-brand-light active:scale-[0.98]"
-                    >
-                        <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center text-brand-gold shadow-sm"><Calendar size={24}/></div>
-                        <span className="font-bold text-brand-black">Календарь</span>
-                    </button>
-                    <button
-                         onClick={() => { setShowCalculator(true); setIsToolsMenuOpen(false); }}
-                         className="flex flex-col items-center gap-3 p-4 bg-brand-cream rounded-2xl border border-brand-light active:scale-[0.98]"
-                    >
-                        <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center text-brand-gold shadow-sm"><Calculator size={24}/></div>
-                        <span className="font-bold text-brand-black">Ипотека</span>
-                    </button>
-                    <button
-                         onClick={() => { setActiveTab(Tab.LEADERBOARD); setIsToolsMenuOpen(false); }}
-                         className="flex flex-col items-center gap-3 p-4 bg-brand-cream rounded-2xl border border-brand-light active:scale-[0.98]"
-                    >
-                        <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center text-brand-gold shadow-sm"><Trophy size={24}/></div>
-                        <span className="font-bold text-brand-black">Рейтинг</span>
-                    </button>
-
-                    <button
-                        onClick={() => { setShowAdminLogin(true); setIsToolsMenuOpen(false); }}
-                        className="flex flex-col items-center gap-3 p-4 bg-brand-black/5 rounded-2xl border border-brand-light active:scale-[0.98]"
-                    >
-                        <div className="w-12 h-12 bg-brand-black rounded-full flex items-center justify-center text-white shadow-sm"><Settings size={24}/></div>
-                        <span className="font-bold text-brand-black">Админка</span>
-                    </button>
-                </div>
-            </div>
-        </div>
+      {isChessboardOpen && (
+        <ChessboardModal
+          projects={projects}
+          onClose={() => setIsChessboardOpen(false)}
+          isAdmin={user.is_admin}
+          mortgagePrograms={mortgagePrograms}
+        />
       )}
-
-      {/* Admin Login Modal */}
-      {showAdminLogin && (
-          <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-fade-in">
-              <div className="bg-brand-white w-full max-w-xs rounded-2xl p-6 shadow-2xl">
-                  <div className="flex justify-between items-center mb-4">
-                      <h3 className="font-bold text-lg flex items-center gap-2"><Lock size={18} className="text-brand-gold"/> Доступ к админке</h3>
-                      <button onClick={() => setShowAdminLogin(false)}><X size={20}/></button>
-                  </div>
-                  <input
-                    type="password"
-                    placeholder="Введите PIN (0000)"
-                    className="w-full text-center text-2xl tracking-widest py-3 border rounded-xl mb-4 bg-brand-cream font-bold"
-                    value={adminPin}
-                    onChange={(e) => setAdminPin(e.target.value)}
-                    maxLength={4}
-                  />
-                  <button
-                    onClick={() => {
-                      if (adminPin === '0000') {
-                        setShowAdminLogin(false);
-                        setAdminPin('');
-                      } else {
-                        alert('Неверный PIN');
-                        setAdminPin('');
-                      }
-                    }}
-                    className="w-full bg-brand-black text-brand-gold font-bold py-3 rounded-xl"
-                  >
-                      Войти
-                  </button>
-              </div>
-          </div>
-      )}
-
-      {isChessboardOpen && <ChessboardModal projects={projects} onClose={() => setIsChessboardOpen(false)} />}
-      {showCalculator && <MortgageCalc onClose={() => setShowCalculator(false)} />}
     </div>
   );
 };

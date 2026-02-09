@@ -1,14 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
 import WebApp from '@twa-dev/sdk';
-import { X, ArrowLeft, Loader2, Camera, Building2 } from 'lucide-react';
-import { ProjectData, ChessUnit } from '../types';
+import { X, ArrowLeft, Loader2, Camera, Building2, Download, Calculator, Lock, Unlock } from 'lucide-react';
+import { ProjectData, ChessUnit, MortgageProgram } from '../types';
+import MortgageCalc from './tools/MortgageCalc';
+import { showToast } from '../utils/toast';
 
 interface ChessboardProps {
   onClose: () => void;
   projects: ProjectData[];
+  isAdmin?: boolean;
+  mortgagePrograms?: MortgageProgram[];
 }
 
-const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects }) => {
+const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin = false, mortgagePrograms = [] }) => {
     const [loading, setLoading] = useState(false);
     const [units, setUnits] = useState<ChessUnit[]>([]);
     const [selectedProject, setSelectedProject] = useState<ProjectData | null>(null);
@@ -16,17 +20,21 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects }) => {
     const [bookingLoading, setBookingLoading] = useState(false);
     const [bookingResult, setBookingResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
-    // Новые поля для двухэтапного бронирования
+    // Booking form fields
     const [buyerName, setBuyerName] = useState('');
     const [buyerPhone, setBuyerPhone] = useState('');
     const [passportFile, setPassportFile] = useState<File | null>(null);
     const [passportPreview, setPassportPreview] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // Booking Form State
-    const [clientName, setClientName] = useState('');
-    const [clientPhone, setClientPhone] = useState('');
-    const [bookingSuccess, setBookingSuccess] = useState(false);
+    // Show mortgage calc modal
+    const [showMortgage, setShowMortgage] = useState(false);
+
+    // Show booking form (only when user clicks "Забронировать")
+    const [showBookingForm, setShowBookingForm] = useState(false);
+
+    // Cancel booking loading
+    const [cancelLoading, setCancelLoading] = useState(false);
 
     // Load units when a project is selected
     useEffect(() => {
@@ -72,7 +80,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects }) => {
         setBookingLoading(true);
         setBookingResult(null);
         try {
-            // Шаг 1: Создаём бронирование (stage = INIT)
+            // Step 1: Create booking (stage = INIT)
             const res1 = await fetch('/api/bookings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -88,7 +96,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects }) => {
                 return;
             }
 
-            // Шаг 2: Загружаем паспорт → квартира станет BOOKED
+            // Step 2: Upload passport → unit becomes BOOKED
             const formData = new FormData();
             formData.append('initData', WebApp.initData);
             formData.append('buyerName', buyerName);
@@ -107,6 +115,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects }) => {
                     u.id === bookingUnit.id ? { ...u, status: 'BOOKED' } : u
                 ));
                 setBookingUnit({ ...bookingUnit, status: 'BOOKED' });
+                setShowBookingForm(false);
             } else {
                 setBookingResult({ ok: false, msg: data2.error || 'Ошибка загрузки паспорта' });
             }
@@ -117,6 +126,36 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects }) => {
         }
     };
 
+    const handleCancelBooking = async () => {
+        if (!bookingUnit) return;
+        setCancelLoading(true);
+        try {
+            const res = await fetch('/api/bookings/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    initData: WebApp.initData,
+                    unitId: bookingUnit.id,
+                }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                showToast('Бронирование отменено', 'success');
+                setUnits(prev => prev.map(u =>
+                    u.id === bookingUnit.id ? { ...u, status: 'FREE' } : u
+                ));
+                setBookingUnit({ ...bookingUnit, status: 'FREE' });
+                setBookingResult(null);
+            } else {
+                showToast(data.error || 'Ошибка отмены', 'error');
+            }
+        } catch (e) {
+            showToast('Ошибка сети', 'error');
+        } finally {
+            setCancelLoading(false);
+        }
+    };
+
     const resetBookingForm = () => {
         setBookingUnit(null);
         setBuyerName('');
@@ -124,10 +163,17 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects }) => {
         setPassportFile(null);
         setPassportPreview(null);
         setBookingResult(null);
+        setShowBookingForm(false);
+        setShowMortgage(false);
     };
 
     const formatPrice = (price: number) => {
         return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(price);
+    };
+
+    const getRoomLabel = (rooms: number) => {
+        if (rooms === 0) return 'Студия';
+        return `${rooms}-комн`;
     };
 
     return (
@@ -153,7 +199,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects }) => {
                     <div className="grid grid-cols-1 gap-4 animate-slide-up pb-10">
                         {projects.length > 0 ? (
                             projects.map(p => (
-                                <div 
+                                <div
                                     key={p.id}
                                     onClick={() => handleProjectSelect(p)}
                                     className="bg-brand-white rounded-3xl p-3 flex gap-4 items-center border border-transparent shadow-sm hover:border-brand-gold transition-all cursor-pointer active:scale-[0.98]"
@@ -253,7 +299,8 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects }) => {
                 )}
             </div>
 
-            {bookingUnit && (
+            {/* Unit Detail Modal */}
+            {bookingUnit && !showMortgage && (
                 <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in p-4">
                     <div className="absolute inset-0" onClick={resetBookingForm} />
                     <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl animate-slide-up relative z-10 max-h-[90vh] overflow-y-auto">
@@ -261,6 +308,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects }) => {
                             <X size={20} />
                         </button>
 
+                        {/* Status Badge + Unit Info */}
                         <div className="mb-4">
                             <div className={`inline-block px-3 py-1 rounded-full text-xs font-bold mb-2
                                 ${bookingUnit.status === 'FREE' ? 'bg-green-100 text-green-700' : ''}
@@ -270,20 +318,81 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects }) => {
                                 {bookingUnit.status === 'FREE' ? 'Свободна' : bookingUnit.status === 'BOOKED' ? 'Забронирована' : 'Продана'}
                             </div>
 
-                            <div className="shrink-0 bg-brand-white rounded-2xl border border-brand-light mb-6 p-4 flex items-center justify-center relative group min-h-[200px]">
-                                {bookingUnit.layoutImage ? (
-                                    <img src={bookingUnit.layoutImage} alt="Layout" className="max-w-full max-h-[30vh] object-contain mix-blend-multiply" />
-                                ) : (
-                                    <div className="text-brand-grey flex flex-col items-center gap-2">
-                                        <span className="text-xs">Нет планировки</span>
-                                    </div>
-                                )}
-                            </div>
+                            <h3 className="text-xl font-extrabold text-brand-black">
+                                Кв. №{bookingUnit.number}
+                            </h3>
+                            <p className="text-sm text-brand-grey mt-1">
+                                {getRoomLabel(bookingUnit.rooms)} · {bookingUnit.area} м² · {bookingUnit.floor} эт.
+                            </p>
+
+                            {/* Price - large */}
+                            {bookingUnit.price > 0 && (
+                                <div className="text-2xl font-black text-brand-black mt-3">
+                                    {formatPrice(bookingUnit.price)}
+                                </div>
+                            )}
                         </div>
 
-                        {/* Форма бронирования (только для свободных) */}
-                        {bookingUnit.status === 'FREE' && !bookingResult?.ok && (
-                            <div className="space-y-3 mb-4 pt-4 border-t border-gray-100">
+                        {/* Layout Image */}
+                        <div className="bg-brand-cream rounded-2xl border border-brand-light mb-4 p-3 flex items-center justify-center min-h-[180px]">
+                            {bookingUnit.layoutImage ? (
+                                <img src={bookingUnit.layoutImage} alt="Планировка" className="max-w-full max-h-[25vh] object-contain mix-blend-multiply" />
+                            ) : (
+                                <div className="text-brand-grey flex flex-col items-center gap-2">
+                                    <Building2 size={32} className="opacity-30" />
+                                    <span className="text-xs">Нет планировки</span>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Action Buttons */}
+                        <div className="space-y-2 mb-4">
+                            {/* Download Layout */}
+                            {bookingUnit.layoutImage && (
+                                <a
+                                    href={bookingUnit.layoutImage}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="w-full py-3 bg-brand-cream border border-brand-light rounded-xl font-bold text-sm flex items-center justify-center gap-2 text-brand-black active:scale-[0.98] transition-transform"
+                                >
+                                    <Download size={16} /> Скачать планировку
+                                </a>
+                            )}
+
+                            {/* Mortgage Calculator */}
+                            <button
+                                onClick={() => setShowMortgage(true)}
+                                className="w-full py-3 bg-brand-cream border border-brand-light rounded-xl font-bold text-sm flex items-center justify-center gap-2 text-brand-black active:scale-[0.98] transition-transform"
+                            >
+                                <Calculator size={16} /> Рассчитать стоимость
+                            </button>
+
+                            {/* Book - only for FREE */}
+                            {bookingUnit.status === 'FREE' && !bookingResult?.ok && !showBookingForm && (
+                                <button
+                                    onClick={() => setShowBookingForm(true)}
+                                    className="w-full py-3 bg-brand-black text-brand-gold rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg active:scale-[0.98] transition-transform"
+                                >
+                                    <Lock size={16} /> Забронировать
+                                </button>
+                            )}
+
+                            {/* Admin: Cancel Booking - only for BOOKED */}
+                            {isAdmin && bookingUnit.status === 'BOOKED' && (
+                                <button
+                                    onClick={handleCancelBooking}
+                                    disabled={cancelLoading}
+                                    className="w-full py-3 bg-red-50 border border-red-200 text-red-600 rounded-xl font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.98] transition-transform disabled:opacity-50"
+                                >
+                                    {cancelLoading ? <Loader2 size={16} className="animate-spin" /> : <Unlock size={16} />}
+                                    Снять бронь
+                                </button>
+                            )}
+                        </div>
+
+                        {/* Booking Form (expanded) */}
+                        {showBookingForm && bookingUnit.status === 'FREE' && !bookingResult?.ok && (
+                            <div className="space-y-3 mb-4 pt-4 border-t border-gray-100 animate-fade-in">
                                 <h4 className="text-sm font-bold text-brand-black">Данные покупателя</h4>
                                 <input
                                     type="text"
@@ -300,7 +409,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects }) => {
                                     className="w-full p-3 bg-gray-50 rounded-xl border border-gray-200 focus:ring-2 focus:ring-brand-gold outline-none text-sm"
                                 />
 
-                                {/* Загрузка паспорта */}
+                                {/* Passport Upload */}
                                 <div>
                                     <label className="block text-xs font-bold uppercase text-gray-500 mb-2">Фото паспорта</label>
                                     <input
@@ -331,32 +440,34 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects }) => {
                                         </button>
                                     )}
                                 </div>
+
+                                <button
+                                    onClick={handleBooking}
+                                    disabled={bookingLoading || !buyerName || !buyerPhone || !passportFile}
+                                    className="w-full py-3 bg-brand-black text-white rounded-xl font-bold shadow-lg disabled:opacity-50 flex items-center justify-center gap-2"
+                                >
+                                    {bookingLoading ? <><Loader2 size={16} className="animate-spin" /> Отправка...</> : 'Подтвердить бронирование'}
+                                </button>
                             </div>
                         )}
 
-                        {/* Результат бронирования */}
+                        {/* Booking Result */}
                         {bookingResult && (
                             <div className={`mb-4 p-3 rounded-xl text-sm font-medium text-center ${bookingResult.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
                                 {bookingResult.msg}
                             </div>
                         )}
-
-                        <div className="flex gap-3">
-                            <button onClick={resetBookingForm} className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-bold">
-                                {bookingResult?.ok ? 'Закрыть' : 'Отмена'}
-                            </button>
-                            {bookingUnit.status === 'FREE' && !bookingResult?.ok && (
-                                <button
-                                    onClick={handleBooking}
-                                    disabled={bookingLoading || !buyerName || !buyerPhone || !passportFile}
-                                    className="flex-1 py-3 bg-brand-black text-white rounded-xl font-bold shadow-lg disabled:opacity-50 flex items-center justify-center gap-2"
-                                >
-                                    {bookingLoading ? <><Loader2 size={16} className="animate-spin" /> Отправка...</> : 'Забронировать'}
-                                </button>
-                            )}
-                        </div>
                     </div>
                 </div>
+            )}
+
+            {/* Mortgage Calculator Modal (from unit) */}
+            {showMortgage && bookingUnit && (
+                <MortgageCalc
+                    initialPrice={bookingUnit.price}
+                    programs={mortgagePrograms}
+                    onClose={() => setShowMortgage(false)}
+                />
             )}
         </div>
     );

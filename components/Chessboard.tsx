@@ -249,8 +249,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                         {Array.from({length: selectedProject.floors}).map((_, i) => {
                                             const floorNum = selectedProject.floors - i;
 
-                                            if (floorNum < 2) return null;
-                                            const displayFloor = floorNum - 1;
+                                            if (floorNum < 1) return null;
 
                                             const floorUnits = units.filter(u => u.floor === floorNum);
                                             floorUnits.sort((a, b) => parseInt(a.number) - parseInt(b.number));
@@ -259,8 +258,8 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
 
                                             return (
                                                 <div key={floorNum} className="flex gap-2 items-center">
-                                                    <div className="w-6 text-xs font-bold text-brand-grey text-center sticky left-0 bg-brand-cream z-10">
-                                                        {displayFloor}
+                                                    <div className="w-7 text-xs font-bold text-brand-grey text-center sticky left-0 bg-brand-cream z-10">
+                                                        {floorNum}
                                                     </div>
 
                                                     <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${cols}, minmax(40px, 1fr))` }}>

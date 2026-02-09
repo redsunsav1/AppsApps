@@ -256,6 +256,7 @@ const initDb = async () => {
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS docs_sent_at TIMESTAMP;');
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS buyer_name TEXT;');
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS buyer_phone TEXT;');
+    await pool.query('ALTER TABLE units ADD COLUMN IF NOT EXISTS section TEXT;');
 
     // --- Индексы ---
     await pool.query('CREATE INDEX IF NOT EXISTS idx_users_tg ON users(telegram_id);');
@@ -345,7 +346,10 @@ async function syncProjectWithXml(projectId, url) {
   let rawItems = [];
   const rootKeys = Object.keys(result || {});
   if (result?.['realty-feed']?.offer) {
-    rawItems = result['realty-feed'].offer; diag.format = 'yandex';
+    rawItems = result['realty-feed'].offer;
+    // Detect Profitbase XML vs standard Yandex
+    const feedType = result['realty-feed'].$?.type || '';
+    diag.format = feedType === 'profitbase_xml' ? 'profitbase_xml' : 'yandex';
   } else if (result?.Ads?.Ad) {
     rawItems = result.Ads.Ad; diag.format = 'avito';
   } else if (result?.ads?.ad) {
@@ -392,29 +396,34 @@ async function syncProjectWithXml(projectId, url) {
   // Normalize
   const units = rawItems.map((item, idx) => {
     // Этаж — ищем во всех вариантах
-    const floorRaw = findTag(item, 'Floor', 'floor', 'Этаж', 'this_floor', 'floor_number');
+    const floorRaw = findTag(item, 'floor', 'Floor', 'Этаж', 'this_floor', 'floor_number');
     const floor = parseInt(floorRaw || '0') || 0;
 
-    // Общее кол-во этажей здания
-    const floorsRaw = findTag(item, 'Floors', 'floors', 'floors-total', 'total_floors', 'building_floors');
-    const totalFloors = parseInt(floorsRaw || '0') || 0;
+    // Общее кол-во этажей здания (прямой тег + вложенный <house><floors-total>)
+    let totalFloors = parseInt(findTag(item, 'Floors', 'floors', 'floors-total', 'total_floors', 'building_floors') || '0') || 0;
+    if (!totalFloors && item.house?.[0]?.['floors-total']?.[0]) {
+      totalFloors = parseInt(item.house[0]['floors-total'][0]) || 0;
+    }
     if (totalFloors > buildingFloors) buildingFloors = totalFloors;
 
-    // ID
-    const id = findTag(item, 'Id', 'id', 'ID') || item.$?.['internal-id'] || `unit-${idx}`;
+    // ID — Profitbase XML uses internal-id attribute on <offer>
+    const id = item.$?.['internal-id'] || findTag(item, 'Id', 'id', 'ID') || `unit-${idx}`;
 
-    // Номер квартиры
-    const number = extractAvitoNumber(item)
-      || findTag(item, 'flat-number', 'apartment', 'flat_number', 'object_number')
+    // Номер квартиры — Profitbase: <number>, Yandex: <flat-number>, Avito: extractAvitoNumber
+    const number = findTag(item, 'number', 'flat-number', 'apartment', 'flat_number', 'object_number')
+      || extractAvitoNumber(item)
       || (item.location?.[0]?.apartment?.[0])
       || null;
 
+    // Секция / подъезд — Profitbase: <building-section>
+    const section = findTag(item, 'building-section', 'section', 'Section', 'building_section') || null;
+
     // Комнаты
-    const roomsRaw = (findTag(item, 'Rooms', 'rooms', 'room_count') || '').toString();
+    const roomsRaw = (findTag(item, 'rooms', 'Rooms', 'room_count') || '').toString();
     let rooms = parseInt(roomsRaw.replace(/\D/g, '') || '0');
     if (roomsRaw.toLowerCase().includes('студ') || findTag(item, 'studio', 'is-studio', 'IsStudio') === '1') rooms = 0;
 
-    // Площадь
+    // Площадь — Profitbase/Yandex: <area><value>, Avito: <Square>
     const areaTag = item.area?.[0];
     const area = parseFloat(
       findTag(item, 'Square', 'square', 'TotalArea', 'total_area')
@@ -422,31 +431,47 @@ async function syncProjectWithXml(projectId, url) {
       || '0'
     );
 
-    // Цена
+    // Цена — Profitbase/Yandex: <price><value>, Avito: <Price>
     const priceTag = item.price?.[0];
     const price = parseFloat(
       (findTag(item, 'Price', 'price_value') || (typeof priceTag === 'object' ? priceTag?.value?.[0] : priceTag) || '0')
       .toString().replace(/[\s\u00a0,]/g, '')
     );
 
-    // Изображение
-    const planUrl = extractAvitoImage(item)
+    // Изображение — Profitbase XML: <image type="plan">URL</image>
+    let planUrl = '';
+    const imageNodes = item.image || [];
+    // 1. Profitbase: ищем <image type="plan">
+    for (const img of imageNodes) {
+      if (img?.$?.type === 'plan' && img._) { planUrl = img._; break; }
+    }
+    // 2. Любой <image> с URL
+    if (!planUrl) {
+      for (const img of imageNodes) {
+        if (img?._ && String(img._).startsWith('http')) { planUrl = img._; break; }
+        if (typeof img === 'string' && img.startsWith('http')) { planUrl = img; break; }
+      }
+    }
+    // 3. Avito/другие форматы
+    if (!planUrl) planUrl = extractAvitoImage(item)
       || findTag(item, 'planning-image', 'plan-image', 'plan_image', 'PlanImage')
-      || findTag(item, 'image', 'Image', 'photo')
+      || findTag(item, 'photo')
       || '';
 
-    // Статус
+    // Статус — Profitbase: <status_id> (1=в продаже, 2=продана, 3=забронирована)
+    const statusId = findTag(item, 'status_id', 'status-id');
     const statusParts = [
-      findTag(item, 'AdStatus', 'Status', 'status', 'deal-status', 'sales-status', 'status-id'),
+      findTag(item, 'status', 'Status', 'status-humanized'),
+      findTag(item, 'AdStatus', 'deal-status', 'sales-status'),
       findTag(item, 'Description', 'description')
     ].filter(Boolean);
     const statusRaw = statusParts.map(s => typeof s === 'object' ? JSON.stringify(s) : s).join(' ').toLowerCase();
 
-    return { id: String(id), floor, number, rooms, area, price, planUrl, statusRaw };
+    return { id: String(id), floor, number, rooms, area, price, planUrl, statusId, statusRaw, section };
   });
 
   // Логируем первые 3 юнита
-  units.slice(0, 3).forEach((u, i) => console.log(`🏠 [${i}]: fl=${u.floor} num=${u.number} rm=${u.rooms} area=${u.area} price=${u.price} img=${u.planUrl ? '✅' : '❌'}`));
+  units.slice(0, 3).forEach((u, i) => console.log(`🏠 [${i}]: fl=${u.floor} sec=${u.section} num=${u.number} rm=${u.rooms} area=${u.area} price=${u.price} sid=${u.statusId} img=${u.planUrl ? '✅' : '❌'}`));
 
   await pool.query('DELETE FROM units WHERE project_id = $1', [projectId]);
 
@@ -466,15 +491,24 @@ async function syncProjectWithXml(projectId, url) {
     floorCounters[floor]++;
 
     const unitNumber = u.number || String(floor * 100 + floorCounters[floor]);
+
+    // Статус: Profitbase status_id (1=FREE, 2=SOLD, 3=BOOKED) или текстовый парсинг
     let status = 'FREE';
-    const s = u.statusRaw;
-    if (s.includes('sold') || s.includes('продано') || s.includes('busy') || s.includes('занят')) status = 'SOLD';
-    else if (s.includes('book') || s.includes('reserv') || s.includes('бронь') || s.includes('забронир')) status = 'BOOKED';
+    if (u.statusId) {
+      const sid = parseInt(u.statusId);
+      if (sid === 2) status = 'SOLD';
+      else if (sid === 3) status = 'BOOKED';
+      else if (sid === 4 || sid === 5) status = 'SOLD'; // не для продажи / снята с продажи
+    } else {
+      const s = u.statusRaw;
+      if (s.includes('sold') || s.includes('продано') || s.includes('busy') || s.includes('занят')) status = 'SOLD';
+      else if (s.includes('book') || s.includes('reserv') || s.includes('бронь') || s.includes('забронир')) status = 'BOOKED';
+    }
 
     await pool.query(
-      `INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       ON CONFLICT (id) DO UPDATE SET floor=$3, number=$4, rooms=$5, area=$6, price=$7, status=$8, plan_image_url=$9, updated_at=NOW()`,
-      [u.id, projectId, floor, unitNumber, u.rooms, u.area, u.price, status, u.planUrl]
+      `INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url, section) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (id) DO UPDATE SET floor=$3, number=$4, rooms=$5, area=$6, price=$7, status=$8, plan_image_url=$9, section=$10, updated_at=NOW()`,
+      [u.id, projectId, floor, unitNumber, u.rooms, u.area, u.price, status, u.planUrl, u.section]
     );
     count++;
   }
@@ -482,11 +516,16 @@ async function syncProjectWithXml(projectId, url) {
   const maxUnitsOnFloor = Math.max(...Object.values(floorCounts).map(Number), 1);
   await pool.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3 WHERE id = $4', [maxFloor, maxUnitsOnFloor, url, projectId]);
 
+  // Секции
+  const sections = [...new Set(units.map(u => u.section).filter(Boolean))];
+
   diag.savedCount = count;
   diag.sampleUnit = units[0] || null;
   diag.floors = maxFloor;
   diag.maxPerFloor = maxUnitsOnFloor;
-  console.log(`✅ Synced ${count}/${rawItems.length} for ${projectId} (${diag.format}, ${maxFloor} fl, ${maxUnitsOnFloor}/fl, noFloor=${diag.noFloorCount})`);
+  diag.sections = sections;
+  diag.statusBreakdown = { free: units.filter(u => !u.statusId || parseInt(u.statusId) === 1).length, sold: units.filter(u => parseInt(u.statusId) === 2).length, booked: units.filter(u => parseInt(u.statusId) === 3).length };
+  console.log(`✅ Synced ${count}/${rawItems.length} for ${projectId} (${diag.format}, ${maxFloor} fl, ${maxUnitsOnFloor}/fl, sections=${sections.join(',')}, noFloor=${diag.noFloorCount})`);
   return diag;
 }
 
@@ -872,15 +911,36 @@ app.post('/api/debug-feed', async (req, res) => {
     const result = await parser.parseStringPromise(xmlText);
     const rootKeys = Object.keys(result || {});
     let format = 'unknown'; let itemCount = 0; let sampleItems = [];
-    if (result?.['realty-feed']?.offer) { format = 'yandex'; itemCount = result['realty-feed'].offer.length; sampleItems = result['realty-feed'].offer.slice(0, 3); }
+    if (result?.['realty-feed']?.offer) {
+      const feedType = result['realty-feed'].$?.type || '';
+      format = feedType === 'profitbase_xml' ? 'profitbase_xml' : 'yandex';
+      itemCount = result['realty-feed'].offer.length;
+      sampleItems = result['realty-feed'].offer.slice(0, 3);
+    }
     else if (result?.Ads?.Ad) { format = 'avito'; itemCount = result.Ads.Ad.length; sampleItems = result.Ads.Ad.slice(0, 3); }
     else if (result?.feed?.offer) { format = 'cian'; itemCount = result.feed.offer.length; sampleItems = result.feed.offer.slice(0, 3); }
     // Показываем все ключи первого элемента и 3 примера в полном виде
     const firstKeys = sampleItems[0] ? Object.keys(sampleItems[0]) : [];
+    // Статистика по статусам
+    const allItems = sampleItems.length > 0 ? (result?.['realty-feed']?.offer || result?.Ads?.Ad || result?.feed?.offer || []) : [];
+    const statusStats = {};
+    for (const item of allItems) {
+      const sid = item.status_id?.[0] || item['status-id']?.[0] || 'unknown';
+      const sname = item.status?.[0] || item['status-humanized']?.[0] || '';
+      const key = `${sid}:${sname}`;
+      statusStats[key] = (statusStats[key] || 0) + 1;
+    }
+    // Секции
+    const sectionSet = new Set();
+    for (const item of allItems) {
+      const sec = item['building-section']?.[0] || item.section?.[0];
+      if (sec) sectionSet.add(sec);
+    }
     res.json({
       format, rootKeys, itemCount, firstItemKeys: firstKeys,
       samples: sampleItems.map(s => JSON.stringify(s).slice(0, 3000)),
-      xmlPreview: xmlText.slice(0, 500), // первые 500 символов сырого XML
+      xmlPreview: xmlText.slice(0, 500),
+      statusStats, sections: [...sectionSet],
     });
   } catch (e) { res.status(500).json({ error: 'Debug failed: ' + e.message }); }
 });

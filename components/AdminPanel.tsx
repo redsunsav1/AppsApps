@@ -64,6 +64,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [importProjectId, setImportProjectId] = useState('');
   const [importProjectName, setImportProjectName] = useState('');
   const [importUrl, setImportUrl] = useState('');
+  const [debugResult, setDebugResult] = useState<string>('');
 
   // Shop
   const [shopTitle, setShopTitle] = useState('');
@@ -247,6 +248,16 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
       await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       showToast('Готово!', 'success'); onClose(); onNewsAdded();
     } catch (e) { showToast('Ошибка', 'error'); } finally { setLoading(false); }
+  };
+
+  const handleDebugFeed = async () => {
+    if (!importUrl) return showToast('Вставь URL фида', 'error');
+    setLoading(true); setDebugResult('');
+    try {
+      const res = await fetch('/api/debug-feed', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData, url: importUrl }) });
+      const data = await res.json();
+      setDebugResult(JSON.stringify(data, null, 2));
+    } catch (e) { setDebugResult('Ошибка: ' + String(e)); } finally { setLoading(false); }
   };
 
   const handleImportXml = async () => {
@@ -477,8 +488,14 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                 </div>
                 <div className="flex gap-2 mt-4 pt-4 border-t">
                     <button onClick={handleImportXml} disabled={loading} className="flex-1 bg-blue-600 text-white p-3 rounded-lg font-bold shadow-md">{loading ? '...' : 'Загрузить'}</button>
+                    <button onClick={handleDebugFeed} disabled={loading} className="bg-amber-100 text-amber-700 p-3 rounded-lg font-bold text-sm">{loading ? '...' : 'Тест'}</button>
                     <button onClick={onClose} className="bg-gray-200 text-black p-3 rounded-lg font-medium">Закрыть</button>
                 </div>
+                {debugResult && (
+                    <div className="mt-3 bg-gray-900 text-green-400 p-3 rounded-lg text-[10px] font-mono max-h-64 overflow-auto whitespace-pre-wrap break-all">
+                        {debugResult}
+                    </div>
+                )}
             </div>
         )}
 

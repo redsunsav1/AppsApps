@@ -27,6 +27,10 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
     const [passportPreview, setPassportPreview] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
+    // Section selector
+    const [sections, setSections] = useState<string[]>([]);
+    const [activeSection, setActiveSection] = useState<string | null>(null);
+
     // Show mortgage calc modal
     const [showMortgage, setShowMortgage] = useState(false);
 
@@ -52,9 +56,14 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                         price: u.price,
                         status: u.status,
                         floor: u.floor,
-                        layoutImage: u.plan_image_url
+                        layoutImage: u.plan_image_url,
+                        section: u.section || null
                     }));
                     setUnits(mapped);
+                    // Extract unique sections
+                    const secs = [...new Set(mapped.map((u: ChessUnit) => u.section).filter(Boolean))] as string[];
+                    setSections(secs);
+                    setActiveSection(secs.length > 0 ? secs[0] : null);
                 })
                 .catch(e => console.error('Error loading units:', e))
                 .finally(() => setLoading(false));
@@ -238,7 +247,26 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                             </div>
                          ) : (
                              <>
-                                <div className="flex items-center gap-4 mb-6 justify-center text-xs font-medium text-brand-grey sticky top-0 bg-brand-cream/95 py-2 backdrop-blur-sm z-10">
+                                {/* Section tabs */}
+                                {sections.length > 1 && (
+                                    <div className="flex gap-2 mb-4 overflow-x-auto pb-1 sticky top-0 bg-brand-cream/95 z-20 pt-1 backdrop-blur-sm">
+                                        {sections.map(sec => (
+                                            <button
+                                                key={sec}
+                                                onClick={() => setActiveSection(sec)}
+                                                className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
+                                                    activeSection === sec
+                                                        ? 'bg-brand-black text-brand-gold shadow-lg'
+                                                        : 'bg-white border border-brand-light text-brand-grey hover:border-brand-gold'
+                                                }`}
+                                            >
+                                                {sec}
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+
+                                <div className="flex items-center gap-4 mb-4 justify-center text-xs font-medium text-brand-grey sticky top-8 bg-brand-cream/95 py-2 backdrop-blur-sm z-10" style={{ top: sections.length > 1 ? '2.5rem' : '0' }}>
                                     <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-white border border-brand-light rounded-sm"></div> Свободно</div>
                                     <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-brand-cream border border-brand-gold rounded-sm"></div> Бронь</div>
                                     <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-brand-light rounded-sm opacity-50"></div> Продано</div>
@@ -246,50 +274,64 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
 
                                 <div className="overflow-x-auto pb-4">
                                     <div className="space-y-1 min-w-max px-2">
-                                        {Array.from({length: selectedProject.floors}).map((_, i) => {
-                                            const floorNum = selectedProject.floors - i;
+                                        {(() => {
+                                            // Filter by section if sections exist
+                                            const filteredUnits = sections.length > 0 && activeSection
+                                                ? units.filter(u => u.section === activeSection)
+                                                : units;
 
-                                            if (floorNum < 1) return null;
+                                            // Calculate max floor and units per floor dynamically
+                                            const maxFloor = Math.max(selectedProject.floors, ...filteredUnits.map(u => u.floor));
+                                            const floorUnitCounts: Record<number, number> = {};
+                                            filteredUnits.forEach(u => {
+                                                floorUnitCounts[u.floor] = (floorUnitCounts[u.floor] || 0) + 1;
+                                            });
+                                            const cols = sections.length > 0
+                                                ? Math.max(...Object.values(floorUnitCounts), 1)
+                                                : (selectedProject.unitsPerFloor || 8);
 
-                                            const floorUnits = units.filter(u => u.floor === floorNum);
-                                            floorUnits.sort((a, b) => parseInt(a.number) - parseInt(b.number));
+                                            return Array.from({length: maxFloor}).map((_, i) => {
+                                                const floorNum = maxFloor - i;
+                                                if (floorNum < 1) return null;
 
-                                            const cols = selectedProject.unitsPerFloor || 8;
+                                                const floorUnits = filteredUnits.filter(u => u.floor === floorNum);
+                                                floorUnits.sort((a, b) => parseInt(a.number) - parseInt(b.number));
 
-                                            return (
-                                                <div key={floorNum} className="flex gap-2 items-center">
-                                                    <div className="w-7 text-xs font-bold text-brand-grey text-center sticky left-0 bg-brand-cream z-10">
-                                                        {floorNum}
+                                                return (
+                                                    <div key={floorNum} className="flex gap-2 items-center">
+                                                        <div className="w-7 text-xs font-bold text-brand-grey text-center sticky left-0 bg-brand-cream z-10">
+                                                            {floorNum}
+                                                        </div>
+
+                                                        <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${cols}, minmax(40px, 1fr))` }}>
+                                                            {Array.from({length: cols}).map((_, idx) => {
+                                                                const unit = floorUnits[idx];
+
+                                                                if (!unit) {
+                                                                    return <div key={`empty-${floorNum}-${idx}`} className="h-10 w-12 bg-gray-200/30 rounded-md border border-transparent" />
+                                                                }
+
+                                                                return (
+                                                                    <div
+                                                                        key={unit.id}
+                                                                        onClick={() => { resetBookingForm(); setBookingUnit(unit); }}
+                                                                        className={`
+                                                                            h-10 w-12 rounded-md flex flex-col items-center justify-center border text-[9px] transition-all cursor-pointer
+                                                                            ${unit.status === 'FREE' ? 'bg-white border-brand-light hover:border-brand-gold hover:bg-brand-cream shadow-sm' : ''}
+                                                                            ${unit.status === 'BOOKED' ? 'bg-brand-cream border-brand-gold/30 text-brand-gold' : ''}
+                                                                            ${unit.status === 'SOLD' ? 'bg-brand-light border-transparent text-white opacity-40 cursor-default' : ''}
+                                                                        `}
+                                                                    >
+                                                                        <span className="font-bold">{unit.number}</span>
+                                                                        {unit.status === 'FREE' && <span>{unit.area}</span>}
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
                                                     </div>
-
-                                                    <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${cols}, minmax(40px, 1fr))` }}>
-                                                        {Array.from({length: cols}).map((_, idx) => {
-                                                            const unit = floorUnits[idx];
-
-                                                            if (!unit) {
-                                                                return <div key={`empty-${idx}`} className="h-10 w-12 bg-gray-200/30 rounded-md border border-transparent" />
-                                                            }
-
-                                                            return (
-                                                                <div
-                                                                    key={unit.id}
-                                                                    onClick={() => { resetBookingForm(); setBookingUnit(unit); }}
-                                                                    className={`
-                                                                        h-10 w-12 rounded-md flex flex-col items-center justify-center border text-[9px] transition-all cursor-pointer
-                                                                        ${unit.status === 'FREE' ? 'bg-white border-brand-light hover:border-brand-gold hover:bg-brand-cream shadow-sm' : ''}
-                                                                        ${unit.status === 'BOOKED' ? 'bg-brand-cream border-brand-gold/30 text-brand-gold' : ''}
-                                                                        ${unit.status === 'SOLD' ? 'bg-brand-light border-transparent text-white opacity-40 cursor-default' : ''}
-                                                                    `}
-                                                                >
-                                                                    <span className="font-bold">{unit.number}</span>
-                                                                    {unit.status === 'FREE' && <span>{unit.area}</span>}
-                                                                </div>
-                                                            );
-                                                        })}
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
+                                                );
+                                            });
+                                        })()}
                                     </div>
                                 </div>
                              </>
@@ -321,7 +363,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                 Кв. №{bookingUnit.number}
                             </h3>
                             <p className="text-sm text-brand-grey mt-1">
-                                {getRoomLabel(bookingUnit.rooms)} · {bookingUnit.area} м² · {bookingUnit.floor} эт.
+                                {getRoomLabel(bookingUnit.rooms)} · {bookingUnit.area} м² · {bookingUnit.floor} эт.{bookingUnit.section ? ` · ${bookingUnit.section}` : ''}
                             </p>
 
                             {/* Price - large */}

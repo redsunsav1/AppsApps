@@ -96,6 +96,7 @@ export interface ChessUnit {
   status: 'FREE' | 'BOOKED' | 'SOLD';
   floor: number;
   layoutImage?: string;
+  section?: string;
 }
 
 export interface ProjectData {

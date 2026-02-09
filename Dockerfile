@@ -1,26 +1,27 @@
-# 1. Берем Linux с Node.js
-FROM node:20-alpine
+# ====== BUILD STAGE ======
+FROM node:20-alpine AS builder
 
-# 2. Устанавливаем инструменты для сборки нативных модулей (better-sqlite3)
-RUN apk add --no-cache python3 make g++
-
-# 3. Создаем папку
 WORKDIR /app
 
-# 4. Копируем package.json
 COPY package.json ./
-
-# 5. Устанавливаем зависимости
 RUN npm install --network-timeout=100000
 
-# 6. Копируем весь остальной код
 COPY . .
-
-# 7. Собираем Фронтенд
 RUN npm run build
 
-# 8. Открываем порт 8080
+# ====== PRODUCTION STAGE ======
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy only production dependencies
+COPY package.json ./
+RUN npm install --production --network-timeout=100000
+
+# Copy built frontend and server
+COPY --from=builder /app/dist ./dist
+COPY server.js ./
+
 EXPOSE 8080
 
-# 9. Запускаем сервер
 CMD ["node", "server.js"]

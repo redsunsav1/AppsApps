@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import WebApp from '@twa-dev/sdk';
-import { Newspaper, Building2, Link, ShoppingBag, Zap, Trash2, UserCheck, Users } from 'lucide-react';
+import { Newspaper, Building2, Link, ShoppingBag, Zap, Trash2, UserCheck, Users, Calendar, Calculator, Edit3 } from 'lucide-react';
+import { showToast } from '../utils/toast';
 
 interface AdminPanelProps {
   onNewsAdded: () => void;
@@ -30,8 +31,26 @@ interface ApplicationItem {
   created_at: string;
 }
 
+interface EventItem {
+  id: number;
+  title: string;
+  description: string;
+  date: string;
+  time: string;
+  type: string;
+  spots_total: number;
+}
+
+interface MortgageProgramItem {
+  id: number;
+  name: string;
+  rate: number;
+  description: string;
+  is_active: boolean;
+}
+
 export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) => {
-  const [activeTab, setActiveTab] = useState<'news' | 'import' | 'shop' | 'quests' | 'applications' | 'users'>('news');
+  const [activeTab, setActiveTab] = useState<'news' | 'import' | 'shop' | 'quests' | 'applications' | 'users' | 'events' | 'mortgage'>('news');
 
   // News
   const [title, setTitle] = useState('');
@@ -65,6 +84,23 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   // Users
   const [usersList, setUsersList] = useState<any[]>([]);
 
+  // Events
+  const [eventsList, setEventsList] = useState<EventItem[]>([]);
+  const [eventTitle, setEventTitle] = useState('');
+  const [eventDescription, setEventDescription] = useState('');
+  const [eventDate, setEventDate] = useState('');
+  const [eventTime, setEventTime] = useState('');
+  const [eventType, setEventType] = useState('TOUR');
+  const [eventSpots, setEventSpots] = useState(20);
+  const [editingEventId, setEditingEventId] = useState<number | null>(null);
+
+  // Mortgage Programs
+  const [mortgageList, setMortgageList] = useState<MortgageProgramItem[]>([]);
+  const [mpName, setMpName] = useState('');
+  const [mpRate, setMpRate] = useState(6);
+  const [mpDescription, setMpDescription] = useState('');
+  const [editingMortgageId, setEditingMortgageId] = useState<number | null>(null);
+
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -83,14 +119,10 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
 
   useEffect(() => {
     if (activeTab === 'quests') fetchQuests();
-  }, [activeTab]);
-
-  useEffect(() => {
     if (activeTab === 'applications') fetchApplications();
-  }, [activeTab]);
-
-  useEffect(() => {
     if (activeTab === 'users') fetchUsers();
+    if (activeTab === 'events') fetchEvents();
+    if (activeTab === 'mortgage') fetchMortgagePrograms();
   }, [activeTab]);
 
   const fetchQuests = () => {
@@ -100,18 +132,47 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
       .catch(e => console.error('Quests fetch error:', e));
   };
 
+  // PROTECTED: POST with initData
   const fetchApplications = () => {
-    fetch('/api/applications')
+    fetch('/api/applications', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: WebApp.initData }),
+    })
       .then(res => res.json())
-      .then(data => setApplications(data))
+      .then(data => setApplications(Array.isArray(data) ? data : []))
       .catch(e => console.error('Applications fetch error:', e));
   };
 
+  // PROTECTED: POST with initData
   const fetchUsers = () => {
-    fetch('/api/admin/users')
+    fetch('/api/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: WebApp.initData }),
+    })
       .then(res => res.json())
-      .then(data => setUsersList(data))
+      .then(data => setUsersList(Array.isArray(data) ? data : []))
       .catch(e => console.error('Users fetch error:', e));
+  };
+
+  const fetchEvents = () => {
+    const initData = WebApp.initData;
+    fetch('/api/events/list', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData }),
+    })
+      .then(res => res.json())
+      .then(data => setEventsList(Array.isArray(data) ? data : []))
+      .catch(e => console.error('Events fetch error:', e));
+  };
+
+  const fetchMortgagePrograms = () => {
+    fetch('/api/mortgage-programs')
+      .then(res => res.json())
+      .then(data => setMortgageList(Array.isArray(data) ? data : []))
+      .catch(e => console.error('Mortgage fetch error:', e));
   };
 
   const handleDeleteUser = async (userId: number) => {
@@ -123,11 +184,11 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
         body: JSON.stringify({ initData: WebApp.initData }),
       });
       fetchUsers();
-    } catch (e) { alert('Ошибка удаления'); }
+    } catch (e) { showToast('Ошибка удаления', 'error'); }
   };
 
   const handleSubmitNews = async () => {
-    if (!title || !text) return alert('Заполни поля');
+    if (!title || !text) return showToast('Заполни поля', 'error');
     setLoading(true);
     const body = {
       initData: WebApp.initData,
@@ -140,12 +201,12 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
       const url = editData ? `/api/news/${editData.id}` : '/api/news';
       const method = editData ? 'PUT' : 'POST';
       await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      alert('Готово!'); onClose(); onNewsAdded();
-    } catch (e) { alert('Ошибка'); } finally { setLoading(false); }
+      showToast('Готово!', 'success'); onClose(); onNewsAdded();
+    } catch (e) { showToast('Ошибка', 'error'); } finally { setLoading(false); }
   };
 
   const handleImportXml = async () => {
-    if (!importProjectId || !importUrl) return alert('Заполни поля');
+    if (!importProjectId || !importUrl) return showToast('Заполни поля', 'error');
     setLoading(true);
     try {
         const res = await fetch('/api/sync-xml-url', {
@@ -155,14 +216,14 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
         });
         const data = await res.json();
         if (data.success) {
-            alert(`Успешно! Загружено: ${data.count}`);
+            showToast(`Загружено: ${data.count}`, 'success');
             setImportUrl('');
-        } else { alert('Ошибка: ' + JSON.stringify(data)); }
-    } catch (e) { alert('Ошибка сети'); } finally { setLoading(false); }
+        } else { showToast('Ошибка: ' + JSON.stringify(data), 'error'); }
+    } catch (e) { showToast('Ошибка сети', 'error'); } finally { setLoading(false); }
   };
 
   const handleSubmitProduct = async () => {
-    if (!shopTitle || !shopPrice) return alert('Заполни название и цену');
+    if (!shopTitle || !shopPrice) return showToast('Заполни название и цену', 'error');
     setLoading(true);
     try {
         await fetch('/api/products', {
@@ -176,13 +237,13 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                 image_url: shopImage
             })
         });
-        alert('Товар добавлен!');
+        showToast('Товар добавлен!', 'success');
         setShopTitle(''); setShopPrice(0); setShopImage('');
-    } catch (e) { alert('Ошибка'); } finally { setLoading(false); }
+    } catch (e) { showToast('Ошибка', 'error'); } finally { setLoading(false); }
   };
 
   const handleCreateQuest = async () => {
-    if (!questTitle) return alert('Заполни название квеста');
+    if (!questTitle) return showToast('Заполни название квеста', 'error');
     setLoading(true);
     try {
       const res = await fetch('/api/quests', {
@@ -197,9 +258,9 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
         }),
       });
       const data = await res.json();
-      if (data.success) { alert('Квест создан!'); setQuestTitle(''); fetchQuests(); }
-      else { alert('Ошибка: ' + (data.error || 'Неизвестная')); }
-    } catch (e) { alert('Ошибка сети'); } finally { setLoading(false); }
+      if (data.success) { showToast('Квест создан!', 'success'); setQuestTitle(''); fetchQuests(); }
+      else { showToast('Ошибка: ' + (data.error || 'Неизвестная'), 'error'); }
+    } catch (e) { showToast('Ошибка сети', 'error'); } finally { setLoading(false); }
   };
 
   const handleDeleteQuest = async (questId: number) => {
@@ -207,14 +268,15 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     try {
       await fetch(`/api/quests/${questId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
       fetchQuests();
-    } catch (e) { alert('Ошибка удаления'); }
+    } catch (e) { showToast('Ошибка удаления', 'error'); }
   };
 
   const handleApproveUser = async (userId: number) => {
     try {
       await fetch(`/api/applications/${userId}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
       fetchApplications();
-    } catch (e) { alert('Ошибка'); }
+      showToast('Заявка одобрена', 'success');
+    } catch (e) { showToast('Ошибка', 'error'); }
   };
 
   const handleRejectUser = async (userId: number) => {
@@ -222,7 +284,99 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     try {
       await fetch(`/api/applications/${userId}/reject`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
       fetchApplications();
-    } catch (e) { alert('Ошибка'); }
+      showToast('Заявка отклонена', 'info');
+    } catch (e) { showToast('Ошибка', 'error'); }
+  };
+
+  // --- Events CRUD ---
+  const handleSaveEvent = async () => {
+    if (!eventTitle || !eventDate) return showToast('Заполни название и дату', 'error');
+    setLoading(true);
+    try {
+      const body = {
+        initData: WebApp.initData,
+        title: eventTitle, description: eventDescription,
+        date: eventDate, time: eventTime,
+        type: eventType, spots_total: Number(eventSpots),
+      };
+      if (editingEventId) {
+        await fetch(`/api/events/${editingEventId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        showToast('Событие обновлено', 'success');
+      } else {
+        await fetch('/api/events', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        showToast('Событие создано', 'success');
+      }
+      resetEventForm();
+      fetchEvents();
+    } catch (e) { showToast('Ошибка', 'error'); } finally { setLoading(false); }
+  };
+
+  const handleEditEvent = (ev: EventItem) => {
+    setEditingEventId(ev.id);
+    setEventTitle(ev.title);
+    setEventDescription(ev.description || '');
+    setEventDate(ev.date ? ev.date.split('T')[0] : '');
+    setEventTime(ev.time || '');
+    setEventType(ev.type);
+    setEventSpots(ev.spots_total);
+  };
+
+  const handleDeleteEvent = async (eventId: number) => {
+    if (!confirm('Удалить событие?')) return;
+    try {
+      await fetch(`/api/events/${eventId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
+      fetchEvents();
+      showToast('Событие удалено', 'info');
+    } catch (e) { showToast('Ошибка', 'error'); }
+  };
+
+  const resetEventForm = () => {
+    setEditingEventId(null);
+    setEventTitle(''); setEventDescription('');
+    setEventDate(''); setEventTime('');
+    setEventType('TOUR'); setEventSpots(20);
+  };
+
+  // --- Mortgage Programs CRUD ---
+  const handleSaveMortgage = async () => {
+    if (!mpName || !mpRate) return showToast('Заполни название и ставку', 'error');
+    setLoading(true);
+    try {
+      const body = {
+        initData: WebApp.initData,
+        name: mpName, rate: Number(mpRate), description: mpDescription,
+      };
+      if (editingMortgageId) {
+        await fetch(`/api/mortgage-programs/${editingMortgageId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        showToast('Программа обновлена', 'success');
+      } else {
+        await fetch('/api/mortgage-programs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        showToast('Программа создана', 'success');
+      }
+      resetMortgageForm();
+      fetchMortgagePrograms();
+    } catch (e) { showToast('Ошибка', 'error'); } finally { setLoading(false); }
+  };
+
+  const handleEditMortgage = (mp: MortgageProgramItem) => {
+    setEditingMortgageId(mp.id);
+    setMpName(mp.name);
+    setMpRate(mp.rate);
+    setMpDescription(mp.description || '');
+  };
+
+  const handleDeleteMortgage = async (mpId: number) => {
+    if (!confirm('Удалить программу?')) return;
+    try {
+      await fetch(`/api/mortgage-programs/${mpId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
+      fetchMortgagePrograms();
+      showToast('Программа удалена', 'info');
+    } catch (e) { showToast('Ошибка', 'error'); }
+  };
+
+  const resetMortgageForm = () => {
+    setEditingMortgageId(null);
+    setMpName(''); setMpRate(6); setMpDescription('');
   };
 
   return (
@@ -242,6 +396,8 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
             <button onClick={() => setActiveTab('applications')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'applications' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><UserCheck size={14}/> Заявки</button>
             <button onClick={() => setActiveTab('quests')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'quests' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Zap size={14}/> Квесты</button>
             <button onClick={() => setActiveTab('users')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'users' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Users size={14}/> Юзеры</button>
+            <button onClick={() => setActiveTab('events')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'events' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Calendar size={14}/> События</button>
+            <button onClick={() => setActiveTab('mortgage')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'mortgage' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Calculator size={14}/> Ипотека</button>
         </div>
 
         {activeTab === 'news' && (
@@ -394,6 +550,106 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                         ))}
                     </div>
                 )}
+            </div>
+        )}
+
+        {/* Events Tab */}
+        {activeTab === 'events' && (
+            <div className="flex flex-col gap-3 animate-fade-in">
+                <h4 className="font-bold text-black text-sm">{editingEventId ? 'Редактировать событие' : 'Новое событие'}</h4>
+                <input placeholder="Название" value={eventTitle} onChange={e => setEventTitle(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
+                <textarea placeholder="Описание..." value={eventDescription} onChange={e => setEventDescription(e.target.value)} className="p-3 border rounded-lg w-full h-16 text-black bg-gray-50" />
+                <div className="flex gap-2">
+                    <input type="date" value={eventDate} onChange={e => setEventDate(e.target.value)} className="p-3 border rounded-lg flex-1 text-black bg-gray-50" />
+                    <input type="time" value={eventTime} onChange={e => setEventTime(e.target.value)} className="p-3 border rounded-lg w-1/3 text-black bg-gray-50" />
+                </div>
+                <div className="flex gap-2">
+                    <select value={eventType} onChange={e => setEventType(e.target.value)} className="p-3 border rounded-lg flex-1 text-black bg-gray-50">
+                        <option value="TOUR">Экскурсия</option>
+                        <option value="TRAINING">Тренинг</option>
+                        <option value="PARTY">Вечеринка</option>
+                    </select>
+                    <div className="w-1/3 flex items-center border rounded-lg px-2 bg-gray-50">
+                        <span className="text-xs text-gray-500 mr-1">Мест:</span>
+                        <input type="number" value={eventSpots} onChange={e => setEventSpots(Number(e.target.value))} className="w-full bg-transparent outline-none text-black font-bold" />
+                    </div>
+                </div>
+                <div className="flex gap-2">
+                    <button onClick={handleSaveEvent} disabled={loading} className="flex-1 bg-blue-600 text-white p-3 rounded-lg font-bold shadow-md">
+                        {loading ? '...' : editingEventId ? 'Сохранить' : 'Создать'}
+                    </button>
+                    {editingEventId && (
+                        <button onClick={resetEventForm} className="bg-gray-200 text-black p-3 rounded-lg font-medium">Отмена</button>
+                    )}
+                </div>
+                <div className="border-t pt-3 mt-2">
+                    <h4 className="font-bold text-black text-sm mb-2">Все события ({eventsList.length})</h4>
+                    {eventsList.length === 0 ? (
+                        <p className="text-gray-400 text-sm text-center py-4">Событий пока нет</p>
+                    ) : (
+                        <div className="space-y-2">
+                            {eventsList.map(ev => (
+                                <div key={ev.id} className="flex items-center justify-between bg-gray-50 p-3 rounded-lg">
+                                    <div className="flex-1 min-w-0">
+                                        <div className="font-bold text-black text-sm truncate">{ev.title}</div>
+                                        <div className="text-[10px] text-gray-400">
+                                            {ev.date ? new Date(ev.date).toLocaleDateString('ru-RU') : '—'} · {ev.time || '—'} · {ev.type} · {ev.spots_total} мест
+                                        </div>
+                                    </div>
+                                    <div className="flex gap-1 ml-2">
+                                        <button onClick={() => handleEditEvent(ev)} className="p-2 text-blue-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit3 size={16} /></button>
+                                        <button onClick={() => handleDeleteEvent(ev.id)} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={16} /></button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+        )}
+
+        {/* Mortgage Programs Tab */}
+        {activeTab === 'mortgage' && (
+            <div className="flex flex-col gap-3 animate-fade-in">
+                <h4 className="font-bold text-black text-sm">{editingMortgageId ? 'Редактировать программу' : 'Новая программа'}</h4>
+                <input placeholder="Название (Семейная, IT и т.д.)" value={mpName} onChange={e => setMpName(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
+                <div className="flex gap-2">
+                    <div className="flex-1 flex items-center border rounded-lg px-3 bg-gray-50">
+                        <span className="text-xs text-gray-500 mr-1">Ставка:</span>
+                        <input type="number" step="0.1" value={mpRate} onChange={e => setMpRate(Number(e.target.value))} className="w-full bg-transparent outline-none text-black font-bold p-3" />
+                        <span className="text-sm text-gray-500">%</span>
+                    </div>
+                </div>
+                <textarea placeholder="Описание программы..." value={mpDescription} onChange={e => setMpDescription(e.target.value)} className="p-3 border rounded-lg w-full h-16 text-black bg-gray-50" />
+                <div className="flex gap-2">
+                    <button onClick={handleSaveMortgage} disabled={loading} className="flex-1 bg-emerald-600 text-white p-3 rounded-lg font-bold shadow-md">
+                        {loading ? '...' : editingMortgageId ? 'Сохранить' : 'Создать'}
+                    </button>
+                    {editingMortgageId && (
+                        <button onClick={resetMortgageForm} className="bg-gray-200 text-black p-3 rounded-lg font-medium">Отмена</button>
+                    )}
+                </div>
+                <div className="border-t pt-3 mt-2">
+                    <h4 className="font-bold text-black text-sm mb-2">Ипотечные программы ({mortgageList.length})</h4>
+                    {mortgageList.length === 0 ? (
+                        <p className="text-gray-400 text-sm text-center py-4">Программ пока нет</p>
+                    ) : (
+                        <div className="space-y-2">
+                            {mortgageList.map(mp => (
+                                <div key={mp.id} className="flex items-center justify-between bg-gray-50 p-3 rounded-lg">
+                                    <div className="flex-1 min-w-0">
+                                        <div className="font-bold text-black text-sm truncate">{mp.name} — {mp.rate}%</div>
+                                        {mp.description && <div className="text-[10px] text-gray-400 truncate">{mp.description}</div>}
+                                    </div>
+                                    <div className="flex gap-1 ml-2">
+                                        <button onClick={() => handleEditMortgage(mp)} className="p-2 text-blue-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit3 size={16} /></button>
+                                        <button onClick={() => handleDeleteMortgage(mp.id)} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={16} /></button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
             </div>
         )}
       </div>

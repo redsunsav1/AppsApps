@@ -1,22 +1,37 @@
 import React, { useRef, useState } from 'react';
 import BookingChecklist from './BookingChecklist';
-import { UserProfile, DailyQuest, ProjectStat, CurrencyType, getRank } from '../types';
-import { ChevronRight, CheckCircle2, Circle, Zap, Phone, Send, MessageCircle, FileText, Camera } from 'lucide-react';
+import { UserProfile, DailyQuest, ProjectStat, CurrencyType, getRank, Mission } from '../types';
+import { ChevronRight, ChevronDown, CheckCircle2, Circle, Zap, Phone, Send, MessageCircle, FileText, Camera, Target, Trophy, Key, Layers, Crown, MapPin, Globe, User, Flame } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
 
 interface DashboardProps {
   user: UserProfile;
   quests: DailyQuest[];
   stats: ProjectStat[];
+  missions: Mission[];
   onClaimQuest: (id: string) => void;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest }) => {
+const MISSION_ICONS: Record<string, React.ReactNode> = {
+  key: <Key size={18} />,
+  layers: <Layers size={18} />,
+  trophy: <Trophy size={18} />,
+  crown: <Crown size={18} />,
+  map: <MapPin size={18} />,
+  globe: <Globe size={18} />,
+  user: <User size={18} />,
+  flame: <Flame size={18} />,
+  fire: <Flame size={18} />,
+  star: <Target size={18} />,
+};
+
+const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, onClaimQuest }) => {
   const progressPercent = (user.currentXP / user.nextLevelXP) * 100;
   const currentRank = getRank(user.dealsClosed);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [avatarUrl, setAvatarUrl] = useState(user.avatar || '');
+  const [showMissions, setShowMissions] = useState(false);
 
   const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -146,6 +161,97 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, onClaimQuest
             </h3>
             <BookingChecklist />
          </div>
+      </div>
+
+      {/* Missions */}
+      <div className="mt-6 mx-4">
+        <button
+          onClick={() => setShowMissions(!showMissions)}
+          className="w-full bg-white rounded-2xl p-5 shadow-sm border border-brand-light flex items-center justify-between active:scale-[0.99] transition-transform"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-brand-gold/10 rounded-full flex items-center justify-center text-brand-gold">
+              <Target size={20} />
+            </div>
+            <div className="text-left">
+              <h3 className="text-sm font-bold text-brand-black">Миссии</h3>
+              <p className="text-[11px] text-brand-grey mt-0.5">
+                {missions.filter(m => m.completed).length} из {missions.length} выполнено
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Mini progress ring */}
+            <div className="relative w-9 h-9">
+              <svg className="w-9 h-9 -rotate-90" viewBox="0 0 36 36">
+                <circle cx="18" cy="18" r="15" fill="none" stroke="#f0ece4" strokeWidth="3" />
+                <circle cx="18" cy="18" r="15" fill="none" stroke="#c9a96e" strokeWidth="3"
+                  strokeDasharray={`${missions.length > 0 ? (missions.filter(m => m.completed).length / missions.length) * 94.2 : 0} 94.2`}
+                  strokeLinecap="round" />
+              </svg>
+              <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-brand-black">
+                {missions.length > 0 ? Math.round((missions.filter(m => m.completed).length / missions.length) * 100) : 0}%
+              </span>
+            </div>
+            {showMissions ? <ChevronDown size={18} className="text-brand-grey" /> : <ChevronRight size={18} className="text-brand-grey" />}
+          </div>
+        </button>
+
+        {showMissions && (
+          <div className="mt-2 space-y-2 animate-fade-in">
+            {missions.map(mission => {
+              const pct = Math.min((mission.progress / mission.target_count) * 100, 100);
+              return (
+                <div
+                  key={mission.id}
+                  className={`bg-white rounded-2xl p-4 border transition-all ${
+                    mission.completed ? 'border-green-200 bg-green-50/30' : 'border-brand-light shadow-sm'
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
+                      mission.completed ? 'bg-green-100 text-green-600' : 'bg-brand-cream text-brand-gold'
+                    }`}>
+                      {mission.completed ? <CheckCircle2 size={18} /> : (MISSION_ICONS[mission.icon] || <Target size={18} />)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <h4 className={`text-sm font-bold ${mission.completed ? 'text-green-700' : 'text-brand-black'}`}>
+                          {mission.title}
+                        </h4>
+                        <span className={`text-[11px] font-bold shrink-0 px-2 py-0.5 rounded-full ${
+                          mission.reward_currency === 'GOLD'
+                            ? 'bg-brand-gold/15 text-brand-gold'
+                            : 'bg-slate-100 text-slate-500'
+                        }`}>
+                          +{mission.reward_amount} {mission.reward_currency === 'GOLD' ? 'Gold' : 'Silver'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-brand-grey mt-0.5">{mission.description}</p>
+                      {!mission.completed && (
+                        <div className="mt-2">
+                          <div className="flex items-center justify-between text-[10px] font-bold text-brand-grey mb-1">
+                            <span>Прогресс</span>
+                            <span>{mission.progress} / {mission.target_count}</span>
+                          </div>
+                          <div className="h-1.5 w-full bg-brand-light rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-brand-gold rounded-full transition-all duration-500"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                      {mission.completed && (
+                        <p className="text-[10px] text-green-600 font-medium mt-1">Выполнено!</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Daily Quests */}

@@ -8,7 +8,7 @@ import EventCalendar from './components/tools/EventCalendar';
 import MortgageCalc from './components/tools/MortgageCalc';
 import SectionsHub, { SectionView } from './components/SectionsHub';
 import { AdminPanel } from './components/AdminPanel';
-import { UserProfile, DailyQuest, ConstructionUpdate, ShopItem, ProjectStat, CurrencyType, ProjectData, MortgageProgram } from './types';
+import { UserProfile, DailyQuest, ConstructionUpdate, ShopItem, ProjectStat, CurrencyType, ProjectData, MortgageProgram, Mission } from './types';
 import React, { useState, useEffect } from 'react';
 import { User, Newspaper, ShoppingBag, Grid3X3, LayoutGrid, ArrowLeft, Settings } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
@@ -56,6 +56,9 @@ const App: React.FC = () => {
 
   // Sections sub-navigation
   const [sectionView, setSectionView] = useState<SectionView>('hub');
+
+  // Missions
+  const [missions, setMissions] = useState<Mission[]>([]);
 
   // Mortgage programs (shared between sections and chessboard)
   const [mortgagePrograms, setMortgagePrograms] = useState<MortgageProgram[]>([]);
@@ -109,6 +112,34 @@ const App: React.FC = () => {
         setQuests(mapped);
       })
       .catch(e => console.log('Quests error (не критично)'));
+  };
+
+  const fetchMissions = () => {
+    fetch('/api/missions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: WebApp.initData }),
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setMissions(data.map((m: any) => ({
+            id: m.id,
+            code: m.code,
+            title: m.title,
+            description: m.description || '',
+            reward_amount: m.reward_amount,
+            reward_currency: m.reward_currency,
+            target_count: m.target_count,
+            category: m.category,
+            icon: m.icon,
+            progress: m.progress || 0,
+            completed: m.completed || false,
+            completed_at: m.completed_at,
+          })));
+        }
+      })
+      .catch(e => console.log('Missions error (не критично)'));
   };
 
   const fetchStats = () => {
@@ -221,6 +252,7 @@ const App: React.FC = () => {
           if (sUser.first_name) setRegName(sUser.first_name);
           setApprovalStatus(sUser.approval_status || 'none');
           fetchQuests(sUser.id);
+          fetchMissions();
           fetchUnreadCount();
         } else {
           throw new Error("Сервер не вернул пользователя (data.user is missing)");
@@ -463,7 +495,7 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-[100dvh] w-full max-w-md mx-auto bg-brand-cream relative shadow-2xl overflow-hidden text-brand-black">
       <div className="flex-1 overflow-y-auto custom-scrollbar pb-24">
-        {activeTab === Tab.PROFILE && <Dashboard user={user} quests={quests} stats={stats} onClaimQuest={onClaimQuest} />}
+        {activeTab === Tab.PROFILE && <Dashboard user={user} quests={quests} stats={stats} missions={missions} onClaimQuest={onClaimQuest} />}
         {activeTab === Tab.CONTENT && <ContentHub news={news} isAdmin={user.is_admin} onEdit={handleOpenEdit} onRefresh={fetchNews} />}
         {activeTab === Tab.MARKET && <Marketplace userSilver={user.silverCoins} userGold={user.goldCoins} isAdmin={user.is_admin} />}
         {activeTab === Tab.SECTIONS && renderSectionsContent()}

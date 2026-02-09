@@ -144,6 +144,21 @@ export interface BookingRecord {
   created_at: string;
 }
 
+export interface Mission {
+  id: number;
+  code: string;
+  title: string;
+  description: string;
+  reward_amount: number;
+  reward_currency: 'SILVER' | 'GOLD';
+  target_count: number;
+  category: string;
+  icon: string;
+  progress: number;
+  completed: boolean;
+  completed_at?: string;
+}
+
 export interface Application {
   id: number;
   telegram_id: number;

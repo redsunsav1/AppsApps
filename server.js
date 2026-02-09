@@ -265,6 +265,33 @@ const initDb = async () => {
     // 38-ФЗ: застройщик проекта (рекламная пометка)
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS developer_name TEXT;');
 
+    // --- Миссии (автоматические достижения) ---
+    await pool.query(`CREATE TABLE IF NOT EXISTS missions (
+      id SERIAL PRIMARY KEY,
+      code TEXT UNIQUE NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      reward_amount INT DEFAULT 0,
+      reward_currency TEXT DEFAULT 'SILVER',
+      target_count INT DEFAULT 1,
+      category TEXT DEFAULT 'general',
+      icon TEXT DEFAULT 'star',
+      sort_order INT DEFAULT 0
+    );`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS user_missions (
+      id SERIAL PRIMARY KEY,
+      user_id INT NOT NULL REFERENCES users(id),
+      mission_id INT NOT NULL REFERENCES missions(id),
+      progress INT DEFAULT 0,
+      completed BOOLEAN DEFAULT FALSE,
+      completed_at TIMESTAMP,
+      rewarded BOOLEAN DEFAULT FALSE,
+      UNIQUE(user_id, mission_id)
+    );`);
+    // Трекинг входов для миссии серий
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_date DATE;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS login_streak INT DEFAULT 0;');
+
     // --- Индексы ---
     await pool.query('CREATE INDEX IF NOT EXISTS idx_users_tg ON users(telegram_id);');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_units_proj ON units(project_id);');
@@ -291,6 +318,22 @@ const initDb = async () => {
         ('TEST', 'Тест: Планировки ЖК Харизма', 100, 200, 'SILVER'),
         ('DEAL', 'Продать 2-к квартиру', 1000, 10, 'GOLD')
       ON CONFLICT DO NOTHING`);
+    }
+
+    // Сид миссий
+    const missionCheck = await pool.query('SELECT count(*) FROM missions');
+    if (parseInt(missionCheck.rows[0].count) === 0) {
+      await pool.query(`INSERT INTO missions (code, title, description, reward_amount, reward_currency, target_count, category, icon, sort_order) VALUES
+        ('first_booking',    'Первая бронь',          'Забронируйте свою первую квартиру',            200,  'SILVER', 1,  'booking',  'key',       1),
+        ('bookings_5',       'Пять броней',           'Забронируйте 5 квартир',                       500,  'SILVER', 5,  'booking',  'layers',    2),
+        ('bookings_10',      'Десять броней',         'Забронируйте 10 квартир',                      1000, 'SILVER', 10, 'booking',  'trophy',    3),
+        ('bookings_25',      'Четверть сотни',        'Забронируйте 25 квартир',                      5,    'GOLD',   25, 'booking',  'crown',     4),
+        ('multi_project',    'Мультипроект',          'Забронируйте квартиры в 2 разных ЖК',          300,  'SILVER', 2,  'explore',  'map',       5),
+        ('all_projects',     'Покоритель всех ЖК',   'Забронируйте квартиры во всех 3 ЖК',           5,    'GOLD',   3,  'explore',  'globe',     6),
+        ('profile_complete', 'Визитка заполнена',     'Заполните все поля профиля при регистрации',    100,  'SILVER', 1,  'profile',  'user',      7),
+        ('login_streak_7',   'Неделя активности',     'Заходите в приложение 7 дней подряд',           300,  'SILVER', 7,  'loyalty',  'flame',     8),
+        ('login_streak_30',  'Месяц верности',        'Заходите в приложение 30 дней подряд',          3,    'GOLD',   30, 'loyalty',  'fire',      9)
+      ON CONFLICT (code) DO NOTHING`);
     }
   } catch (err) { console.error('❌ DB Error:', err); }
 };
@@ -608,7 +651,20 @@ app.post('/api/auth', rateLimit(900000, 10), async (req, res) => {
     if (dbUser.rows.length === 0) {
       dbUser = await pool.query('INSERT INTO users (telegram_id, username, first_name, gold_balance, balance) VALUES ($1, $2, $3, 0, 0) RETURNING *', [tgUser.id, tgUser.username, tgUser.first_name]);
     }
-    res.json({ user: dbUser.rows[0] });
+    // Обновить серию входов
+    const user = dbUser.rows[0];
+    const today = new Date().toISOString().slice(0, 10);
+    const lastLogin = user.last_login_date ? new Date(user.last_login_date).toISOString().slice(0, 10) : null;
+    if (lastLogin !== today) {
+      const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+      const newStreak = (lastLogin === yesterday) ? (user.login_streak || 0) + 1 : 1;
+      await pool.query('UPDATE users SET last_login_date = $1, login_streak = $2 WHERE id = $3', [today, newStreak, user.id]);
+      user.login_streak = newStreak;
+      user.last_login_date = today;
+      // Проверить миссии входов (асинхронно)
+      checkMissions(user.id, 'login').catch(() => {});
+    }
+    res.json({ user });
   } catch (e) {
     console.error('Auth error:', e);
     res.status(500).json({ error: 'Auth error' });
@@ -652,6 +708,8 @@ app.post('/api/register', async (req, res) => {
       { text: '❌ Отклонить', callback_data: `reject_${userId}` }
     ]];
     notifyAdminTelegram(text, keyboard);
+    // Проверить миссию «профиль заполнен» (асинхронно)
+    if (userId) checkMissions(userId, 'register').catch(() => {});
     res.json({ success: true, status: 'pending' });
   } catch (e) {
     console.error('Register error:', e);
@@ -1281,6 +1339,111 @@ app.delete('/api/mortgage-programs/:id', async (req, res) => {
 });
 
 // =============================================
+// МИССИИ — автоматическая проверка и начисление
+// =============================================
+
+// Инициализировать записи user_missions для пользователя (если ещё нет)
+async function ensureUserMissions(userId) {
+  await pool.query(`
+    INSERT INTO user_missions (user_id, mission_id, progress, completed, rewarded)
+    SELECT $1, m.id, 0, FALSE, FALSE FROM missions m
+    WHERE NOT EXISTS (SELECT 1 FROM user_missions um WHERE um.user_id = $1 AND um.mission_id = m.id)
+  `, [userId]);
+}
+
+// Проверить и обновить прогресс миссий + начислить награды
+async function checkMissions(userId, trigger) {
+  try {
+    await ensureUserMissions(userId);
+    const missions = await pool.query('SELECT * FROM missions');
+    const userMissions = await pool.query('SELECT * FROM user_missions WHERE user_id = $1', [userId]);
+    const umMap = {};
+    userMissions.rows.forEach(um => { umMap[um.mission_id] = um; });
+
+    const rewards = []; // {mission, amount, currency}
+
+    for (const m of missions.rows) {
+      const um = umMap[m.id];
+      if (!um || um.completed) continue;
+
+      let newProgress = um.progress;
+
+      // --- Вычисляем прогресс для каждого типа миссии ---
+      if (['first_booking', 'bookings_5', 'bookings_10', 'bookings_25'].includes(m.code) && (trigger === 'booking' || trigger === 'init')) {
+        const countRes = await pool.query("SELECT count(*) FROM bookings WHERE user_id = $1 AND stage != 'CANCELLED'", [userId]);
+        newProgress = parseInt(countRes.rows[0].count);
+      }
+
+      if (['multi_project', 'all_projects'].includes(m.code) && (trigger === 'booking' || trigger === 'init')) {
+        const projRes = await pool.query("SELECT count(DISTINCT project_id) FROM bookings WHERE user_id = $1 AND stage != 'CANCELLED'", [userId]);
+        newProgress = parseInt(projRes.rows[0].count);
+      }
+
+      if (m.code === 'profile_complete' && (trigger === 'register' || trigger === 'init')) {
+        const userRes = await pool.query('SELECT first_name, last_name, phone, company FROM users WHERE id = $1', [userId]);
+        const u = userRes.rows[0];
+        if (u && u.first_name && u.last_name && u.phone && u.company) {
+          newProgress = 1;
+        }
+      }
+
+      if (['login_streak_7', 'login_streak_30'].includes(m.code) && (trigger === 'login' || trigger === 'init')) {
+        const streakRes = await pool.query('SELECT login_streak FROM users WHERE id = $1', [userId]);
+        newProgress = parseInt(streakRes.rows[0]?.login_streak || 0);
+      }
+
+      // --- Обновляем прогресс ---
+      if (newProgress !== um.progress) {
+        await pool.query('UPDATE user_missions SET progress = $1 WHERE user_id = $2 AND mission_id = $3', [newProgress, userId, m.id]);
+      }
+
+      // --- Если достиг цели — завершить и начислить ---
+      if (newProgress >= m.target_count && !um.completed) {
+        await pool.query(
+          'UPDATE user_missions SET completed = TRUE, completed_at = NOW(), rewarded = TRUE, progress = $1 WHERE user_id = $2 AND mission_id = $3',
+          [newProgress, userId, m.id]
+        );
+        // Начислить награду
+        const balField = m.reward_currency === 'GOLD' ? 'gold_balance' : 'balance';
+        await pool.query(`UPDATE users SET ${balField} = ${balField} + $1 WHERE id = $2`, [m.reward_amount, userId]);
+        rewards.push({ code: m.code, title: m.title, amount: m.reward_amount, currency: m.reward_currency });
+        console.log(`🏆 Миссия "${m.title}" выполнена! User=${userId}, +${m.reward_amount} ${m.reward_currency}`);
+      }
+    }
+    return rewards;
+  } catch (e) {
+    console.error('checkMissions error:', e);
+    return [];
+  }
+}
+
+// API: Получить миссии пользователя с прогрессом
+app.post('/api/missions', async (req, res) => {
+  try {
+    const { initData } = req.body;
+    const tgUser = parseTelegramUser(initData);
+    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
+    const userRes = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [tgUser.id]);
+    if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    const userId = userRes.rows[0].id;
+
+    await ensureUserMissions(userId);
+    const result = await pool.query(`
+      SELECT m.id, m.code, m.title, m.description, m.reward_amount, m.reward_currency,
+             m.target_count, m.category, m.icon, m.sort_order,
+             um.progress, um.completed, um.completed_at
+      FROM missions m
+      LEFT JOIN user_missions um ON um.mission_id = m.id AND um.user_id = $1
+      ORDER BY m.sort_order
+    `, [userId]);
+    res.json(result.rows);
+  } catch (e) {
+    console.error('Missions error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// =============================================
 // БРОНИРОВАНИЕ (с транзакцией + уникальность)
 // =============================================
 
@@ -1310,6 +1473,10 @@ app.post('/api/bookings', async (req, res) => {
         [user.id, unitId, unit.project_id || projectId, user.phone, user.first_name, user.company]
       );
       return { success: true, bookingId: bookingRes.rows[0].id };
+    });
+    // Автопроверка миссий (асинхронно, не блокирует ответ)
+    checkMissions(user.id, 'booking').then(rewards => {
+      if (rewards.length > 0) console.log(`🎯 Миссии после бронирования user=${user.id}:`, rewards.map(r => r.title).join(', '));
     });
     res.json(result);
   } catch (e) {

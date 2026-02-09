@@ -286,44 +286,92 @@ const initDb = async () => {
 // XML SYNC
 // =============================================
 async function syncProjectWithXml(projectId, url) {
-  console.log(`🔄 Syncing ${projectId}...`);
+  console.log(`🔄 Syncing ${projectId} from ${url}`);
   const response = await fetch(url);
-  if (!response.ok) throw new Error('Failed to fetch XML');
+  if (!response.ok) throw new Error(`Failed to fetch XML: ${response.status}`);
   const xmlText = await response.text();
-  const parser = new xml2js.Parser();
+  const parser = new xml2js.Parser({ explicitArray: true });
   const result = await parser.parseStringPromise(xmlText);
-  const offers = result?.['realty-feed']?.offer || [];
+
+  // Auto-detect format: Avito (<Ads><Ad>), Profitbase/Yandex (<realty-feed><offer>), or CIAN (<feed><offer>)
+  let rawItems = [];
+  let feedFormat = 'unknown';
+  if (result?.['realty-feed']?.offer) {
+    rawItems = result['realty-feed'].offer;
+    feedFormat = 'yandex';
+  } else if (result?.Ads?.Ad) {
+    rawItems = result.Ads.Ad;
+    feedFormat = 'avito';
+  } else if (result?.feed?.offer) {
+    rawItems = result.feed.offer;
+    feedFormat = 'cian';
+  }
+  console.log(`📋 Detected feed format: ${feedFormat}, items: ${rawItems.length}`);
+  if (rawItems.length === 0) {
+    console.warn(`⚠️ 0 items found. Root keys: ${Object.keys(result || {}).join(', ')}`);
+    return 0;
+  }
+
+  // Normalize items to a common shape regardless of format
+  const units = rawItems.map(item => {
+    if (feedFormat === 'avito') {
+      // Avito: <Ad><Id>, <Price>, <Rooms>, <Square>, <Floor>, <Images><Image url="..."/>
+      const images = item.Images?.[0]?.Image || [];
+      const firstImage = images[0]?.$?.url || images[0] || '';
+      return {
+        id: item.Id?.[0] || `avito-${Math.random().toString(36).slice(2, 10)}`,
+        floor: parseInt(item.Floor?.[0] || '0'),
+        number: item.FlatNumber?.[0] || item.Id?.[0] || '0',
+        rooms: parseInt((item.Rooms?.[0] || '0').toString().replace(/\D/g, '') || '0'),
+        area: parseFloat(item.Square?.[0] || '0'),
+        price: parseFloat((item.Price?.[0] || '0').toString().replace(/\s/g, '')),
+        planUrl: typeof firstImage === 'string' ? firstImage : (firstImage?.$?.url || ''),
+        statusRaw: [item.AdStatus?.[0], item.Description?.[0]].filter(Boolean).join(' ').toLowerCase(),
+      };
+    } else {
+      // Yandex / Profitbase XML / CIAN: <offer internal-id="...">, <price><value>, <area><value>, etc.
+      return {
+        id: item.$?.['internal-id'] || `yrl-${Math.random().toString(36).slice(2, 10)}`,
+        floor: parseInt(item.floor?.[0] || '0'),
+        number: item['flat-number']?.[0] || item.apartment?.[0] || item.location?.[0]?.apartment?.[0] || '0',
+        rooms: parseInt((item.rooms?.[0] || item.studio?.[0] === '1' ? '0' : item.rooms?.[0] || '0').toString().replace(/\D/g, '') || '0'),
+        area: parseFloat(item.area?.[0]?.value?.[0] || item.area?.[0] || '0'),
+        price: parseFloat(item.price?.[0]?.value?.[0] || item.price?.[0] || '0'),
+        planUrl: item['planning-image']?.[0] || item['plan-image']?.[0] || item.image?.[0] || '',
+        statusRaw: [
+          item['deal-status'] ? JSON.stringify(item['deal-status']) : '',
+          item['sales-status'] ? JSON.stringify(item['sales-status']) : '',
+          item['status-id'] ? JSON.stringify(item['status-id']) : '',
+          item.description ? JSON.stringify(item.description) : ''
+        ].join(' ').toLowerCase(),
+      };
+    }
+  });
 
   await pool.query('DELETE FROM units WHERE project_id = $1', [projectId]);
 
   let count = 0; let maxFloor = 1; const floorCounts = {};
-  for (const offer of offers) {
-    const floor = parseInt(offer.floor?.[0] || '1');
-    if (floor < 1) continue;
-    const unitId = offer.$?.['internal-id'] || `auto-${Math.random()}`;
-    const price = parseFloat(offer.price?.[0]?.value?.[0] || '0');
-    if (floor > maxFloor) maxFloor = floor;
-    if (!floorCounts[floor]) floorCounts[floor] = 0; floorCounts[floor]++;
+  for (const u of units) {
+    if (u.floor < 1) continue;
+    if (u.floor > maxFloor) maxFloor = u.floor;
+    if (!floorCounts[u.floor]) floorCounts[u.floor] = 0;
+    floorCounts[u.floor]++;
 
-    const rooms = parseInt((offer.rooms?.[0] || '1').toString().replace(/\D/g, ''));
-    const area = parseFloat(offer.area?.[0]?.value?.[0] || '0');
-    const number = offer['flat-number']?.[0] || offer.apartment?.[0] || '0';
-    const planUrl = offer['planning-image']?.[0] || offer.image?.[0] || '';
-
-    let statusRaw = '';
-    if (offer['deal-status']) statusRaw += JSON.stringify(offer['deal-status']);
-    if (offer['sales-status']) statusRaw += JSON.stringify(offer['sales-status']);
-    if (offer.description) statusRaw += JSON.stringify(offer.description);
-    const s = statusRaw.toLowerCase();
     let status = 'FREE';
-    if (s.includes('sold') || s.includes('продано') || s.includes('busy') || price < 100) status = 'SOLD';
-    else if (s.includes('book') || s.includes('reserv') || s.includes('бронь')) status = 'BOOKED';
+    if (u.statusRaw.includes('sold') || u.statusRaw.includes('продано') || u.statusRaw.includes('busy') || u.price < 100) status = 'SOLD';
+    else if (u.statusRaw.includes('book') || u.statusRaw.includes('reserv') || u.statusRaw.includes('бронь')) status = 'BOOKED';
 
-    await pool.query(`INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [unitId, projectId, floor, number, rooms, area, price, status, planUrl]);
+    await pool.query(
+      `INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (id) DO UPDATE SET floor=$3, number=$4, rooms=$5, area=$6, price=$7, status=$8, plan_image_url=$9, updated_at=NOW()`,
+      [u.id, projectId, u.floor, u.number, u.rooms, u.area, u.price, status, u.planUrl]
+    );
     count++;
   }
-  const maxUnitsOnFloor = Math.max(...Object.values(floorCounts), 4);
+
+  const maxUnitsOnFloor = Math.max(...Object.values(floorCounts).map(Number), 4);
   await pool.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3 WHERE id = $4', [maxFloor, maxUnitsOnFloor, url, projectId]);
+  console.log(`✅ Synced ${count} units for ${projectId} (format: ${feedFormat})`);
   return count;
 }
 
@@ -645,6 +693,26 @@ app.post('/api/sync-xml-url', async (req, res) => {
     const count = await syncProjectWithXml(projectId, url);
     res.json({ success: true, count });
   } catch (e) { res.status(500).json({ error: 'Sync failed: ' + e.message }); }
+});
+
+// Диагностика: показать структуру фида, не сохраняя
+app.post('/api/debug-feed', async (req, res) => {
+  try {
+    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'No URL' });
+    const response = await fetch(url);
+    if (!response.ok) return res.status(400).json({ error: `Feed returned ${response.status}` });
+    const xmlText = await response.text();
+    const parser = new xml2js.Parser({ explicitArray: true });
+    const result = await parser.parseStringPromise(xmlText);
+    const rootKeys = Object.keys(result || {});
+    let format = 'unknown'; let itemCount = 0; let sampleItem = null;
+    if (result?.['realty-feed']?.offer) { format = 'yandex'; itemCount = result['realty-feed'].offer.length; sampleItem = result['realty-feed'].offer[0]; }
+    else if (result?.Ads?.Ad) { format = 'avito'; itemCount = result.Ads.Ad.length; sampleItem = result.Ads.Ad[0]; }
+    else if (result?.feed?.offer) { format = 'cian'; itemCount = result.feed.offer.length; sampleItem = result.feed.offer[0]; }
+    res.json({ format, rootKeys, itemCount, sampleItemKeys: sampleItem ? Object.keys(sampleItem) : [], sampleItem: sampleItem ? JSON.stringify(sampleItem).slice(0, 2000) : null });
+  } catch (e) { res.status(500).json({ error: 'Debug failed: ' + e.message }); }
 });
 
 app.post('/api/make-admin', async (req, res) => {

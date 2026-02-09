@@ -40,14 +40,29 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
     // Cancel booking loading
     const [cancelLoading, setCancelLoading] = useState(false);
 
+    // Unit IDs that current user has booked (for showing cancel button)
+    const [myBookedUnitIds, setMyBookedUnitIds] = useState<Set<string>>(new Set());
+
     // Load units when a project is selected
     useEffect(() => {
         if (selectedProject) {
             setLoading(true);
             setUnits([]);
-            fetch(`/api/units/${selectedProject.id}`)
-                .then(res => res.json())
-                .then(data => {
+            setMyBookedUnitIds(new Set());
+
+            // Load units
+            const unitsPromise = fetch(`/api/units/${selectedProject.id}`)
+                .then(res => res.json());
+
+            // Load my bookings to know which units I booked
+            const myBookingsPromise = fetch('/api/bookings/my', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ initData: WebApp.initData })
+            }).then(res => res.json()).catch(() => []);
+
+            Promise.all([unitsPromise, myBookingsPromise])
+                .then(([data, myBookings]) => {
                     const mapped = data.map((u: any) => ({
                         id: u.id,
                         number: u.number,
@@ -64,6 +79,14 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                     const secs = [...new Set(mapped.map((u: ChessUnit) => u.section).filter(Boolean))] as string[];
                     setSections(secs);
                     setActiveSection(secs.length > 0 ? secs[0] : null);
+
+                    // Собираем unit_id моих активных бронирований
+                    const myIds = new Set<string>(
+                        (Array.isArray(myBookings) ? myBookings : [])
+                            .filter((b: any) => b.stage !== 'CANCELLED')
+                            .map((b: any) => b.unit_id)
+                    );
+                    setMyBookedUnitIds(myIds);
                 })
                 .catch(e => console.error('Error loading units:', e))
                 .finally(() => setLoading(false));
@@ -125,6 +148,8 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                 ));
                 setBookingUnit({ ...bookingUnit, status: 'BOOKED' });
                 setShowBookingForm(false);
+                // Добавляем в список моих бронирований
+                setMyBookedUnitIds(prev => new Set(prev).add(bookingUnit.id));
             } else {
                 setBookingResult({ ok: false, msg: data2.error || 'Ошибка загрузки паспорта' });
             }
@@ -155,6 +180,12 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                 ));
                 setBookingUnit({ ...bookingUnit, status: 'FREE' });
                 setBookingResult(null);
+                // Убираем из списка моих бронирований
+                setMyBookedUnitIds(prev => {
+                    const next = new Set(prev);
+                    next.delete(bookingUnit.id);
+                    return next;
+                });
             } else {
                 showToast(data.error || 'Ошибка отмены', 'error');
             }
@@ -418,8 +449,8 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                 </button>
                             )}
 
-                            {/* Admin: Cancel Booking - only for BOOKED */}
-                            {isAdmin && bookingUnit.status === 'BOOKED' && (
+                            {/* Cancel Booking - admin OR booking owner */}
+                            {bookingUnit.status === 'BOOKED' && (isAdmin || myBookedUnitIds.has(bookingUnit.id)) && (
                                 <button
                                     onClick={handleCancelBooking}
                                     disabled={cancelLoading}

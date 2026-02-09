@@ -1419,16 +1419,39 @@ app.post('/api/bookings/all', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
-// Снять бронь (админ)
+// Снять бронь (админ ИЛИ автор бронирования)
 app.post('/api/bookings/cancel', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
-    const { unitId } = req.body;
+    const { initData, unitId } = req.body;
     if (!unitId) return res.status(400).json({ error: 'unitId required' });
+
+    const tgUser = parseTelegramUser(initData);
+    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
+
+    const userRes = await pool.query('SELECT id, is_admin FROM users WHERE telegram_id = $1', [tgUser.id]);
+    if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    const user = userRes.rows[0];
+
+    // Находим активное бронирование на эту квартиру
+    const bookingRes = await pool.query(
+      "SELECT id, user_id FROM bookings WHERE unit_id = $1 AND stage != 'CANCELLED' ORDER BY created_at DESC LIMIT 1",
+      [unitId]
+    );
+    if (bookingRes.rows.length === 0) return res.status(404).json({ error: 'Активное бронирование не найдено' });
+    const booking = bookingRes.rows[0];
+
+    // Проверка прав: админ ИЛИ автор бронирования
+    const isOwner = booking.user_id === user.id;
+    if (!user.is_admin && !isOwner) {
+      return res.status(403).json({ error: 'Только админ или автор бронирования может снять бронь' });
+    }
+
     await withTransaction(async (client) => {
       await client.query("UPDATE bookings SET stage = 'CANCELLED' WHERE unit_id = $1 AND stage != 'CANCELLED'", [unitId]);
       await client.query("UPDATE units SET status = 'FREE' WHERE id = $1", [unitId]);
     });
+
+    console.log(`🔓 Бронь снята: unit=${unitId}, by user=${user.id} (${user.is_admin ? 'admin' : 'owner'})`);
     res.json({ success: true });
   } catch (e) { console.error('Cancel booking error:', e); res.status(500).json({ error: 'Server error' }); }
 });

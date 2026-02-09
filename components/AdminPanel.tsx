@@ -62,6 +62,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
 
   // Import
   const [importProjectId, setImportProjectId] = useState('');
+  const [importProjectName, setImportProjectName] = useState('');
   const [importUrl, setImportUrl] = useState('');
 
   // Shop
@@ -212,12 +213,12 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
         const res = await fetch('/api/sync-xml-url', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ initData: WebApp.initData, projectId: importProjectId, url: importUrl })
+            body: JSON.stringify({ initData: WebApp.initData, projectId: importProjectId, projectName: importProjectName || importProjectId, url: importUrl })
         });
         const data = await res.json();
         if (data.success) {
-            showToast(`Загружено: ${data.count}`, 'success');
-            setImportUrl('');
+            showToast(`Загружено: ${data.count} квартир (${data.projectId})`, 'success');
+            setImportUrl(''); setImportProjectName('');
         } else { showToast('Ошибка: ' + JSON.stringify(data), 'error'); }
     } catch (e) { showToast('Ошибка сети', 'error'); } finally { setLoading(false); }
   };
@@ -422,7 +423,8 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
 
         {activeTab === 'import' && (
             <div className="flex flex-col gap-4 animate-fade-in">
-                <input placeholder="ID Проекта (brk)" value={importProjectId} onChange={e => setImportProjectId(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50 font-mono" />
+                <input placeholder="ID Проекта (mnh, hrz, bbk)" value={importProjectId} onChange={e => setImportProjectId(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))} className="p-3 border rounded-lg w-full text-black bg-gray-50 font-mono" />
+                <input placeholder="Название ЖК (Манхэттен)" value={importProjectName} onChange={e => setImportProjectName(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
                 <div className="relative">
                     <Link size={16} className="absolute top-4 left-3 text-gray-400" />
                     <input placeholder="https://profitbase.ru/feed/..." value={importUrl} onChange={e => setImportUrl(e.target.value)} className="p-3 pl-10 border rounded-lg w-full text-black bg-gray-50 font-mono text-sm" />

@@ -762,10 +762,17 @@ app.get('/api/units/:projectId', async (req, res) => {
 app.post('/api/sync-xml-url', async (req, res) => {
   try {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden: admin only' });
-    const { url, projectId } = req.body;
+    const { url, projectId, projectName } = req.body;
     if (!url || !projectId) return res.status(400).json({ error: 'No URL or ProjectID' });
+    // Создаём проект если не существует (upsert)
+    await pool.query(
+      `INSERT INTO projects (id, name, floors, units_per_floor, feed_url)
+       VALUES ($1, $2, 1, 1, $3)
+       ON CONFLICT (id) DO UPDATE SET feed_url = $3`,
+      [projectId, projectName || projectId, url]
+    );
     const count = await syncProjectWithXml(projectId, url);
-    res.json({ success: true, count });
+    res.json({ success: true, count, projectId });
   } catch (e) { res.status(500).json({ error: 'Sync failed: ' + e.message }); }
 });
 

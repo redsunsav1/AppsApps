@@ -47,6 +47,8 @@ const App: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [regLastName, setRegLastName] = useState('');
   const [regCompanyType, setRegCompanyType] = useState<'agency' | 'ip'>('agency');
+  const [consentPd, setConsentPd] = useState(false);
+  const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
   const [approvalStatus, setApprovalStatus] = useState<string>('none');
   const [user, setUser] = useState<any>(null);
   const [projects, setProjects] = useState<ProjectData[]>([]);
@@ -162,6 +164,7 @@ const App: React.FC = () => {
           unitsPerFloor: p.units_per_floor || 8,
           image: p.image_url || '',
           profitbaseUrl: p.feed_url || '',
+          developerName: p.developer_name || '',
         }));
         setProjects(mapped);
       })
@@ -234,7 +237,7 @@ const App: React.FC = () => {
   }, []);
 
   const handleRegistration = () => {
-    if(!regPhone || !regCompany || !regName) return;
+    if(!regPhone || !regCompany || !regName || !consentPd) return;
     setIsSubmitting(true);
     fetch('/api/register', {
       method: 'POST',
@@ -245,7 +248,8 @@ const App: React.FC = () => {
         lastName: regLastName,
         companyType: regCompanyType,
         company: regCompany,
-        phone: regPhone
+        phone: regPhone,
+        consentPd: true,
       }),
     })
     .then(res => res.json())
@@ -384,8 +388,33 @@ const App: React.FC = () => {
           </div>
           <div><label className="block text-xs font-bold uppercase text-gray-500 mb-1">Название компании</label><input type="text" value={regCompany} onChange={e => setRegCompany(e.target.value)} placeholder="АН Этажи" className="w-full p-3 bg-brand-light rounded-xl border-none focus:ring-2 focus:ring-brand-gold outline-none"/></div>
           <div><label className="block text-xs font-bold uppercase text-gray-500 mb-1">Ваш телефон</label><input type="tel" value={regPhone} onChange={e => setRegPhone(e.target.value)} placeholder="+7 (999) 000-00-00" className="w-full p-3 bg-brand-light rounded-xl border-none focus:ring-2 focus:ring-brand-gold outline-none"/></div>
-          <button onClick={handleRegistration} disabled={isSubmitting || !regPhone || !regCompany || !regName} className="w-full py-4 bg-brand-black text-white rounded-xl font-bold text-lg mt-4 active:scale-95 transition-transform disabled:opacity-50 disabled:scale-100">{isSubmitting ? 'Отправка...' : 'Подать заявку'}</button>
+          <label className="flex items-start gap-3 mt-2 cursor-pointer">
+            <input type="checkbox" checked={consentPd} onChange={e => setConsentPd(e.target.checked)} className="mt-1 w-5 h-5 rounded accent-yellow-600 shrink-0" />
+            <span className="text-xs text-gray-600 leading-relaxed">
+              Я даю согласие на <button type="button" onClick={(e) => { e.preventDefault(); setShowPrivacyPolicy(true); }} className="text-yellow-700 underline font-semibold">обработку персональных данных</button> в соответствии с Федеральным законом №152-ФЗ
+            </span>
+          </label>
+          <button onClick={handleRegistration} disabled={isSubmitting || !regPhone || !regCompany || !regName || !consentPd} className="w-full py-4 bg-brand-black text-white rounded-xl font-bold text-lg mt-4 active:scale-95 transition-transform disabled:opacity-50 disabled:scale-100">{isSubmitting ? 'Отправка...' : 'Подать заявку'}</button>
         </div>
+        {/* Модалка политики конфиденциальности */}
+        {showPrivacyPolicy && (
+          <div className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setShowPrivacyPolicy(false)}>
+            <div className="bg-white rounded-2xl max-w-md w-full max-h-[80vh] overflow-y-auto p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+              <h2 className="text-lg font-extrabold mb-4">Политика обработки персональных данных</h2>
+              <div className="text-xs text-gray-700 space-y-3 leading-relaxed">
+                <p><b>1. Оператор персональных данных</b><br/>Приложение «Клуб Партнёров» осуществляет обработку персональных данных пользователей в рамках партнёрской программы застройщиков.</p>
+                <p><b>2. Цели обработки</b><br/>Персональные данные обрабатываются для: регистрации в приложении и идентификации пользователя; оформления бронирования объектов недвижимости; передачи документов застройщику; информирования о статусе бронирования и новостях проектов; начисления бонусов по партнёрской программе.</p>
+                <p><b>3. Состав персональных данных</b><br/>Обрабатываются: фамилия, имя; номер телефона; наименование компании; данные Telegram-аккаунта; при бронировании — ФИО и телефон покупателя, фотография паспорта.</p>
+                <p><b>4. Правовое основание</b><br/>Обработка осуществляется на основании согласия субъекта персональных данных (пп. 1 п. 1 ст. 6 Федерального закона №152-ФЗ «О персональных данных»).</p>
+                <p><b>5. Передача третьим лицам</b><br/>Персональные данные покупателя (ФИО, телефон, фото паспорта) передаются застройщику для оформления бронирования. Передача осуществляется с отдельного согласия пользователя.</p>
+                <p><b>6. Хранение и защита</b><br/>Данные хранятся на защищённых серверах. Применяются технические и организационные меры защиты.</p>
+                <p><b>7. Права субъекта</b><br/>Вы вправе: запросить информацию об обработке ваших данных; потребовать уточнения, блокирования или уничтожения данных; отозвать согласие на обработку. Для реализации прав обратитесь к администратору приложения.</p>
+                <p><b>8. Срок действия согласия</b><br/>Согласие действует с момента предоставления и до момента его отзыва субъектом персональных данных.</p>
+              </div>
+              <button onClick={() => setShowPrivacyPolicy(false)} className="w-full py-3 bg-brand-black text-white rounded-xl font-bold text-sm mt-4">Закрыть</button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }

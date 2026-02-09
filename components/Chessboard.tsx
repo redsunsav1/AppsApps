@@ -43,6 +43,9 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
     // Unit IDs that current user has booked (for showing cancel button)
     const [myBookedUnitIds, setMyBookedUnitIds] = useState<Set<string>>(new Set());
 
+    // Consent for personal data transfer to developer (152-ФЗ)
+    const [consentTransfer, setConsentTransfer] = useState(false);
+
     // Load units when a project is selected
     useEffect(() => {
         if (selectedProject) {
@@ -134,6 +137,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
             formData.append('buyerName', buyerName);
             formData.append('buyerPhone', buyerPhone);
             formData.append('passport', passportFile);
+            formData.append('consentTransfer', 'true');
 
             const res2 = await fetch(`/api/bookings/${data1.bookingId}/passport`, {
                 method: 'POST',
@@ -205,6 +209,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
         setBookingResult(null);
         setShowBookingForm(false);
         setShowMortgage(false);
+        setConsentTransfer(false);
     };
 
     const formatPrice = (price: number) => {
@@ -251,10 +256,13 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                             <div className="w-full h-full flex items-center justify-center text-brand-gold/50"><Building2 /></div>
                                         )}
                                     </div>
-                                    <div>
+                                    <div className="flex-1 min-w-0">
                                         <h3 className="text-lg font-extrabold text-brand-black">{p.name}</h3>
                                         <p className="text-xs text-brand-grey mt-1">{p.floors} этажей • {p.description || "Описание проекта..."}</p>
-                                        <div className="mt-3 flex items-center gap-2 text-brand-gold text-[10px] font-bold uppercase tracking-wide bg-brand-gold/10 px-2 py-1 rounded-lg w-fit">
+                                        {p.developerName && (
+                                            <p className="text-[10px] text-gray-400 mt-1">Реклама. Застройщик: {p.developerName}</p>
+                                        )}
+                                        <div className="mt-2 flex items-center gap-2 text-brand-gold text-[10px] font-bold uppercase tracking-wide bg-brand-gold/10 px-2 py-1 rounded-lg w-fit">
                                             <Building2 size={12} />
                                             Открыть шахматку
                                         </div>
@@ -513,9 +521,24 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                     )}
                                 </div>
 
+                                {/* 152-ФЗ: согласие на передачу ПДн застройщику */}
+                                <label className="flex items-start gap-2 cursor-pointer select-none mt-2">
+                                    <input
+                                        type="checkbox"
+                                        checked={consentTransfer}
+                                        onChange={e => setConsentTransfer(e.target.checked)}
+                                        className="mt-0.5 w-4 h-4 accent-brand-gold shrink-0"
+                                    />
+                                    <span className="text-[11px] text-gray-500 leading-tight">
+                                        Я даю согласие на передачу моих персональных данных и документов покупателя
+                                        застройщику{selectedProject?.developerName ? ` ${selectedProject.developerName}` : ''} для
+                                        оформления бронирования квартиры
+                                    </span>
+                                </label>
+
                                 <button
                                     onClick={handleBooking}
-                                    disabled={bookingLoading || !buyerName || !buyerPhone || !passportFile}
+                                    disabled={bookingLoading || !buyerName || !buyerPhone || !passportFile || !consentTransfer}
                                     className="w-full py-3 bg-brand-black text-white rounded-xl font-bold shadow-lg disabled:opacity-50 flex items-center justify-center gap-2"
                                 >
                                     {bookingLoading ? <><Loader2 size={16} className="animate-spin" /> Отправка...</> : 'Подтвердить бронирование'}

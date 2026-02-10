@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import WebApp from '@twa-dev/sdk';
+import { getAuthData } from '../utils/auth';
 import { Newspaper, Building2, Link, ShoppingBag, Zap, Trash2, UserCheck, Users, Calendar, Calculator, Edit3 } from 'lucide-react';
 import { showToast } from '../utils/toast';
 
@@ -142,14 +142,14 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const handleDeleteProject = async (id: string) => {
     if (!confirm(`Удалить проект "${id}" и все его квартиры?`)) return;
     try {
-      await fetch(`/api/projects/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
+      await fetch(`/api/projects/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
       showToast('Проект удалён', 'success'); fetchProjects();
     } catch { showToast('Ошибка удаления', 'error'); }
   };
 
   const handleSaveProject = async (id: string) => {
     if (!editProjectName.trim()) return;
-    const body: any = { initData: WebApp.initData, name: editProjectName };
+    const body: any = { initData: getAuthData(), name: editProjectName };
     if (editProjectFloors) body.floors = editProjectFloors;
     if (editProjectUPF) body.unitsPerFloor = editProjectUPF;
     try {
@@ -161,7 +161,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const handleResyncProject = async (id: string) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/projects/${id}/resync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
+      const res = await fetch(`/api/projects/${id}/resync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
       const data = await res.json();
       const d = data.diag || {};
       const ss = d.savedStatuses || {};
@@ -183,7 +183,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     fetch('/api/applications', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData: WebApp.initData }),
+      body: JSON.stringify({ initData: getAuthData() }),
     })
       .then(res => res.json())
       .then(data => setApplications(Array.isArray(data) ? data : []))
@@ -195,7 +195,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     fetch('/api/admin/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData: WebApp.initData }),
+      body: JSON.stringify({ initData: getAuthData() }),
     })
       .then(res => res.json())
       .then(data => setUsersList(Array.isArray(data) ? data : []))
@@ -203,7 +203,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   };
 
   const fetchEvents = () => {
-    const initData = WebApp.initData;
+    const initData = getAuthData();
     fetch('/api/events/list', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -227,7 +227,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
       await fetch(`/api/admin/users/${userId}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData: WebApp.initData }),
+        body: JSON.stringify({ initData: getAuthData() }),
       });
       fetchUsers();
     } catch (e) { showToast('Ошибка удаления', 'error'); }
@@ -237,7 +237,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     if (!title || !text) return showToast('Заполни поля', 'error');
     setLoading(true);
     const body = {
-      initData: WebApp.initData,
+      initData: getAuthData(),
       title, text, image_url: image,
       project_name: projectName,
       progress: Number(progress),
@@ -255,7 +255,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     if (!importUrl) return showToast('Вставь URL фида', 'error');
     setLoading(true); setDebugResult('');
     try {
-      const res = await fetch('/api/debug-feed', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData, url: importUrl }) });
+      const res = await fetch('/api/debug-feed', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData(), url: importUrl }) });
       const data = await res.json();
       setDebugResult(JSON.stringify(data, null, 2));
     } catch (e) { setDebugResult('Ошибка: ' + String(e)); } finally { setLoading(false); }
@@ -268,7 +268,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
         const res = await fetch('/api/sync-xml-url', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ initData: WebApp.initData, projectId: importProjectId, projectName: importProjectName || importProjectId, url: importUrl })
+            body: JSON.stringify({ initData: getAuthData(), projectId: importProjectId, projectName: importProjectName || importProjectId, url: importUrl })
         });
         const data = await res.json();
         if (data.success) {
@@ -289,7 +289,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                initData: WebApp.initData,
+                initData: getAuthData(),
                 title: shopTitle,
                 price: Number(shopPrice),
                 currency: shopCurrency,
@@ -309,7 +309,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          initData: WebApp.initData,
+          initData: getAuthData(),
           title: questTitle, type: questType,
           reward_xp: Number(questRewardXp),
           reward_amount: Number(questRewardAmount),
@@ -325,14 +325,14 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const handleDeleteQuest = async (questId: number) => {
     if (!confirm('Деактивировать квест?')) return;
     try {
-      await fetch(`/api/quests/${questId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
+      await fetch(`/api/quests/${questId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
       fetchQuests();
     } catch (e) { showToast('Ошибка удаления', 'error'); }
   };
 
   const handleApproveUser = async (userId: number) => {
     try {
-      await fetch(`/api/applications/${userId}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
+      await fetch(`/api/applications/${userId}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
       fetchApplications();
       showToast('Заявка одобрена', 'success');
     } catch (e) { showToast('Ошибка', 'error'); }
@@ -341,7 +341,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const handleRejectUser = async (userId: number) => {
     if (!confirm('Отклонить заявку?')) return;
     try {
-      await fetch(`/api/applications/${userId}/reject`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
+      await fetch(`/api/applications/${userId}/reject`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
       fetchApplications();
       showToast('Заявка отклонена', 'info');
     } catch (e) { showToast('Ошибка', 'error'); }
@@ -353,7 +353,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     setLoading(true);
     try {
       const body = {
-        initData: WebApp.initData,
+        initData: getAuthData(),
         title: eventTitle, description: eventDescription,
         date: eventDate, time: eventTime,
         type: eventType, spots_total: Number(eventSpots),
@@ -383,7 +383,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const handleDeleteEvent = async (eventId: number) => {
     if (!confirm('Удалить событие?')) return;
     try {
-      await fetch(`/api/events/${eventId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
+      await fetch(`/api/events/${eventId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
       fetchEvents();
       showToast('Событие удалено', 'info');
     } catch (e) { showToast('Ошибка', 'error'); }
@@ -402,7 +402,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     setLoading(true);
     try {
       const body = {
-        initData: WebApp.initData,
+        initData: getAuthData(),
         name: mpName, rate: Number(mpRate), description: mpDescription,
       };
       if (editingMortgageId) {
@@ -427,7 +427,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const handleDeleteMortgage = async (mpId: number) => {
     if (!confirm('Удалить программу?')) return;
     try {
-      await fetch(`/api/mortgage-programs/${mpId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: WebApp.initData }) });
+      await fetch(`/api/mortgage-programs/${mpId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
       fetchMortgagePrograms();
       showToast('Программа удалена', 'info');
     } catch (e) { showToast('Ошибка', 'error'); }

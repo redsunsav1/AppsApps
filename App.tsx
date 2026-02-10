@@ -12,6 +12,7 @@ import { UserProfile, DailyQuest, ConstructionUpdate, ShopItem, ProjectStat, Cur
 import React, { useState, useEffect } from 'react';
 import { User, Newspaper, ShoppingBag, Grid3X3, LayoutGrid, ArrowLeft, Settings } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
+import { getAuthData, savePwaToken, getPwaToken, isTelegramEnv } from './utils/auth';
 import { showToast } from './utils/toast';
 
 enum Tab {
@@ -51,6 +52,7 @@ const App: React.FC = () => {
   const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
   const [approvalStatus, setApprovalStatus] = useState<string>('none');
   const [user, setUser] = useState<any>(null);
+  const [pwaToken, setPwaToken] = useState<string>('');
   const [projects, setProjects] = useState<ProjectData[]>([]);
   const [unreadNewsCount, setUnreadNewsCount] = useState(0);
 
@@ -118,7 +120,7 @@ const App: React.FC = () => {
     fetch('/api/missions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData: WebApp.initData }),
+      body: JSON.stringify({ initData: getAuthData() }),
     })
       .then(res => res.json())
       .then(data => {
@@ -159,7 +161,7 @@ const App: React.FC = () => {
   };
 
   const fetchUnreadCount = () => {
-    const initData = WebApp.initData;
+    const initData = getAuthData();
     if (!initData) return;
     fetch('/api/news/unread-count', {
       method: 'POST',
@@ -172,7 +174,7 @@ const App: React.FC = () => {
   };
 
   const markNewsSeen = () => {
-    const initData = WebApp.initData;
+    const initData = getAuthData();
     if (!initData) return;
     fetch('/api/news/mark-seen', {
       method: 'POST',
@@ -202,6 +204,35 @@ const App: React.FC = () => {
       .catch(e => console.log('Projects error (не критично)'));
   };
 
+  // Общий обработчик авторизованного пользователя
+  const applyAuthUser = (sUser: any) => {
+    if (sUser.pwa_token) {
+      savePwaToken(sUser.pwa_token);
+      setPwaToken(sUser.pwa_token);
+    }
+    setUser({
+      ...MOCK_DEFAULTS,
+      id: String(sUser.telegram_id),
+      name: sUser.first_name,
+      avatar: sUser.avatar_url || MOCK_DEFAULTS.avatar,
+      silverCoins: sUser.balance,
+      goldCoins: sUser.gold_balance || 0,
+      dealsClosed: sUser.deals_closed || 0,
+      is_registered: sUser.is_registered,
+      phone: sUser.phone,
+      company: sUser.company,
+      is_admin: sUser.is_admin,
+      approval_status: sUser.approval_status || 'none',
+      last_name: sUser.last_name || '',
+      company_type: sUser.company_type || 'agency',
+    });
+    if (sUser.first_name) setRegName(sUser.first_name);
+    setApprovalStatus(sUser.approval_status || 'none');
+    fetchQuests(sUser.id);
+    fetchMissions();
+    fetchUnreadCount();
+  };
+
   useEffect(() => {
     try {
       WebApp.ready();
@@ -215,8 +246,37 @@ const App: React.FC = () => {
     fetchProjects();
     fetchMortgagePrograms();
 
-    const initData = WebApp.initData;
+    // Путь 0: ?token=xxx в URL → сохранить и авторизоваться через PWA-токен
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlToken = urlParams.get('token');
+    if (urlToken) {
+      savePwaToken(urlToken);
+      setPwaToken(urlToken);
+      // Убираем токен из URL
+      window.history.replaceState({}, '', window.location.pathname);
+      fetch('/api/auth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: urlToken }),
+      })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`Token auth error ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (data.user) applyAuthUser(data.user);
+        else throw new Error("Token auth: no user");
+      })
+      .catch(err => {
+        console.error(err);
+        setDebugError(err.message || "Ошибка авторизации по токену");
+      })
+      .finally(() => setLoading(false));
+      return;
+    }
 
+    // Путь 1: Telegram initData
+    const initData = isTelegramEnv() ? getAuthData() : '';
     if (initData) {
       fetch('/api/auth', {
         method: 'POST',
@@ -231,41 +291,44 @@ const App: React.FC = () => {
         return res.json();
       })
       .then((data) => {
-        if (data.user) {
-          const sUser = data.user;
-          setUser({
-            ...MOCK_DEFAULTS,
-            id: String(sUser.telegram_id),
-            name: sUser.first_name,
-            avatar: sUser.avatar_url || MOCK_DEFAULTS.avatar,
-            silverCoins: sUser.balance,
-            goldCoins: sUser.gold_balance || 0,
-            dealsClosed: sUser.deals_closed || 0,
-            is_registered: sUser.is_registered,
-            phone: sUser.phone,
-            company: sUser.company,
-            is_admin: sUser.is_admin,
-            approval_status: sUser.approval_status || 'none',
-            last_name: sUser.last_name || '',
-            company_type: sUser.company_type || 'agency',
-          });
-          if (sUser.first_name) setRegName(sUser.first_name);
-          setApprovalStatus(sUser.approval_status || 'none');
-          fetchQuests(sUser.id);
-          fetchMissions();
-          fetchUnreadCount();
-        } else {
-          throw new Error("Сервер не вернул пользователя (data.user is missing)");
-        }
+        if (data.user) applyAuthUser(data.user);
+        else throw new Error("Сервер не вернул пользователя");
       })
       .catch(err => {
         console.error(err);
         setDebugError(err.message || "Неизвестная ошибка соединения");
       })
       .finally(() => setLoading(false));
-    } else {
-      setLoading(false);
+      return;
     }
+
+    // Путь 2: Сохранённый PWA-токен
+    const savedToken = getPwaToken();
+    if (savedToken) {
+      setPwaToken(savedToken);
+      fetch('/api/auth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: savedToken }),
+      })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`Token auth error ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (data.user) applyAuthUser(data.user);
+        else throw new Error("Token auth: no user");
+      })
+      .catch(err => {
+        console.error('PWA token auth failed:', err);
+        // Токен невалиден — показываем экран приветствия
+      })
+      .finally(() => setLoading(false));
+      return;
+    }
+
+    // Путь 3: Нет данных → экран приветствия
+    setLoading(false);
   }, []);
 
   const handleRegistration = () => {
@@ -275,7 +338,7 @@ const App: React.FC = () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        initData: WebApp.initData,
+        initData: getAuthData(),
         firstName: regName,
         lastName: regLastName,
         companyType: regCompanyType,
@@ -304,7 +367,7 @@ const App: React.FC = () => {
     fetch('/api/quests/claim', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData: WebApp.initData, questId: parseInt(questId) }),
+      body: JSON.stringify({ initData: getAuthData(), questId: parseInt(questId) }),
     })
     .then(res => res.json())
     .then(data => {
@@ -352,9 +415,28 @@ const App: React.FC = () => {
   if (loading) return <div className="flex items-center justify-center h-screen bg-brand-cream w-full text-black">Загрузка...</div>;
 
   if (!user) return (
-    <div className="flex items-center justify-center h-screen bg-brand-cream p-4 text-black text-center">
-      <p>Откройте это приложение внутри Telegram.</p>
-      <p className="text-xs text-gray-400 mt-2">InitData not found</p>
+    <div className="flex flex-col items-center justify-center h-screen bg-brand-cream p-6 text-brand-black text-center max-w-md mx-auto">
+      <div className="w-24 h-24 bg-brand-gold/20 rounded-full mb-6 flex items-center justify-center">
+        <span className="text-4xl">🏠</span>
+      </div>
+      <h1 className="text-2xl font-bold mb-3">Клуб Партнёров</h1>
+      <p className="text-gray-500 text-sm mb-6 leading-relaxed">
+        Для входа откройте приложение через <b>Telegram-бота</b>. После первого входа вы сможете установить приложение на домашний экран и пользоваться без Telegram.
+      </p>
+      <div className="bg-white p-5 rounded-2xl border border-brand-beige w-full text-left space-y-3">
+        <div className="flex items-start gap-3">
+          <span className="text-brand-gold font-bold text-lg">1</span>
+          <p className="text-sm text-gray-600">Откройте бота в Telegram</p>
+        </div>
+        <div className="flex items-start gap-3">
+          <span className="text-brand-gold font-bold text-lg">2</span>
+          <p className="text-sm text-gray-600">Нажмите кнопку запуска приложения</p>
+        </div>
+        <div className="flex items-start gap-3">
+          <span className="text-brand-gold font-bold text-lg">3</span>
+          <p className="text-sm text-gray-600">В профиле скопируйте ссылку для установки PWA</p>
+        </div>
+      </div>
     </div>
   );
 
@@ -495,7 +577,7 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-[100dvh] w-full max-w-md mx-auto bg-brand-cream relative shadow-2xl overflow-hidden text-brand-black">
       <div className="flex-1 overflow-y-auto custom-scrollbar pb-24">
-        {activeTab === Tab.PROFILE && <Dashboard user={user} quests={quests} stats={stats} missions={missions} onClaimQuest={onClaimQuest} />}
+        {activeTab === Tab.PROFILE && <Dashboard user={user} quests={quests} stats={stats} missions={missions} onClaimQuest={onClaimQuest} pwaToken={pwaToken} />}
         {activeTab === Tab.CONTENT && <ContentHub news={news} isAdmin={user.is_admin} onEdit={handleOpenEdit} onRefresh={fetchNews} />}
         {activeTab === Tab.MARKET && <Marketplace userSilver={user.silverCoins} userGold={user.goldCoins} isAdmin={user.is_admin} />}
         {activeTab === Tab.SECTIONS && renderSectionsContent()}

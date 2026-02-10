@@ -22,6 +22,6 @@ RUN npm install --production --network-timeout=100000
 COPY --from=builder /app/dist ./dist
 COPY server.js ./
 
-EXPOSE 8080
+EXPOSE 80
 
 CMD ["node", "server.js"]

@@ -97,6 +97,13 @@ export interface ChessUnit {
   floor: number;
   layoutImage?: string;
   section?: string;
+  // Booking agent info (filled for BOOKED units)
+  bookingAgentName?: string;
+  bookingAgentPhone?: string;
+  bookingAgentCompany?: string;
+  bookingAgentCompanyType?: string;
+  bookingBuyerName?: string;
+  bookingBuyerPhone?: string;
 }
 
 export interface ProjectData {

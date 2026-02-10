@@ -38,40 +38,57 @@ const ContentHub: React.FC<ContentHubProps> = ({ news, updates, isAdmin, onEdit,
 
       <div className="px-4 space-y-4">
         {items.map((item, idx) => (
-          <div 
-            key={item.id} 
+          <div
+            key={item.id}
             onClick={() => setSelectedNews(item)}
             className="bg-brand-white rounded-2xl overflow-hidden shadow-sm border border-brand-light active:scale-[0.99] transition-transform cursor-pointer"
             style={{ animationDelay: `${idx * 100}ms` }}
           >
             {/* Image Area */}
             <div className="h-48 bg-brand-light relative overflow-hidden">
-              <img src={item.images[0]} alt={item.title} className="w-full h-full object-cover" />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent"></div>
-              <div className="absolute bottom-4 left-4">
-                <span className="text-white/90 text-xs font-medium uppercase tracking-wider">{item.projectName}</span>
-                <h3 className="text-lg font-bold text-white leading-tight">{item.title}</h3>
+              {item.images && item.images[0] ? (
+                <img src={item.images[0]} alt={item.title} className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full bg-gradient-to-br from-brand-cream to-brand-light flex items-center justify-center">
+                  <ImageIcon size={40} className="text-brand-gold/30" />
+                </div>
+              )}
+              <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent"></div>
+              <div className="absolute bottom-0 left-0 right-0 p-4">
+                {item.projectName && (
+                  <span className="text-white/80 text-[10px] font-semibold uppercase tracking-wider block truncate">{item.projectName}</span>
+                )}
+                <h3 className="text-base font-bold text-white leading-snug line-clamp-2">{item.title}</h3>
               </div>
-              <div className="absolute top-4 right-4 bg-brand-gold text-white text-xs font-bold px-2 py-1 rounded-md shadow-md">
-                {item.progress}%
-              </div>
+              {typeof item.progress === 'number' && item.progress > 0 && (
+                <div className="absolute top-3 right-3 bg-brand-gold text-white text-[10px] font-bold px-2 py-0.5 rounded-md shadow-md">
+                  {item.progress}%
+                </div>
+              )}
               {isAdmin && (
-                <div className="absolute top-4 left-4 flex gap-2 z-20">
+                <div className="absolute top-3 left-3 flex gap-1.5 z-20">
                   <button
                     onClick={(e) => { e.stopPropagation(); onEdit && onEdit(item); }}
-                    className="w-8 h-8 bg-white/90 backdrop-blur text-brand-black rounded-full flex items-center justify-center shadow"
+                    className="w-7 h-7 bg-white/90 backdrop-blur text-brand-black rounded-full flex items-center justify-center shadow"
                   >
-                    <Edit3 size={14} />
+                    <Edit3 size={12} />
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); handleDeleteNews(item.id); }}
-                    className="w-8 h-8 bg-red-500 text-white rounded-full flex items-center justify-center shadow"
+                    className="w-7 h-7 bg-red-500 text-white rounded-full flex items-center justify-center shadow"
                   >
-                    <Trash2 size={14} />
+                    <Trash2 size={12} />
                   </button>
                 </div>
               )}
             </div>
+
+            {/* Card footer with date */}
+            {item.date && (
+              <div className="px-4 py-2.5 border-t border-brand-light/50">
+                <span className="text-[11px] text-brand-grey font-medium">{item.date}</span>
+              </div>
+            )}
           </div>
         ))}
         {items.length === 0 && (

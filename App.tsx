@@ -252,8 +252,7 @@ const App: React.FC = () => {
     if (urlToken) {
       savePwaToken(urlToken);
       setPwaToken(urlToken);
-      // Убираем токен из URL
-      window.history.replaceState({}, '', window.location.pathname);
+      // НЕ убираем токен из URL — iOS сохраняет URL при «На экран Домой»
       fetch('/api/auth/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

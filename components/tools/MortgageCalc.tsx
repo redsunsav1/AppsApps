@@ -19,10 +19,20 @@ const DEFAULT_PROGRAMS: MortgageProgram[] = [
 
 const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, programs, onClose, embedded = false }) => {
   const [loadedPrograms, setLoadedPrograms] = useState<MortgageProgram[]>(programs || DEFAULT_PROGRAMS);
-  const [price, setPrice] = useState(initialPrice);
-  const [initialPaymentPercent, setInitialPaymentPercent] = useState(20);
-  const [termYears, setTermYears] = useState(30);
-  const [rate, setRate] = useState((programs && programs[0]?.rate) || loadedPrograms[0]?.rate || 21);
+
+  // Store display strings separately so user can clear fields and type freely
+  const [priceStr, setPriceStr] = useState(String(initialPrice));
+  const [pctStr, setPctStr] = useState('20');
+  const [termStr, setTermStr] = useState('30');
+  const [rateStr, setRateStr] = useState(String((programs && programs[0]?.rate) || loadedPrograms[0]?.rate || 21));
+  const [amountStr, setAmountStr] = useState(''); // managed separately for ₽ input
+  const [amountEditing, setAmountEditing] = useState(false); // true when user is typing in ₽ field
+
+  // Derive numeric values for calculations
+  const price = Number(priceStr) || 0;
+  const initialPaymentPercent = Math.min(90, Math.max(0, Number(pctStr) || 0));
+  const termYears = Number(termStr) || 1;
+  const rate = Number(rateStr) || 0;
 
   // Fetch from API if no programs were passed as props
   useEffect(() => {
@@ -35,7 +45,7 @@ const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, pro
               id: String(p.id), name: p.name, rate: Number(p.rate), description: p.description || '',
             }));
             setLoadedPrograms(mapped);
-            setRate(mapped[0].rate);
+            setRateStr(String(mapped[0].rate));
           }
         })
         .catch(() => {});
@@ -46,12 +56,19 @@ const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, pro
   useEffect(() => {
     if (programs && programs.length > 0) {
       setLoadedPrograms(programs);
-      setRate(programs[0].rate);
+      setRateStr(String(programs[0].rate));
     }
   }, [programs]);
 
-  const initialPayment = (price * initialPaymentPercent) / 100;
+  const initialPayment = Math.round((price * initialPaymentPercent) / 100);
   const loanAmount = price - initialPayment;
+
+  // Keep ₽ display in sync when percent or price changes (unless user is actively editing ₽ field)
+  useEffect(() => {
+    if (!amountEditing) {
+      setAmountStr(initialPayment > 0 ? String(initialPayment) : '');
+    }
+  }, [initialPaymentPercent, price, amountEditing]);
 
   // Monthly Payment Calculation: M = P * (r * (1+r)^n) / ((1+r)^n - 1)
   const calculateMonthlyPayment = () => {
@@ -90,9 +107,11 @@ const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, pro
           <label className="text-xs font-bold text-brand-grey uppercase mb-1 block">Стоимость недвижимости</label>
           <div className="relative">
             <input
-              type="number"
-              value={price}
-              onChange={(e) => setPrice(Number(e.target.value))}
+              type="text"
+              inputMode="numeric"
+              value={priceStr}
+              onChange={(e) => setPriceStr(e.target.value.replace(/[^0-9]/g, ''))}
+              placeholder="0"
               className="w-full bg-brand-cream/50 border border-brand-light rounded-xl py-3 px-4 text-lg font-bold text-brand-black focus:outline-none focus:border-brand-gold"
             />
             <span className="absolute right-4 top-1/2 -translate-y-1/2 text-brand-grey text-sm font-medium">₽</span>
@@ -106,28 +125,41 @@ const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, pro
           <div className="flex gap-3 mb-3">
             <div className="relative flex-1">
               <input
-                type="number"
-                min={0} max={90} step={1}
-                value={initialPaymentPercent}
+                type="text"
+                inputMode="numeric"
+                value={pctStr}
                 onChange={(e) => {
-                  const v = Math.min(90, Math.max(0, Number(e.target.value)));
-                  setInitialPaymentPercent(v);
+                  const raw = e.target.value.replace(/[^0-9]/g, '');
+                  setPctStr(raw);
+                  setAmountEditing(false);
                 }}
+                placeholder="0"
                 className="w-full bg-brand-cream/50 border border-brand-light rounded-xl py-2.5 px-4 pr-10 text-base font-bold text-brand-black focus:outline-none focus:border-brand-gold"
               />
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-brand-grey text-sm font-medium">%</span>
             </div>
             <div className="relative flex-[1.5]">
               <input
-                type="number"
-                min={0}
-                step={100000}
-                value={initialPayment}
-                onChange={(e) => {
-                  const amount = Math.max(0, Number(e.target.value));
+                type="text"
+                inputMode="numeric"
+                value={amountStr}
+                onFocus={() => setAmountEditing(true)}
+                onBlur={() => {
+                  setAmountEditing(false);
+                  // Sync percent from amount on blur
+                  const amount = Number(amountStr) || 0;
                   const pct = price > 0 ? Math.min(90, Math.max(0, Math.round((amount / price) * 100))) : 0;
-                  setInitialPaymentPercent(pct);
+                  setPctStr(String(pct));
                 }}
+                onChange={(e) => {
+                  const raw = e.target.value.replace(/[^0-9]/g, '');
+                  setAmountStr(raw);
+                  // Live-update percent as user types
+                  const amount = Number(raw) || 0;
+                  const pct = price > 0 ? Math.min(90, Math.max(0, Math.round((amount / price) * 100))) : 0;
+                  setPctStr(String(pct));
+                }}
+                placeholder="0"
                 className="w-full bg-brand-cream/50 border border-brand-light rounded-xl py-2.5 px-4 pr-8 text-base font-bold text-brand-black focus:outline-none focus:border-brand-gold"
               />
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-brand-grey text-sm font-medium">₽</span>
@@ -138,7 +170,7 @@ const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, pro
             type="range"
             min="0" max="90" step="1"
             value={initialPaymentPercent}
-            onChange={(e) => setInitialPaymentPercent(Number(e.target.value))}
+            onChange={(e) => { setPctStr(e.target.value); setAmountEditing(false); }}
             className="w-full h-2 bg-brand-light rounded-lg appearance-none cursor-pointer accent-brand-gold"
           />
         </div>
@@ -150,9 +182,11 @@ const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, pro
             <div className="relative">
               <Calendar size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-grey" />
               <input
-                type="number"
-                value={termYears}
-                onChange={(e) => setTermYears(Number(e.target.value))}
+                type="text"
+                inputMode="numeric"
+                value={termStr}
+                onChange={(e) => setTermStr(e.target.value.replace(/[^0-9]/g, ''))}
+                placeholder="1"
                 className="w-full bg-brand-cream/50 border border-brand-light rounded-xl py-2 pl-10 pr-2 text-base font-bold text-brand-black focus:outline-none focus:border-brand-gold"
               />
             </div>
@@ -162,10 +196,11 @@ const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, pro
             <div className="relative">
               <Percent size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-grey" />
               <input
-                type="number"
-                step="0.1"
-                value={rate}
-                onChange={(e) => setRate(Number(e.target.value))}
+                type="text"
+                inputMode="decimal"
+                value={rateStr}
+                onChange={(e) => setRateStr(e.target.value.replace(/[^0-9.]/g, ''))}
+                placeholder="0"
                 className="w-full bg-brand-cream/50 border border-brand-light rounded-xl py-2 pl-10 pr-2 text-base font-bold text-brand-black focus:outline-none focus:border-brand-gold"
               />
             </div>
@@ -177,7 +212,7 @@ const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, pro
           {loadedPrograms.map(prog => (
             <button
               key={prog.id}
-              onClick={() => setRate(prog.rate)}
+              onClick={() => setRateStr(String(prog.rate))}
               className={`whitespace-nowrap px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${rate === prog.rate ? 'bg-brand-black text-brand-gold shadow-md' : 'bg-brand-light text-brand-black/70'}`}
             >
               {prog.name} {prog.rate}%

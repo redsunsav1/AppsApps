@@ -103,28 +103,10 @@ function parseTelegramUser(initData) {
   } catch (e) { return null; }
 }
 
-// Универсальная авторизация: Telegram initData ИЛИ PWA-токен
-// Возвращает { id (telegram_id), username, first_name } или null
-async function resolveAuth(initData) {
-  if (!initData) return null;
-  // Если строка содержит = и & — это Telegram initData
-  if (initData.includes('=')) {
-    return parseTelegramUser(initData);
-  }
-  // Иначе — возможно PWA-токен (hex string 64 символа)
-  if (initData.length >= 32) {
-    try {
-      const res = await pool.query('SELECT telegram_id AS id, username, first_name FROM users WHERE pwa_token = $1', [initData]);
-      return res.rows[0] || null;
-    } catch (e) { return null; }
-  }
-  return null;
-}
-
 async function isAdmin(initData) {
   if (!initData) return false;
   try {
-    const tgUser = await resolveAuth(initData);
+    const tgUser = parseTelegramUser(initData);
     if (!tgUser) return false;
     const res = await pool.query('SELECT is_admin FROM users WHERE telegram_id = $1', [tgUser.id]);
     return res.rows.length > 0 && res.rows[0].is_admin;
@@ -282,8 +264,6 @@ const initDb = async () => {
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS consent_transfer_at TIMESTAMP;');
     // 38-ФЗ: застройщик проекта (рекламная пометка)
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS developer_name TEXT;');
-    // PWA: токен для авторизации вне Telegram
-    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS pwa_token TEXT;');
 
     // --- Миссии (автоматические достижения) ---
     await pool.query(`CREATE TABLE IF NOT EXISTS missions (
@@ -665,22 +645,14 @@ app.post('/api/auth', rateLimit(900000, 10), async (req, res) => {
   const { initData } = req.body;
   if (!initData) return res.status(400).json({ error: 'No data' });
   try {
-    const tgUser = await resolveAuth(initData);
+    const tgUser = parseTelegramUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid initData signature' });
     let dbUser = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [tgUser.id]);
     if (dbUser.rows.length === 0) {
       dbUser = await pool.query('INSERT INTO users (telegram_id, username, first_name, gold_balance, balance) VALUES ($1, $2, $3, 0, 0) RETURNING *', [tgUser.id, tgUser.username, tgUser.first_name]);
     }
-    const user = dbUser.rows[0];
-
-    // Генерировать PWA-токен, если его ещё нет
-    if (!user.pwa_token) {
-      const token = crypto.randomBytes(32).toString('hex');
-      await pool.query('UPDATE users SET pwa_token = $1 WHERE id = $2', [token, user.id]);
-      user.pwa_token = token;
-    }
-
     // Обновить серию входов
+    const user = dbUser.rows[0];
     const today = new Date().toISOString().slice(0, 10);
     const lastLogin = user.last_login_date ? new Date(user.last_login_date).toISOString().slice(0, 10) : null;
     if (lastLogin !== today) {
@@ -689,37 +661,12 @@ app.post('/api/auth', rateLimit(900000, 10), async (req, res) => {
       await pool.query('UPDATE users SET last_login_date = $1, login_streak = $2 WHERE id = $3', [today, newStreak, user.id]);
       user.login_streak = newStreak;
       user.last_login_date = today;
+      // Проверить миссии входов (асинхронно)
       checkMissions(user.id, 'login').catch(() => {});
     }
     res.json({ user });
   } catch (e) {
     console.error('Auth error:', e);
-    res.status(500).json({ error: 'Auth error' });
-  }
-});
-
-// PWA-авторизация по токену (для входа вне Telegram)
-app.post('/api/auth/token', rateLimit(900000, 10), async (req, res) => {
-  const { pwaToken } = req.body;
-  if (!pwaToken) return res.status(400).json({ error: 'No token' });
-  try {
-    const dbUser = await pool.query('SELECT * FROM users WHERE pwa_token = $1', [pwaToken]);
-    if (dbUser.rows.length === 0) return res.status(401).json({ error: 'Invalid token' });
-    const user = dbUser.rows[0];
-    // Обновить серию входов
-    const today = new Date().toISOString().slice(0, 10);
-    const lastLogin = user.last_login_date ? new Date(user.last_login_date).toISOString().slice(0, 10) : null;
-    if (lastLogin !== today) {
-      const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-      const newStreak = (lastLogin === yesterday) ? (user.login_streak || 0) + 1 : 1;
-      await pool.query('UPDATE users SET last_login_date = $1, login_streak = $2 WHERE id = $3', [today, newStreak, user.id]);
-      user.login_streak = newStreak;
-      user.last_login_date = today;
-      checkMissions(user.id, 'login').catch(() => {});
-    }
-    res.json({ user });
-  } catch (e) {
-    console.error('Token auth error:', e);
     res.status(500).json({ error: 'Auth error' });
   }
 });
@@ -730,7 +677,7 @@ app.post('/api/auth/token', rateLimit(900000, 10), async (req, res) => {
 app.post('/api/avatar', async (req, res) => {
   try {
     const { initData, avatarData } = req.body;
-    const tgUser = await resolveAuth(initData);
+    const tgUser = parseTelegramUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
     if (!avatarData) return res.status(400).json({ error: 'No avatar data' });
     if (avatarData.length > 700000) return res.status(400).json({ error: 'Image too large' });
@@ -745,7 +692,7 @@ app.post('/api/avatar', async (req, res) => {
 app.post('/api/register', async (req, res) => {
   const { initData, firstName, lastName, companyType, company, phone, consentPd } = req.body;
   try {
-    const tgUser = await resolveAuth(initData);
+    const tgUser = parseTelegramUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
     if (!consentPd) return res.status(400).json({ error: 'Необходимо согласие на обработку персональных данных' });
     await pool.query(
@@ -873,7 +820,7 @@ app.post('/api/news', async (req, res) => {
 
 app.post('/api/news/unread-count', async (req, res) => {
   try {
-    const tgUser = await resolveAuth(req.body.initData);
+    const tgUser = parseTelegramUser(req.body.initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
     const userRes = await pool.query('SELECT last_seen_news_at FROM users WHERE telegram_id = $1', [tgUser.id]);
     if (userRes.rows.length === 0) return res.json({ count: 0 });
@@ -887,7 +834,7 @@ app.post('/api/news/unread-count', async (req, res) => {
 
 app.post('/api/news/mark-seen', async (req, res) => {
   try {
-    const tgUser = await resolveAuth(req.body.initData);
+    const tgUser = parseTelegramUser(req.body.initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
     await pool.query('UPDATE users SET last_seen_news_at = NOW() WHERE telegram_id = $1', [tgUser.id]);
     res.json({ success: true });
@@ -945,7 +892,7 @@ app.delete('/api/products/:id', async (req, res) => {
 app.post('/api/buy', async (req, res) => {
   const { initData, productId } = req.body;
   try {
-    const tgUser = await resolveAuth(initData);
+    const tgUser = parseTelegramUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
     const result = await withTransaction(async (client) => {
       const userRes = await client.query('SELECT * FROM users WHERE telegram_id = $1 FOR UPDATE', [tgUser.id]);
@@ -1135,7 +1082,7 @@ app.post('/api/admin/users', async (req, res) => {
 app.delete('/api/admin/users/:id', async (req, res) => {
   try {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
-    const tgUser = await resolveAuth(req.body.initData);
+    const tgUser = parseTelegramUser(req.body.initData);
     const targetUser = await pool.query('SELECT telegram_id FROM users WHERE id = $1', [req.params.id]);
     if (targetUser.rows.length > 0 && String(targetUser.rows[0].telegram_id) === String(tgUser.id)) {
       return res.status(400).json({ error: 'Нельзя удалить самого себя' });
@@ -1164,7 +1111,7 @@ app.delete('/api/admin/users/:id', async (req, res) => {
 app.post('/api/admin/clear-users', async (req, res) => {
   try {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
-    const tgUser = await resolveAuth(req.body.initData);
+    const tgUser = parseTelegramUser(req.body.initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
     const result = await pool.query('DELETE FROM users WHERE telegram_id != $1', [tgUser.id]);
     res.json({ success: true, deleted: result.rowCount });
@@ -1209,7 +1156,7 @@ app.get('/api/quests', async (req, res) => {
 app.post('/api/quests/claim', async (req, res) => {
   const { initData, questId } = req.body;
   try {
-    const tgUser = await resolveAuth(initData);
+    const tgUser = parseTelegramUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
     const userRes = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [tgUser.id]);
     if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
@@ -1303,7 +1250,7 @@ app.post('/api/events/list', async (req, res) => {
     const { initData } = req.body || {};
     let userId = null;
     if (initData) {
-      const tgUser = await resolveAuth(initData);
+      const tgUser = parseTelegramUser(initData);
       if (tgUser) {
         const ur = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [tgUser.id]);
         if (ur.rows.length > 0) userId = ur.rows[0].id;
@@ -1362,7 +1309,7 @@ app.delete('/api/events/:id', async (req, res) => {
 // Записаться на событие
 app.post('/api/events/:id/register', async (req, res) => {
   try {
-    const tgUser = await resolveAuth(req.body.initData);
+    const tgUser = parseTelegramUser(req.body.initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
     const userRes = await pool.query('SELECT id, first_name FROM users WHERE telegram_id = $1', [tgUser.id]);
     if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
@@ -1505,7 +1452,7 @@ async function checkMissions(userId, trigger) {
 app.post('/api/missions', async (req, res) => {
   try {
     const { initData } = req.body;
-    const tgUser = await resolveAuth(initData);
+    const tgUser = parseTelegramUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
     const userRes = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [tgUser.id]);
     if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
@@ -1535,7 +1482,7 @@ app.post('/api/missions', async (req, res) => {
 app.post('/api/bookings', async (req, res) => {
   const { initData, unitId, projectId } = req.body;
   try {
-    const tgUser = await resolveAuth(initData);
+    const tgUser = parseTelegramUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
     const userRes = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [tgUser.id]);
     if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
@@ -1574,7 +1521,7 @@ app.post('/api/bookings', async (req, res) => {
 app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, res) => {
   try {
     const { initData, buyerName, buyerPhone, consentTransfer } = req.body;
-    const tgUser = await resolveAuth(initData);
+    const tgUser = parseTelegramUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
 
     const bookingRes = await pool.query('SELECT b.*, u.first_name as agent_name, u.phone as agent_phone, u.company as agent_company FROM bookings b JOIN users u ON b.user_id = u.id WHERE b.id = $1', [req.params.id]);
@@ -1621,7 +1568,7 @@ app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, re
 app.post('/api/bookings/:id/documents', upload.array('documents', 10), async (req, res) => {
   try {
     const { initData } = req.body;
-    const tgUser = await resolveAuth(initData);
+    const tgUser = parseTelegramUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
 
     const bookingRes = await pool.query('SELECT b.*, u.first_name as agent_name, u.phone as agent_phone, u.company as agent_company FROM bookings b JOIN users u ON b.user_id = u.id WHERE b.id = $1', [req.params.id]);
@@ -1656,7 +1603,7 @@ app.post('/api/bookings/:id/documents', upload.array('documents', 10), async (re
 app.post('/api/bookings/my', async (req, res) => {
   try {
     const { initData } = req.body;
-    const tgUser = await resolveAuth(initData);
+    const tgUser = parseTelegramUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
     const userRes = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [tgUser.id]);
     if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
@@ -1689,7 +1636,7 @@ app.post('/api/bookings/cancel', async (req, res) => {
     const { initData, unitId } = req.body;
     if (!unitId) return res.status(400).json({ error: 'unitId required' });
 
-    const tgUser = await resolveAuth(initData);
+    const tgUser = parseTelegramUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
 
     const userRes = await pool.query('SELECT id, is_admin FROM users WHERE telegram_id = $1', [tgUser.id]);

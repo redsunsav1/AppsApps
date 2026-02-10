@@ -1,9 +1,8 @@
 import React, { useRef, useState } from 'react';
 import BookingChecklist from './BookingChecklist';
 import { UserProfile, DailyQuest, ProjectStat, getRank, Mission } from '../types';
-import { ChevronRight, ChevronDown, CheckCircle2, Phone, Send, MessageCircle, FileText, Camera, Target, Trophy, Key, Layers, Crown, MapPin, Globe, User, Flame, Download, Copy, Check } from 'lucide-react';
+import { ChevronRight, ChevronDown, CheckCircle2, Phone, Send, MessageCircle, FileText, Camera, Target, Trophy, Key, Layers, Crown, MapPin, Globe, User, Flame } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
-import { getAuthData } from '../utils/auth';
 
 interface DashboardProps {
   user: UserProfile;
@@ -11,7 +10,6 @@ interface DashboardProps {
   stats: ProjectStat[];
   missions: Mission[];
   onClaimQuest: (id: string) => void;
-  pwaToken?: string;
 }
 
 const MISSION_ICONS: Record<string, React.ReactNode> = {
@@ -27,7 +25,7 @@ const MISSION_ICONS: Record<string, React.ReactNode> = {
   star: <Target size={18} />,
 };
 
-const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, onClaimQuest, pwaToken }) => {
+const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, onClaimQuest }) => {
   const progressPercent = (user.currentXP / user.nextLevelXP) * 100;
   const currentRank = getRank(user.dealsClosed);
 
@@ -50,7 +48,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
         await fetch('/api/avatar', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData: getAuthData(), avatarData: base64 }),
+          body: JSON.stringify({ initData: WebApp.initData, avatarData: base64 }),
         });
       } catch (e) {
         console.error('Avatar upload error:', e);
@@ -255,46 +253,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
           </div>
         )}
       </div>
-
-      {/* PWA Install Section — shown when pwa_token is available */}
-      {pwaToken && (
-        <div className="mt-6 px-6">
-          <div className="bg-brand-white rounded-2xl p-5 shadow-sm border border-brand-light">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-xl bg-brand-black flex items-center justify-center">
-                <Download size={18} className="text-brand-gold" />
-              </div>
-              <div>
-                <h3 className="text-sm font-bold text-brand-black">Установить приложение</h3>
-                <p className="text-[11px] text-brand-grey">Откройте ссылку в Safari или Chrome</p>
-              </div>
-            </div>
-            <p className="text-xs text-brand-grey mb-3 leading-relaxed">
-              Скопируйте ссылку ниже и откройте в Safari (iPhone) или Chrome (Android). Затем добавьте на домашний экран — приложение будет работать без Telegram.
-            </p>
-            <button
-              onClick={() => {
-                const url = `${window.location.origin}/?token=${pwaToken}`;
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                  navigator.clipboard.writeText(url).then(() => {
-                    const btn = document.getElementById('pwa-copy-btn');
-                    if (btn) { btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Скопировано!'; setTimeout(() => { btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Скопировать ссылку'; }, 2000); }
-                  }).catch(() => {
-                    prompt('Скопируйте ссылку:', url);
-                  });
-                } else {
-                  prompt('Скопируйте ссылку:', url);
-                }
-              }}
-              id="pwa-copy-btn"
-              className="w-full py-3 rounded-xl bg-brand-black text-brand-gold font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.98] transition-transform"
-            >
-              <Copy size={16} />
-              Скопировать ссылку
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Statistics Section */}
       <div className="mt-10 px-6 pb-6">

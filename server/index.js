@@ -253,6 +253,14 @@ createCRUDEndpoints('mortgage', 'mortgage');
 createCRUDEndpoints('shop', 'shop');
 
 // --- SERVE FRONTEND ---
+// Serve public folder assets (icons, manifest, sw) with correct headers
+app.use(express.static(path.join(__dirname, '../public'), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.json')) res.setHeader('Content-Type', 'application/json');
+    if (filePath.endsWith('.js')) res.setHeader('Content-Type', 'application/javascript');
+    if (filePath.endsWith('sw.js')) res.setHeader('Service-Worker-Allowed', '/');
+  }
+}));
 app.use(express.static(path.join(__dirname, '../dist')));
 
 app.get('*', (req, res) => {

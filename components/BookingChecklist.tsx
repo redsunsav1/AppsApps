@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import WebApp from '@twa-dev/sdk';
+import { getAuthData } from '../utils/auth';
 import { CheckCircle2, Circle, Upload, Loader2, X, FileText, ChevronDown, ChevronUp } from 'lucide-react';
 import { BookingRecord } from '../types';
 
@@ -20,7 +20,7 @@ const BookingChecklist: React.FC = () => {
     fetch('/api/bookings/my', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData: WebApp.initData }),
+      body: JSON.stringify({ initData: getAuthData() }),
     })
       .then(res => res.json())
       .then(data => setBookings(data))
@@ -35,7 +35,7 @@ const BookingChecklist: React.FC = () => {
 
     try {
       const formData = new FormData();
-      formData.append('initData', WebApp.initData);
+      formData.append('initData', getAuthData());
       Array.from(files).forEach(f => formData.append('documents', f));
 
       const res = await fetch(`/api/bookings/${bookingId}/documents`, {

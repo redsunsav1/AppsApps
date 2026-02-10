@@ -13,6 +13,7 @@ import React, { useState, useEffect } from 'react';
 import { User, Newspaper, ShoppingBag, Grid3X3, LayoutGrid, ArrowLeft, Settings } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
 import { showToast } from './utils/toast';
+import { getAuthData, savePwaToken, getPwaToken, isTelegramEnv } from './utils/auth';
 
 enum Tab {
   PROFILE = 'PROFILE',
@@ -118,7 +119,7 @@ const App: React.FC = () => {
     fetch('/api/missions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData: WebApp.initData }),
+      body: JSON.stringify({ initData: getAuthData() }),
     })
       .then(res => res.json())
       .then(data => {
@@ -159,7 +160,7 @@ const App: React.FC = () => {
   };
 
   const fetchUnreadCount = () => {
-    const initData = WebApp.initData;
+    const initData = getAuthData();
     if (!initData) return;
     fetch('/api/news/unread-count', {
       method: 'POST',
@@ -172,7 +173,7 @@ const App: React.FC = () => {
   };
 
   const markNewsSeen = () => {
-    const initData = WebApp.initData;
+    const initData = getAuthData();
     if (!initData) return;
     fetch('/api/news/mark-seen', {
       method: 'POST',
@@ -202,6 +203,33 @@ const App: React.FC = () => {
       .catch(e => console.log('Projects error (не критично)'));
   };
 
+  // Общая функция: установить пользователя из ответа сервера
+  const applyAuthUser = (sUser: any) => {
+    // Сохранить PWA-токен для будущих входов вне Telegram
+    if (sUser.pwa_token) savePwaToken(sUser.pwa_token);
+    setUser({
+      ...MOCK_DEFAULTS,
+      id: String(sUser.telegram_id),
+      name: sUser.first_name,
+      avatar: sUser.avatar_url || MOCK_DEFAULTS.avatar,
+      silverCoins: sUser.balance,
+      goldCoins: sUser.gold_balance || 0,
+      dealsClosed: sUser.deals_closed || 0,
+      is_registered: sUser.is_registered,
+      phone: sUser.phone,
+      company: sUser.company,
+      is_admin: sUser.is_admin,
+      approval_status: sUser.approval_status || 'none',
+      last_name: sUser.last_name || '',
+      company_type: sUser.company_type || 'agency',
+    });
+    if (sUser.first_name) setRegName(sUser.first_name);
+    setApprovalStatus(sUser.approval_status || 'none');
+    fetchQuests(sUser.id);
+    fetchMissions();
+    fetchUnreadCount();
+  };
+
   useEffect(() => {
     try {
       WebApp.ready();
@@ -215,57 +243,62 @@ const App: React.FC = () => {
     fetchProjects();
     fetchMortgagePrograms();
 
-    const initData = WebApp.initData;
+    const inTelegram = isTelegramEnv();
+    const initData = getAuthData();
+    const savedToken = getPwaToken();
 
-    if (initData) {
+    // Путь 1: Внутри Telegram — авторизация через initData
+    if (inTelegram && initData) {
       fetch('/api/auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ initData }),
       })
       .then(async (res) => {
+        if (!res.ok) throw new Error(`Server Error ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (data.user) applyAuthUser(data.user);
+        else throw new Error("Сервер не вернул пользователя");
+      })
+      .catch(err => {
+        console.error(err);
+        setDebugError(err.message || "Ошибка соединения");
+      })
+      .finally(() => setLoading(false));
+      return;
+    }
+
+    // Путь 2: Вне Telegram — авторизация через сохранённый PWA-токен
+    if (!inTelegram && savedToken) {
+      fetch('/api/auth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pwaToken: savedToken }),
+      })
+      .then(async (res) => {
         if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`Server Error ${res.status}: ${text.slice(0, 100)}`);
+          // Токен невалиден — стёрся на сервере
+          localStorage.removeItem('kp_pwa_token');
+          throw new Error('TOKEN_EXPIRED');
         }
         return res.json();
       })
       .then((data) => {
-        if (data.user) {
-          const sUser = data.user;
-          setUser({
-            ...MOCK_DEFAULTS,
-            id: String(sUser.telegram_id),
-            name: sUser.first_name,
-            avatar: sUser.avatar_url || MOCK_DEFAULTS.avatar,
-            silverCoins: sUser.balance,
-            goldCoins: sUser.gold_balance || 0,
-            dealsClosed: sUser.deals_closed || 0,
-            is_registered: sUser.is_registered,
-            phone: sUser.phone,
-            company: sUser.company,
-            is_admin: sUser.is_admin,
-            approval_status: sUser.approval_status || 'none',
-            last_name: sUser.last_name || '',
-            company_type: sUser.company_type || 'agency',
-          });
-          if (sUser.first_name) setRegName(sUser.first_name);
-          setApprovalStatus(sUser.approval_status || 'none');
-          fetchQuests(sUser.id);
-          fetchMissions();
-          fetchUnreadCount();
-        } else {
-          throw new Error("Сервер не вернул пользователя (data.user is missing)");
-        }
+        if (data.user) applyAuthUser(data.user);
+        else throw new Error("Сервер не вернул пользователя");
       })
       .catch(err => {
-        console.error(err);
-        setDebugError(err.message || "Неизвестная ошибка соединения");
+        console.error('PWA auth error:', err);
+        // Не показываем ошибку — просто покажется экран "войдите через Telegram"
       })
       .finally(() => setLoading(false));
-    } else {
-      setLoading(false);
+      return;
     }
+
+    // Путь 3: Нет ни Telegram, ни токена — покажем экран приветствия
+    setLoading(false);
   }, []);
 
   const handleRegistration = () => {
@@ -275,7 +308,7 @@ const App: React.FC = () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        initData: WebApp.initData,
+        initData: getAuthData(),
         firstName: regName,
         lastName: regLastName,
         companyType: regCompanyType,
@@ -304,7 +337,7 @@ const App: React.FC = () => {
     fetch('/api/quests/claim', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData: WebApp.initData, questId: parseInt(questId) }),
+      body: JSON.stringify({ initData: getAuthData(), questId: parseInt(questId) }),
     })
     .then(res => res.json())
     .then(data => {
@@ -352,9 +385,32 @@ const App: React.FC = () => {
   if (loading) return <div className="flex items-center justify-center h-screen bg-brand-cream w-full text-black">Загрузка...</div>;
 
   if (!user) return (
-    <div className="flex items-center justify-center h-screen bg-brand-cream p-4 text-black text-center">
-      <p>Откройте это приложение внутри Telegram.</p>
-      <p className="text-xs text-gray-400 mt-2">InitData not found</p>
+    <div className="flex flex-col items-center justify-center h-screen bg-brand-cream p-8 text-brand-black text-center max-w-md mx-auto">
+      <div className="w-20 h-20 bg-brand-black rounded-2xl flex items-center justify-center mb-6 shadow-lg">
+        <span className="text-brand-gold text-2xl font-black">КП</span>
+      </div>
+      <h1 className="text-2xl font-bold mb-3">Клуб Партнёров</h1>
+      <p className="text-brand-grey text-sm mb-6 leading-relaxed">
+        Для первого входа откройте приложение через Telegram-бота.
+        После этого оно будет доступно и в браузере.
+      </p>
+      <div className="bg-brand-white rounded-2xl p-5 w-full border border-brand-light">
+        <p className="text-xs font-bold text-brand-grey uppercase mb-3">Как начать:</p>
+        <div className="space-y-3 text-left">
+          <div className="flex items-start gap-3">
+            <div className="w-6 h-6 rounded-full bg-brand-gold/20 flex items-center justify-center shrink-0 mt-0.5"><span className="text-xs font-bold text-brand-gold">1</span></div>
+            <p className="text-sm text-brand-black">Откройте бота в Telegram</p>
+          </div>
+          <div className="flex items-start gap-3">
+            <div className="w-6 h-6 rounded-full bg-brand-gold/20 flex items-center justify-center shrink-0 mt-0.5"><span className="text-xs font-bold text-brand-gold">2</span></div>
+            <p className="text-sm text-brand-black">Нажмите "Запустить" и пройдите регистрацию</p>
+          </div>
+          <div className="flex items-start gap-3">
+            <div className="w-6 h-6 rounded-full bg-brand-gold/20 flex items-center justify-center shrink-0 mt-0.5"><span className="text-xs font-bold text-brand-gold">3</span></div>
+            <p className="text-sm text-brand-black">После входа приложение запомнит вас — можно будет открывать через браузер</p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 

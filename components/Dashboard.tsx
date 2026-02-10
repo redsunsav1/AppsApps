@@ -3,6 +3,7 @@ import BookingChecklist from './BookingChecklist';
 import { UserProfile, DailyQuest, ProjectStat, getRank, Mission } from '../types';
 import { ChevronRight, ChevronDown, CheckCircle2, Phone, Send, MessageCircle, FileText, Camera, Target, Trophy, Key, Layers, Crown, MapPin, Globe, User, Flame } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
+import { getAuthData } from '../utils/auth';
 
 interface DashboardProps {
   user: UserProfile;
@@ -48,7 +49,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
         await fetch('/api/avatar', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData: WebApp.initData, avatarData: base64 }),
+          body: JSON.stringify({ initData: getAuthData(), avatarData: base64 }),
         });
       } catch (e) {
         console.error('Avatar upload error:', e);

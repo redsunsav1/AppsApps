@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { CalendarEvent } from '../../types';
 import { MapPin, Clock, Users, CheckCircle2, Loader2 } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
+import { getAuthData } from '../../utils/auth';
 import { showToast } from '../../utils/toast';
 
 const EventCalendar: React.FC = () => {
@@ -9,7 +10,7 @@ const EventCalendar: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   const fetchEvents = () => {
-    const initData = WebApp.initData;
+    const initData = getAuthData();
     fetch('/api/events/list', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -43,7 +44,7 @@ const EventCalendar: React.FC = () => {
       const res = await fetch(`/api/events/${eventId}/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData: WebApp.initData }),
+        body: JSON.stringify({ initData: getAuthData() }),
       });
       const data = await res.json();
       if (data.success) {

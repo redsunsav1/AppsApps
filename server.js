@@ -969,7 +969,22 @@ app.post('/api/projects/:id/resync', async (req, res) => {
 
 app.get('/api/units/:projectId', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM units WHERE project_id = $1', [req.params.projectId]);
+    const result = await pool.query(`
+      SELECT u.*,
+             b.buyer_name AS booking_buyer_name,
+             b.buyer_phone AS booking_buyer_phone,
+             agent.first_name AS booking_agent_name,
+             agent.last_name AS booking_agent_last_name,
+             agent.phone AS booking_agent_phone,
+             agent.company AS booking_agent_company,
+             agent.company_type AS booking_agent_company_type
+      FROM units u
+      LEFT JOIN LATERAL (
+        SELECT * FROM bookings WHERE unit_id = u.id AND stage != 'CANCELLED' ORDER BY created_at DESC LIMIT 1
+      ) b ON u.status = 'BOOKED'
+      LEFT JOIN users agent ON b.user_id = agent.id
+      WHERE u.project_id = $1
+    `, [req.params.projectId]);
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -1072,7 +1087,23 @@ app.delete('/api/admin/users/:id', async (req, res) => {
     if (targetUser.rows.length > 0 && String(targetUser.rows[0].telegram_id) === String(tgUser.id)) {
       return res.status(400).json({ error: 'Нельзя удалить самого себя' });
     }
-    await pool.query('DELETE FROM users WHERE id = $1', [req.params.id]);
+    const userId = req.params.id;
+    await withTransaction(async (client) => {
+      // Освобождаем квартиры из активных бронирований этого пользователя
+      const activeBookings = await client.query("SELECT unit_id FROM bookings WHERE user_id = $1 AND stage != 'CANCELLED'", [userId]);
+      for (const b of activeBookings.rows) {
+        await client.query("UPDATE units SET status = 'FREE' WHERE id = $1 AND status = 'BOOKED'", [b.unit_id]);
+      }
+      // Удаляем связанные записи
+      await client.query('DELETE FROM user_missions WHERE user_id = $1', [userId]);
+      await client.query('DELETE FROM quest_completions WHERE user_id = $1', [userId]);
+      await client.query('DELETE FROM bookings WHERE user_id = $1', [userId]);
+      await client.query('DELETE FROM orders WHERE user_id = $1', [userId]);
+      await client.query('DELETE FROM event_registrations WHERE user_id = $1', [userId]);
+      // Удаляем пользователя
+      await client.query('DELETE FROM users WHERE id = $1', [userId]);
+    });
+    console.log(`🗑 Пользователь id=${userId} удалён (включая бронирования, миссии, заказы)`);
     res.json({ success: true });
   } catch (e) { console.error('Delete user error:', e); res.status(500).json({ error: 'Server error' }); }
 });

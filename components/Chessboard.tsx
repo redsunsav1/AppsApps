@@ -75,7 +75,13 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                         status: u.status,
                         floor: u.floor,
                         layoutImage: u.plan_image_url,
-                        section: u.section || null
+                        section: u.section || null,
+                        bookingAgentName: u.booking_agent_name ? `${u.booking_agent_name}${u.booking_agent_last_name ? ' ' + u.booking_agent_last_name : ''}` : undefined,
+                        bookingAgentPhone: u.booking_agent_phone || undefined,
+                        bookingAgentCompany: u.booking_agent_company || undefined,
+                        bookingAgentCompanyType: u.booking_agent_company_type || undefined,
+                        bookingBuyerName: u.booking_buyer_name || undefined,
+                        bookingBuyerPhone: u.booking_buyer_phone || undefined,
                     }));
                     setUnits(mapped);
                     // Extract unique sections
@@ -409,6 +415,28 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                             {bookingUnit.price > 0 && (
                                 <div className="text-2xl font-black text-brand-black mt-3">
                                     {formatPrice(bookingUnit.price)}
+                                </div>
+                            )}
+
+                            {/* Booking agent info (admin only) */}
+                            {isAdmin && bookingUnit.status === 'BOOKED' && bookingUnit.bookingAgentName && (
+                                <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-xl text-xs space-y-1">
+                                    <div className="font-bold text-yellow-700 text-[11px] uppercase tracking-wide mb-1.5">Забронировал</div>
+                                    <div className="text-brand-black font-medium">{bookingUnit.bookingAgentName}</div>
+                                    {bookingUnit.bookingAgentCompany && (
+                                        <div className="text-brand-grey">
+                                            {bookingUnit.bookingAgentCompanyType === 'ip' ? 'ИП' : 'Агентство'}: {bookingUnit.bookingAgentCompany}
+                                        </div>
+                                    )}
+                                    {bookingUnit.bookingAgentPhone && (
+                                        <div className="text-brand-grey">{bookingUnit.bookingAgentPhone}</div>
+                                    )}
+                                    {bookingUnit.bookingBuyerName && (
+                                        <div className="mt-1.5 pt-1.5 border-t border-yellow-200">
+                                            <span className="text-yellow-600 font-medium">Покупатель:</span> {bookingUnit.bookingBuyerName}
+                                            {bookingUnit.bookingBuyerPhone ? ` · ${bookingUnit.bookingBuyerPhone}` : ''}
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>

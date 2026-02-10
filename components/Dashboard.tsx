@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import BookingChecklist from './BookingChecklist';
-import { UserProfile, DailyQuest, ProjectStat, CurrencyType, getRank, Mission } from '../types';
-import { ChevronRight, ChevronDown, CheckCircle2, Circle, Zap, Phone, Send, MessageCircle, FileText, Camera, Target, Trophy, Key, Layers, Crown, MapPin, Globe, User, Flame } from 'lucide-react';
+import { UserProfile, DailyQuest, ProjectStat, getRank, Mission } from '../types';
+import { ChevronRight, ChevronDown, CheckCircle2, Phone, Send, MessageCircle, FileText, Camera, Target, Trophy, Key, Layers, Crown, MapPin, Globe, User, Flame } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
 
 interface DashboardProps {
@@ -252,39 +252,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
             })}
           </div>
         )}
-      </div>
-
-      {/* Daily Quests */}
-      <div className="mt-8 px-6">
-        <h3 className="text-lg font-bold text-brand-black mb-4 flex items-center gap-2">
-            Задачи <Zap size={16} className="text-brand-gold fill-current" />
-        </h3>
-
-        <div className="space-y-3">
-            {quests.map(quest => (
-                <div
-                    key={quest.id}
-                    onClick={() => !quest.isCompleted && onClaimQuest(quest.id)}
-                    className={`
-                        flex items-center justify-between p-4 rounded-2xl border transition-all duration-300
-                        ${quest.isCompleted ? 'bg-brand-white/50 border-transparent opacity-60' : 'bg-brand-white border-brand-light shadow-sm active:scale-[0.98] cursor-pointer'}
-                    `}
-                >
-                    <div className="flex items-center gap-3">
-                        <div className={`p-2 rounded-full ${quest.isCompleted ? 'bg-green-100 text-green-700' : 'bg-brand-cream text-brand-grey'}`}>
-                            {quest.isCompleted ? <CheckCircle2 size={18} /> : <Circle size={18} />}
-                        </div>
-                        <div>
-                            <h4 className={`text-sm font-bold ${quest.isCompleted ? 'text-brand-grey line-through' : 'text-brand-black'}`}>{quest.title}</h4>
-                            <p className="text-xs text-brand-grey mt-0.5 font-medium flex items-center gap-1">
-                                Награда: <span className={`${quest.rewardCurrency === CurrencyType.GOLD ? 'text-brand-gold' : 'text-slate-500'} font-bold`}>+{quest.rewardAmount} {quest.rewardCurrency === CurrencyType.GOLD ? 'Gold' : 'Silver'}</span>
-                            </p>
-                        </div>
-                    </div>
-                    {!quest.isCompleted && <ChevronRight size={16} className="text-brand-light" />}
-                </div>
-            ))}
-        </div>
       </div>
 
       {/* Statistics Section */}

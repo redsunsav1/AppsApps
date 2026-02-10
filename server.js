@@ -9,6 +9,11 @@ import cron from 'node-cron';
 import multer from 'multer';
 import nodemailer from 'nodemailer';
 
+// Поддержка обоих имён переменной (TELEGRAM_BOT_TOKEN в Amvera, BOT_TOKEN в коде)
+if (!process.env.BOT_TOKEN && process.env.TELEGRAM_BOT_TOKEN) {
+  process.env.BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 

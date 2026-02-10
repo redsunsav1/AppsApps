@@ -8,4 +8,4 @@ run:
   persistence:
     - mountPath: /data
       hostPath: /data
-  containerPort: 8080
+  containerPort: 80

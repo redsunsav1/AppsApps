@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import WebApp from '@twa-dev/sdk';
+import { getAuthData } from '../utils/auth';
 import { X, ArrowLeft, Loader2, Camera, Building2, Download, Calculator, Lock, Unlock } from 'lucide-react';
 import { ProjectData, ChessUnit, MortgageProgram } from '../types';
 import MortgageCalc from './tools/MortgageCalc';
@@ -61,7 +62,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
             const myBookingsPromise = fetch('/api/bookings/my', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ initData: WebApp.initData })
+                body: JSON.stringify({ initData: getAuthData() })
             }).then(res => res.json()).catch(() => []);
 
             Promise.all([unitsPromise, myBookingsPromise])
@@ -126,7 +127,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    initData: WebApp.initData,
+                    initData: getAuthData(),
                     unitId: bookingUnit.id,
                     projectId: selectedProject.id,
                 }),
@@ -139,7 +140,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
 
             // Step 2: Upload passport → unit becomes BOOKED
             const formData = new FormData();
-            formData.append('initData', WebApp.initData);
+            formData.append('initData', getAuthData());
             formData.append('buyerName', buyerName);
             formData.append('buyerPhone', buyerPhone);
             formData.append('passport', passportFile);
@@ -178,7 +179,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    initData: WebApp.initData,
+                    initData: getAuthData(),
                     unitId: bookingUnit.id,
                 }),
             });

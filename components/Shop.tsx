@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { ShopItem, CurrencyType } from '../types';
 import { Lock, Trash2 } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
+import { getAuthData } from '../utils/auth';
 
 interface MarketplaceProps {
   items?: ShopItem[];
@@ -41,7 +42,7 @@ const Marketplace: React.FC<MarketplaceProps> = ({ items: propItems, silver: sil
 
   const handlePurchase = (item: ShopItem) => {
     if (onPurchase) { onPurchase(item); return; }
-    const initData = WebApp.initData;
+    const initData = getAuthData();
     if (!initData) return;
     fetch('/api/buy', {
       method: 'POST',
@@ -62,7 +63,7 @@ const Marketplace: React.FC<MarketplaceProps> = ({ items: propItems, silver: sil
       await fetch(`/api/products/${productId}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData: WebApp.initData }),
+        body: JSON.stringify({ initData: getAuthData() }),
       });
       setFetchedItems(prev => prev.filter(i => i.id !== productId));
     } catch (e) { console.error('Delete error:', e); }

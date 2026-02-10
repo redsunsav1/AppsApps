@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { ConstructionUpdate } from '../types';
 import { Check, FolderOpen, Image as ImageIcon, X, ChevronLeft, ChevronRight, Edit3, Trash2 } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
+import { getAuthData } from '../utils/auth';
 
 interface ContentHubProps {
   news?: any[];
@@ -24,7 +25,7 @@ const ContentHub: React.FC<ContentHubProps> = ({ news, updates, isAdmin, onEdit,
       await fetch(`/api/news/${newsId}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData: WebApp.initData }),
+        body: JSON.stringify({ initData: getAuthData() }),
       });
       if (onRefresh) onRefresh();
     } catch (e) { console.error('Delete news error:', e); }

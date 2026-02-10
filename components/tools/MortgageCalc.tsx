@@ -101,20 +101,46 @@ const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, pro
 
         {/* Initial Payment */}
         <div>
-          <div className="flex justify-between mb-1">
-            <label className="text-xs font-bold text-brand-grey uppercase">Первоначальный взнос</label>
-            <span className="text-xs font-bold text-brand-gold">{initialPaymentPercent}%</span>
+          <label className="text-xs font-bold text-brand-grey uppercase mb-2 block">Первоначальный взнос</label>
+          {/* Input fields: percentage + absolute amount */}
+          <div className="flex gap-3 mb-3">
+            <div className="relative flex-1">
+              <input
+                type="number"
+                min={0} max={90} step={1}
+                value={initialPaymentPercent}
+                onChange={(e) => {
+                  const v = Math.min(90, Math.max(0, Number(e.target.value)));
+                  setInitialPaymentPercent(v);
+                }}
+                className="w-full bg-brand-cream/50 border border-brand-light rounded-xl py-2.5 px-4 pr-10 text-base font-bold text-brand-black focus:outline-none focus:border-brand-gold"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-brand-grey text-sm font-medium">%</span>
+            </div>
+            <div className="relative flex-[1.5]">
+              <input
+                type="number"
+                min={0}
+                step={100000}
+                value={initialPayment}
+                onChange={(e) => {
+                  const amount = Math.max(0, Number(e.target.value));
+                  const pct = price > 0 ? Math.min(90, Math.max(0, Math.round((amount / price) * 100))) : 0;
+                  setInitialPaymentPercent(pct);
+                }}
+                className="w-full bg-brand-cream/50 border border-brand-light rounded-xl py-2.5 px-4 pr-8 text-base font-bold text-brand-black focus:outline-none focus:border-brand-gold"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-brand-grey text-sm font-medium">₽</span>
+            </div>
           </div>
+          {/* Range slider as secondary control */}
           <input
             type="range"
-            min="10" max="90" step="5"
+            min="0" max="90" step="1"
             value={initialPaymentPercent}
             onChange={(e) => setInitialPaymentPercent(Number(e.target.value))}
             className="w-full h-2 bg-brand-light rounded-lg appearance-none cursor-pointer accent-brand-gold"
           />
-          <div className="mt-2 text-right text-sm font-bold text-brand-black/70">
-            {initialPayment.toLocaleString()} ₽
-          </div>
         </div>
 
         {/* Term & Rate Grid */}

@@ -245,7 +245,18 @@ const App: React.FC = () => {
 
     const inTelegram = isTelegramEnv();
     const initData = getAuthData();
-    const savedToken = getPwaToken();
+    let savedToken = getPwaToken();
+
+    // Путь 0: Если в URL есть ?token=xxx — сохранить и авторизоваться
+    // (ссылка из Telegram для установки PWA)
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlToken = urlParams.get('token');
+    if (urlToken && urlToken.length >= 32) {
+      savePwaToken(urlToken);
+      savedToken = urlToken;
+      // Убрать токен из URL (безопасность)
+      window.history.replaceState({}, '', window.location.pathname);
+    }
 
     // Путь 1: Внутри Telegram — авторизация через initData
     if (inTelegram && initData) {
@@ -270,8 +281,8 @@ const App: React.FC = () => {
       return;
     }
 
-    // Путь 2: Вне Telegram — авторизация через сохранённый PWA-токен
-    if (!inTelegram && savedToken) {
+    // Путь 2: Есть сохранённый токен (PWA, или Telegram-браузер без initData)
+    if (savedToken) {
       fetch('/api/auth/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

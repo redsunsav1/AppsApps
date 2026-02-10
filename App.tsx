@@ -60,6 +60,8 @@ const App: React.FC = () => {
 
   // Missions
   const [missions, setMissions] = useState<Mission[]>([]);
+  // PWA token (for install link in profile)
+  const [pwaToken, setPwaToken] = useState<string>('');
 
   // Mortgage programs (shared between sections and chessboard)
   const [mortgagePrograms, setMortgagePrograms] = useState<MortgageProgram[]>([]);
@@ -206,7 +208,10 @@ const App: React.FC = () => {
   // Общая функция: установить пользователя из ответа сервера
   const applyAuthUser = (sUser: any) => {
     // Сохранить PWA-токен для будущих входов вне Telegram
-    if (sUser.pwa_token) savePwaToken(sUser.pwa_token);
+    if (sUser.pwa_token) {
+      savePwaToken(sUser.pwa_token);
+      setPwaToken(sUser.pwa_token);
+    }
     setUser({
       ...MOCK_DEFAULTS,
       id: String(sUser.telegram_id),
@@ -562,7 +567,7 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-[100dvh] w-full max-w-md mx-auto bg-brand-cream relative shadow-2xl overflow-hidden text-brand-black">
       <div className="flex-1 overflow-y-auto custom-scrollbar pb-24">
-        {activeTab === Tab.PROFILE && <Dashboard user={user} quests={quests} stats={stats} missions={missions} onClaimQuest={onClaimQuest} />}
+        {activeTab === Tab.PROFILE && <Dashboard user={user} quests={quests} stats={stats} missions={missions} onClaimQuest={onClaimQuest} pwaToken={pwaToken} />}
         {activeTab === Tab.CONTENT && <ContentHub news={news} isAdmin={user.is_admin} onEdit={handleOpenEdit} onRefresh={fetchNews} />}
         {activeTab === Tab.MARKET && <Marketplace userSilver={user.silverCoins} userGold={user.goldCoins} isAdmin={user.is_admin} />}
         {activeTab === Tab.SECTIONS && renderSectionsContent()}

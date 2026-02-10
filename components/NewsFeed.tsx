@@ -130,7 +130,7 @@ const NewsDetailModal: React.FC<{ item: ConstructionUpdate, onClose: () => void,
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex flex-col bg-brand-white animate-fade-in text-brand-black">
+        <div className="fixed inset-0 z-[100] flex flex-col bg-brand-white animate-fade-in text-brand-black">
 
             {/* Fixed header with close button — always visible, never hidden by TG header */}
             <div className="shrink-0 flex items-center justify-between px-5 pt-8 pb-3 bg-brand-white border-b border-brand-light z-30">
@@ -157,7 +157,7 @@ const NewsDetailModal: React.FC<{ item: ConstructionUpdate, onClose: () => void,
                         <img
                             src={item.images[currentImage]}
                             alt="Gallery"
-                            className="w-full max-h-[50vh] object-contain bg-brand-light transition-opacity duration-300"
+                            className="w-full max-h-[35vh] object-contain bg-brand-light transition-opacity duration-300"
                         />
 
                         {/* Navigation arrows */}
@@ -176,7 +176,7 @@ const NewsDetailModal: React.FC<{ item: ConstructionUpdate, onClose: () => void,
                 )}
 
                 {/* Text content */}
-                <div className="p-6">
+                <div className="p-6 pb-10">
                     <div className="mb-5">
                         <p className="text-brand-grey text-xs">{item.date}</p>
                         {typeof item.progress === 'number' && item.progress > 0 && (

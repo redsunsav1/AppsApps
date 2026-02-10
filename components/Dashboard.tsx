@@ -1,9 +1,9 @@
 import React, { useRef, useState } from 'react';
 import BookingChecklist from './BookingChecklist';
 import { UserProfile, DailyQuest, ProjectStat, getRank, Mission } from '../types';
-import { ChevronRight, ChevronDown, CheckCircle2, Phone, Send, MessageCircle, FileText, Camera, Target, Trophy, Key, Layers, Crown, MapPin, Globe, User, Flame } from 'lucide-react';
+import { ChevronRight, ChevronDown, CheckCircle2, Phone, Send, MessageCircle, FileText, Camera, Target, Trophy, Key, Layers, Crown, MapPin, Globe, User, Flame, Download, Copy, Check } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
-import { getAuthData } from '../utils/auth';
+import { getAuthData, getPwaToken, isTelegramEnv } from '../utils/auth';
 
 interface DashboardProps {
   user: UserProfile;
@@ -254,6 +254,43 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
           </div>
         )}
       </div>
+
+      {/* PWA Install Section — only shown inside Telegram */}
+      {isTelegramEnv() && getPwaToken() && (
+        <div className="mt-6 px-6">
+          <div className="bg-brand-white rounded-2xl p-5 shadow-sm border border-brand-light">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-xl bg-brand-black flex items-center justify-center">
+                <Download size={18} className="text-brand-gold" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-brand-black">Установить приложение</h3>
+                <p className="text-[11px] text-brand-grey">Работает без Telegram, как обычное приложение</p>
+              </div>
+            </div>
+            <p className="text-xs text-brand-grey mb-3 leading-relaxed">
+              Скопируйте ссылку и откройте её в Safari (iPhone) или Chrome (Android), затем добавьте на домашний экран.
+            </p>
+            <button
+              onClick={() => {
+                const url = `${window.location.origin}/?token=${getPwaToken()}`;
+                navigator.clipboard.writeText(url).then(() => {
+                  const btn = document.getElementById('pwa-copy-btn');
+                  if (btn) { btn.textContent = 'Скопировано!'; setTimeout(() => { btn.textContent = 'Скопировать ссылку'; }, 2000); }
+                }).catch(() => {
+                  // Fallback for browsers that don't support clipboard API
+                  prompt('Скопируйте ссылку:', `${window.location.origin}/?token=${getPwaToken()}`);
+                });
+              }}
+              id="pwa-copy-btn"
+              className="w-full py-3 rounded-xl bg-brand-black text-brand-gold font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.98] transition-transform"
+            >
+              <Copy size={16} />
+              Скопировать ссылку
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Statistics Section */}
       <div className="mt-10 px-6 pb-6">

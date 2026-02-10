@@ -130,76 +130,98 @@ const NewsDetailModal: React.FC<{ item: ConstructionUpdate, onClose: () => void,
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-brand-black/20 backdrop-blur-sm animate-fade-in p-0 sm:p-4">
-            <div className="bg-brand-white w-full h-[90vh] sm:h-auto sm:max-w-md rounded-t-[2rem] sm:rounded-[2rem] overflow-hidden flex flex-col shadow-2xl animate-slide-up text-brand-black">
-                
-                {/* Carousel Header */}
-                <div className="relative h-64 bg-brand-light shrink-0 group">
-                    <img 
-                        src={item.images[currentImage]} 
-                        alt="Gallery" 
-                        className="w-full h-full object-cover transition-opacity duration-300" 
-                    />
-                    <button 
-                        onClick={onClose}
-                        className="absolute top-4 right-4 w-10 h-10 bg-black/20 backdrop-blur-md rounded-full flex items-center justify-center text-white z-20"
-                    >
-                        <X size={20} />
-                    </button>
-                    
-                    {/* Navigation */}
-                    {item.images.length > 1 && (
-                        <>
-                            <button onClick={prevImage} className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-black/20 backdrop-blur text-white rounded-full flex items-center justify-center"><ChevronLeft size={16}/></button>
-                            <button onClick={nextImage} className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-black/20 backdrop-blur text-white rounded-full flex items-center justify-center"><ChevronRight size={16}/></button>
-                            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-1.5">
-                                {item.images.map((_, idx) => (
-                                    <div key={idx} className={`w-1.5 h-1.5 rounded-full transition-all ${idx === currentImage ? 'bg-white scale-125' : 'bg-white/40'}`} />
-                                ))}
-                            </div>
-                        </>
+        <div className="fixed inset-0 z-50 flex flex-col bg-brand-white animate-fade-in text-brand-black">
+
+            {/* Fixed header with close button — always visible, never hidden by TG header */}
+            <div className="shrink-0 flex items-center justify-between px-5 pt-8 pb-3 bg-brand-white border-b border-brand-light z-30">
+                <div className="flex-1 min-w-0">
+                    {item.projectName && (
+                        <span className="text-brand-gold text-[10px] font-bold uppercase tracking-widest block truncate">{item.projectName}</span>
                     )}
+                    <h2 className="text-lg font-bold text-brand-black leading-tight truncate">{item.title}</h2>
                 </div>
+                <button
+                    onClick={onClose}
+                    className="ml-3 w-10 h-10 rounded-full bg-brand-cream flex items-center justify-center text-brand-black shrink-0 hover:bg-brand-light transition-colors"
+                >
+                    <X size={20} />
+                </button>
+            </div>
 
-                {/* Content */}
-                <div className="p-6 overflow-y-auto custom-scrollbar flex-1">
-                    <div className="mb-6">
-                        <span className="text-brand-gold text-xs font-bold uppercase tracking-widest">{item.projectName}</span>
-                        <h2 className="text-2xl font-bold text-brand-black mt-1">{item.title}</h2>
-                        <p className="text-brand-grey text-xs mt-1">{item.date}</p>
-                    </div>
+            {/* Scrollable content */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
 
-                    {/* Check-list style description */}
-                    <div className="space-y-3 mb-8">
-                        <p className="text-brand-black text-sm font-medium leading-relaxed mb-4">
-                            {item.description}
-                        </p>
-                        {item.checklist && item.checklist.length > 0 && (
+                {/* Image carousel — natural aspect ratio, no cropping */}
+                {item.images && item.images.length > 0 && (
+                    <div className="relative bg-brand-light">
+                        <img
+                            src={item.images[currentImage]}
+                            alt="Gallery"
+                            className="w-full max-h-[50vh] object-contain bg-brand-light transition-opacity duration-300"
+                        />
+
+                        {/* Navigation arrows */}
+                        {item.images.length > 1 && (
                             <>
-                                <h4 className="text-sm font-bold text-brand-black border-b border-brand-cream pb-2">Ключевые моменты:</h4>
-                                <ul className="space-y-2">
-                                    {item.checklist.map((point, idx) => (
-                                        <li key={idx} className="flex items-start gap-3 text-sm text-brand-grey">
-                                            <div className="mt-1 w-4 h-4 rounded-full bg-brand-cream flex items-center justify-center shrink-0">
-                                                <Check size={10} className="text-brand-gold" />
-                                            </div>
-                                            {point}
-                                        </li>
+                                <button onClick={prevImage} className="absolute left-3 top-1/2 -translate-y-1/2 w-9 h-9 bg-black/30 backdrop-blur text-white rounded-full flex items-center justify-center"><ChevronLeft size={18}/></button>
+                                <button onClick={nextImage} className="absolute right-3 top-1/2 -translate-y-1/2 w-9 h-9 bg-black/30 backdrop-blur text-white rounded-full flex items-center justify-center"><ChevronRight size={18}/></button>
+                                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5">
+                                    {item.images.map((_, idx) => (
+                                        <div key={idx} className={`w-2 h-2 rounded-full transition-all ${idx === currentImage ? 'bg-brand-gold scale-110' : 'bg-black/30'}`} />
                                     ))}
-                                </ul>
+                                </div>
                             </>
                         )}
                     </div>
+                )}
+
+                {/* Text content */}
+                <div className="p-6">
+                    <div className="mb-5">
+                        <p className="text-brand-grey text-xs">{item.date}</p>
+                        {typeof item.progress === 'number' && item.progress > 0 && (
+                            <div className="mt-2 flex items-center gap-2">
+                                <div className="flex-1 h-1.5 bg-brand-light rounded-full overflow-hidden">
+                                    <div className="h-full bg-brand-gold rounded-full" style={{ width: `${item.progress}%` }} />
+                                </div>
+                                <span className="text-[11px] font-bold text-brand-gold shrink-0">{item.progress}%</span>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Description */}
+                    {item.description && (
+                        <p className="text-brand-black text-sm font-medium leading-relaxed mb-6">
+                            {item.description}
+                        </p>
+                    )}
+
+                    {/* Check-list */}
+                    {item.checklist && item.checklist.length > 0 && (
+                        <div className="mb-6">
+                            <h4 className="text-sm font-bold text-brand-black border-b border-brand-cream pb-2 mb-3">Ключевые моменты:</h4>
+                            <ul className="space-y-2.5">
+                                {item.checklist.map((point, idx) => (
+                                    <li key={idx} className="flex items-start gap-3 text-sm text-brand-grey">
+                                        <div className="mt-0.5 w-5 h-5 rounded-full bg-brand-cream flex items-center justify-center shrink-0">
+                                            <Check size={12} className="text-brand-gold" />
+                                        </div>
+                                        <span className="leading-snug">{point}</span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
 
                     {/* Action Button: Yandex Disk */}
-                    <button 
+                    <button
                         onClick={handleOpenMaterials}
                         className="w-full py-4 rounded-xl bg-brand-black text-brand-gold font-bold text-sm flex items-center justify-center gap-2 shadow-lg active:scale-[0.98]"
                     >
                         <FolderOpen size={18} />
                         Актуальные материалы (Яндекс.Диск)
                     </button>
-                    {item.materialsLink && <div className="text-[10px] text-center mt-2 text-brand-grey">Ссылка на внешнее хранилище</div>}
+                    {item.materialsLink && <div className="text-[10px] text-center mt-2 text-brand-grey mb-4">Ссылка на внешнее хранилище</div>}
                 </div>
             </div>
         </div>

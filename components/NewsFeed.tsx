@@ -1,5 +1,6 @@
 
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ConstructionUpdate } from '../types';
 import { Check, FolderOpen, Image as ImageIcon, X, ChevronLeft, ChevronRight, Edit3, Trash2 } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
@@ -129,12 +130,16 @@ const NewsDetailModal: React.FC<{ item: ConstructionUpdate, onClose: () => void,
         }
     };
 
-    return (
-        <div className="fixed inset-0 z-[100] flex flex-col bg-brand-white animate-fade-in text-brand-black">
-
-            {/* Fixed header with close button — always visible, never hidden by TG header */}
-            <div className="shrink-0 flex items-center justify-between px-5 pt-8 pb-3 bg-brand-white border-b border-brand-light z-30">
-                <div className="flex-1 min-w-0">
+    // Use createPortal to render modal at document.body level,
+    // escaping parent overflow-hidden and stacking context issues in TG WebView
+    return createPortal(
+        <div
+            style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9999, display: 'flex', flexDirection: 'column', background: '#FFFDF7' }}
+            className="animate-fade-in text-brand-black"
+        >
+            {/* Fixed header with close button — always visible above TG header */}
+            <div style={{ flexShrink: 0, paddingTop: '2rem', paddingBottom: '0.75rem', paddingLeft: '1.25rem', paddingRight: '1.25rem', background: '#FFFDF7', borderBottom: '1px solid #F0EDE8', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
                     {item.projectName && (
                         <span className="text-brand-gold text-[10px] font-bold uppercase tracking-widest block truncate">{item.projectName}</span>
                     )}
@@ -142,25 +147,23 @@ const NewsDetailModal: React.FC<{ item: ConstructionUpdate, onClose: () => void,
                 </div>
                 <button
                     onClick={onClose}
-                    className="ml-3 w-10 h-10 rounded-full bg-brand-cream flex items-center justify-center text-brand-black shrink-0 hover:bg-brand-light transition-colors"
+                    style={{ marginLeft: '0.75rem', width: '2.5rem', height: '2.5rem', borderRadius: '50%', background: '#F5F0E8', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, border: 'none', cursor: 'pointer' }}
                 >
-                    <X size={20} />
+                    <X size={20} color="#433830" />
                 </button>
             </div>
 
-            {/* Scrollable content */}
-            <div className="flex-1 overflow-y-auto custom-scrollbar">
+            {/* Scrollable content area — takes remaining height */}
+            <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
 
-                {/* Image carousel — natural aspect ratio, no cropping */}
+                {/* Image carousel — compact, no cropping */}
                 {item.images && item.images.length > 0 && (
-                    <div className="relative bg-brand-light">
+                    <div className="relative" style={{ background: '#F0EDE8' }}>
                         <img
                             src={item.images[currentImage]}
                             alt="Gallery"
-                            className="w-full max-h-[35vh] object-contain bg-brand-light transition-opacity duration-300"
+                            style={{ width: '100%', maxHeight: '30vh', objectFit: 'contain', display: 'block' }}
                         />
-
-                        {/* Navigation arrows */}
                         {item.images.length > 1 && (
                             <>
                                 <button onClick={prevImage} className="absolute left-3 top-1/2 -translate-y-1/2 w-9 h-9 bg-black/30 backdrop-blur text-white rounded-full flex items-center justify-center"><ChevronLeft size={18}/></button>
@@ -175,9 +178,9 @@ const NewsDetailModal: React.FC<{ item: ConstructionUpdate, onClose: () => void,
                     </div>
                 )}
 
-                {/* Text content */}
-                <div className="p-6 pb-10">
-                    <div className="mb-5">
+                {/* Text content — generous bottom padding for safe area */}
+                <div style={{ padding: '1.5rem', paddingBottom: '2rem' }}>
+                    <div className="mb-4">
                         <p className="text-brand-grey text-xs">{item.date}</p>
                         {typeof item.progress === 'number' && item.progress > 0 && (
                             <div className="mt-2 flex items-center gap-2">
@@ -191,14 +194,14 @@ const NewsDetailModal: React.FC<{ item: ConstructionUpdate, onClose: () => void,
 
                     {/* Description */}
                     {item.description && (
-                        <p className="text-brand-black text-sm font-medium leading-relaxed mb-6">
+                        <p className="text-brand-black text-sm font-medium leading-relaxed mb-5">
                             {item.description}
                         </p>
                     )}
 
                     {/* Check-list */}
                     {item.checklist && item.checklist.length > 0 && (
-                        <div className="mb-6">
+                        <div className="mb-5">
                             <h4 className="text-sm font-bold text-brand-black border-b border-brand-cream pb-2 mb-3">Ключевые моменты:</h4>
                             <ul className="space-y-2.5">
                                 {item.checklist.map((point, idx) => (
@@ -224,7 +227,8 @@ const NewsDetailModal: React.FC<{ item: ConstructionUpdate, onClose: () => void,
                     {item.materialsLink && <div className="text-[10px] text-center mt-2 text-brand-grey mb-4">Ссылка на внешнее хранилище</div>}
                 </div>
             </div>
-        </div>
+        </div>,
+        document.body
     );
 };
 

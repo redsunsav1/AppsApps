@@ -562,6 +562,16 @@ async function syncProjectWithXml(projectId, url) {
   }
   console.log('📊 Feed status distribution:', JSON.stringify(feedStatusMap));
 
+  // Сохраняем unit_id с активными бронями ДО удаления
+  const bookedRes = await pool.query(
+    "SELECT DISTINCT unit_id FROM bookings WHERE project_id = $1 AND stage != 'CANCELLED'",
+    [projectId]
+  );
+  const bookedUnitIds = new Set(bookedRes.rows.map(r => r.unit_id));
+  if (bookedUnitIds.size > 0) {
+    console.log(`🔒 Preserving ${bookedUnitIds.size} booked units during sync`);
+  }
+
   await pool.query('DELETE FROM units WHERE project_id = $1', [projectId]);
 
   let maxFloor = buildingFloors || 1;
@@ -601,6 +611,11 @@ async function syncProjectWithXml(projectId, url) {
       } else if (s.includes('book') || s.includes('reserv') || s.includes('бронь') || s.includes('забронир') || s.includes('резерв')) {
         status = 'BOOKED';
       }
+    }
+
+    // 3. Если у юнита есть активная бронь в нашей системе — статус BOOKED, независимо от фида
+    if (bookedUnitIds.has(u.id)) {
+      status = 'BOOKED';
     }
 
     await pool.query(

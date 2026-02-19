@@ -1773,23 +1773,28 @@ app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, re
       await client.query(`UPDATE units SET status = 'BOOKED' WHERE id = $1`, [booking.unit_id]);
     });
 
-    // AmoCRM (асинхронно)
-    const userFull = await pool.query('SELECT * FROM users WHERE id = $1', [booking.user_id]);
+    // AmoCRM: примечание к существующему лиду (лид уже создан при бронировании)
     const passportFile = req.file || null;
-    syncToAmoCRM(booking, userFull.rows[0], unit).then(async (leadId) => {
-      if (leadId) {
-        await pool.query('UPDATE bookings SET amocrm_lead_id = $1, amocrm_synced = TRUE WHERE id = $2', [String(leadId), booking.id]);
-        // Добавляем примечание с полными данными бронирования
-        const noteText = `📋 Данные бронирования\n\n` +
-          `🏠 Квартира: №${unit.number}, этаж ${unit.floor}, ${unit.rooms}-к, ${unit.area} м²\n` +
-          `💰 Цена: ${Number(unit.price).toLocaleString('ru-RU')} ₽\n` +
-          `📁 Проект: ${booking.project_id}\n\n` +
-          `👤 Покупатель: ${buyerName || '—'}\n📞 Телефон покупателя: ${buyerPhone || '—'}\n\n` +
-          `🤝 Риелтор: ${booking.agent_name} (${booking.agent_company})\n📞 Телефон риелтора: ${booking.agent_phone}\n\n` +
-          `📎 Паспорт: ${passportFile ? passportFile.originalname : 'отправлен на email'}`;
-        await attachNoteToAmoCRM(leadId, noteText, passportFile);
-      }
-    }).catch(e => console.error('AmoCRM error:', e));
+    const freshBooking = await pool.query('SELECT amocrm_lead_id FROM bookings WHERE id = $1', [booking.id]);
+    const existingLeadId = freshBooking.rows[0]?.amocrm_lead_id;
+    if (existingLeadId) {
+      const noteText = `📋 Паспорт загружен\n\n` +
+        `🏠 Квартира: №${unit.number}, этаж ${unit.floor}, ${unit.rooms}-к, ${unit.area} м²\n` +
+        `💰 Цена: ${Number(unit.price).toLocaleString('ru-RU')} ₽\n` +
+        `📁 Проект: ${booking.project_id}\n\n` +
+        `👤 Покупатель: ${buyerName || '—'}\n📞 Телефон покупателя: ${buyerPhone || '—'}\n\n` +
+        `🤝 Риелтор: ${booking.agent_name} (${booking.agent_company})\n📞 Телефон риелтора: ${booking.agent_phone}\n\n` +
+        `📎 Паспорт: ${passportFile ? passportFile.originalname : 'отправлен на email'}`;
+      attachNoteToAmoCRM(existingLeadId, noteText, passportFile).catch(e => console.error('AmoCRM note error:', e));
+    } else {
+      // Лид не был создан ранее — создаём сейчас как фоллбек
+      const userFull = await pool.query('SELECT * FROM users WHERE id = $1', [booking.user_id]);
+      syncToAmoCRM(booking, userFull.rows[0], unit).then(async (leadId) => {
+        if (leadId) {
+          await pool.query('UPDATE bookings SET amocrm_lead_id = $1, amocrm_synced = TRUE WHERE id = $2', [String(leadId), booking.id]);
+        }
+      }).catch(e => console.error('AmoCRM fallback error:', e));
+    }
 
     res.json({ success: true, emailSent, stage: 'PASSPORT_SENT' });
   } catch (e) {

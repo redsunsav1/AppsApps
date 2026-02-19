@@ -62,6 +62,29 @@ const EventCalendar: React.FC = () => {
     }
   };
 
+  const handleUnregister = async (eventId: string) => {
+    try {
+      const res = await fetch(`/api/events/${eventId}/unregister`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: getAuthData() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Запись отменена', 'success');
+        setEvents(prev => prev.map(e =>
+          e.id === eventId
+            ? { ...e, isRegistered: false, spotsTaken: Math.max(0, e.spotsTaken - 1) }
+            : e
+        ));
+      } else {
+        showToast(data.error || 'Ошибка отмены', 'error');
+      }
+    } catch (e) {
+      showToast('Ошибка сети', 'error');
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -129,26 +152,27 @@ const EventCalendar: React.FC = () => {
                 </div>
               </div>
 
-              <button
-                onClick={() => handleRegister(event.id)}
-                disabled={event.isRegistered || (isFull && !event.isRegistered)}
-                className={`
-                  w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all
-                  ${event.isRegistered
-                    ? 'bg-green-100 text-green-700 cursor-default'
-                    : isFull
+              {event.isRegistered ? (
+                <button
+                  onClick={() => handleUnregister(event.id)}
+                  className="w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all bg-green-100 text-green-700 hover:bg-red-100 hover:text-red-600 active:scale-[0.98]"
+                >
+                  <CheckCircle2 size={14} /> Вы записаны (отменить)
+                </button>
+              ) : (
+                <button
+                  onClick={() => handleRegister(event.id)}
+                  disabled={isFull}
+                  className={`
+                    w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all
+                    ${isFull
                       ? 'bg-brand-light text-brand-grey cursor-not-allowed'
                       : 'bg-brand-black text-brand-gold hover:bg-brand-black/80 active:scale-[0.98]'}
-                `}
-              >
-                {event.isRegistered ? (
-                  <><CheckCircle2 size={14} /> Вы записаны</>
-                ) : isFull ? (
-                  'Мест нет'
-                ) : (
-                  'Записаться'
-                )}
-              </button>
+                  `}
+                >
+                  {isFull ? 'Мест нет' : 'Записаться'}
+                </button>
+              )}
             </div>
           );
         })}

@@ -1301,8 +1301,7 @@ async function syncToAmoCRM(booking, userData, unitData) {
   try {
     const leadData = [{
       name: `Бронь: кв.${unitData.number} - ${unitData.project_id}`,
-      price: unitData.price || 0,
-      custom_fields_values: [{ field_code: 'PHONE', values: [{ value: userData.phone || '' }] }],
+      price: parseInt(unitData.price) || 0,
       _embedded: { contacts: [{ first_name: userData.first_name || '', custom_fields_values: [{ field_code: 'PHONE', values: [{ value: userData.phone || '' }] }] }] }
     }];
     console.log(`📤 AmoCRM: отправка лида в ${AMOCRM_SUBDOMAIN}.amocrm.ru...`);

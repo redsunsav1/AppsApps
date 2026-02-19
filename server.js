@@ -1294,14 +1294,49 @@ app.get('/api/statistics', async (req, res) => {
 // =============================================
 // AmoCRM sync
 // =============================================
+// Кэш воронок AmoCRM (заполняется при старте)
+let amocrmPipelineCache = { pipelineId: null, statusId: null };
+
+async function fetchAmoCRMPipelines() {
+  const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
+  const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
+  if (!AMOCRM_SUBDOMAIN || !AMOCRM_TOKEN) return;
+  try {
+    const res = await fetch(`https://${AMOCRM_SUBDOMAIN}.amocrm.ru/api/v4/leads/pipelines`, {
+      headers: { 'Authorization': `Bearer ${AMOCRM_TOKEN}` }
+    });
+    if (!res.ok) { console.error('❌ AmoCRM pipelines error:', res.status); return; }
+    const data = await res.json();
+    const pipelines = data?._embedded?.pipelines || [];
+    console.log('📋 AmoCRM воронки:');
+    for (const p of pipelines) {
+      console.log(`  Воронка: "${p.name}" (ID: ${p.id})`);
+      const statuses = p?._embedded?.statuses || [];
+      for (const s of statuses) {
+        console.log(`    Этап: "${s.name}" (ID: ${s.id})`);
+        // Ищем этап "устная бронь" (регистронезависимо)
+        if (s.name.toLowerCase().includes('устн') && s.name.toLowerCase().includes('бронь')) {
+          amocrmPipelineCache = { pipelineId: p.id, statusId: s.id };
+          console.log(`    ✅ Найден этап для бронирования: "${s.name}" (pipeline=${p.id}, status=${s.id})`);
+        }
+      }
+    }
+    if (!amocrmPipelineCache.statusId) {
+      console.warn('⚠️ Этап "Устная бронь" не найден в AmoCRM. Лиды будут создаваться в дефолтном этапе.');
+    }
+  } catch (e) { console.error('❌ AmoCRM pipelines fetch error:', e.message); }
+}
+
 async function syncToAmoCRM(booking, userData, unitData) {
   const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
   const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
   if (!AMOCRM_SUBDOMAIN || !AMOCRM_TOKEN) { console.warn('⚠️ AmoCRM не настроен.'); return null; }
   try {
     const leadData = [{
-      name: `Бронь: кв.${unitData.number} - ${unitData.project_id}`,
+      name: `Бронь: кв.${unitData.number}, ${unitData.rooms}-к, ${unitData.area}м², эт.${unitData.floor} — ${unitData.project_id}`,
       price: parseInt(unitData.price) || 0,
+      ...(amocrmPipelineCache.pipelineId && { pipeline_id: amocrmPipelineCache.pipelineId }),
+      ...(amocrmPipelineCache.statusId && { status_id: amocrmPipelineCache.statusId }),
       _embedded: { contacts: [{ first_name: userData.first_name || '', custom_fields_values: [{ field_code: 'PHONE', values: [{ value: userData.phone || '' }] }] }] }
     }];
     console.log(`📤 AmoCRM: отправка лида в ${AMOCRM_SUBDOMAIN}.amocrm.ru...`);
@@ -1807,6 +1842,7 @@ process.on('SIGTERM', () => { pool.end().then(() => process.exit(0)); });
 // Старт: подключаемся к БД + регистрируем webhook
 initDb().then(() => {
   registerWebhook();
+  fetchAmoCRMPipelines();
   app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 }).catch(err => {
   console.error('❌ Fatal: could not init DB, starting anyway...', err);

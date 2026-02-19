@@ -1685,7 +1685,7 @@ app.post('/api/bookings/my', async (req, res) => {
       SELECT b.*, un.number as unit_number, un.floor as unit_floor, un.area as unit_area,
              un.price as unit_price, un.rooms as unit_rooms, un.status as unit_status, p.name as project_name
       FROM bookings b LEFT JOIN units un ON b.unit_id = un.id LEFT JOIN projects p ON b.project_id = p.id
-      WHERE b.user_id = $1 ORDER BY b.created_at DESC
+      WHERE b.user_id = $1 AND b.stage != 'CANCELLED' ORDER BY b.created_at DESC
     `, [userRes.rows[0].id]);
     res.json(result.rows);
   } catch (e) { console.error('My bookings error:', e); res.status(500).json({ error: 'Server error' }); }

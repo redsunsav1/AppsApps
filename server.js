@@ -1305,14 +1305,37 @@ async function syncToAmoCRM(booking, userData, unitData) {
       custom_fields_values: [{ field_code: 'PHONE', values: [{ value: userData.phone || '' }] }],
       _embedded: { contacts: [{ first_name: userData.first_name || '', custom_fields_values: [{ field_code: 'PHONE', values: [{ value: userData.phone || '' }] }] }] }
     }];
+    console.log(`📤 AmoCRM: отправка лида в ${AMOCRM_SUBDOMAIN}.amocrm.ru...`);
     const response = await fetch(`https://${AMOCRM_SUBDOMAIN}.amocrm.ru/api/v4/leads/complex`, {
       method: 'POST', headers: { 'Authorization': `Bearer ${AMOCRM_TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(leadData)
     });
-    if (!response.ok) return null;
-    const result = await response.json();
-    return result?.[0]?.id || null;
-  } catch (e) { console.error('AmoCRM sync error:', e.message); return null; }
+    const responseText = await response.text();
+    if (!response.ok) {
+      console.error(`❌ AmoCRM error ${response.status}: ${responseText}`);
+      return null;
+    }
+    const result = JSON.parse(responseText);
+    const leadId = result?.[0]?.id || null;
+    console.log(`✅ AmoCRM лид создан: ID=${leadId}`);
+    return leadId;
+  } catch (e) { console.error('❌ AmoCRM sync error:', e.message); return null; }
+}
+
+// Прикрепить примечание с текстом и файлом к лиду в AmoCRM
+async function attachNoteToAmoCRM(leadId, text, file) {
+  const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
+  const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
+  if (!AMOCRM_SUBDOMAIN || !AMOCRM_TOKEN || !leadId) return;
+  try {
+    // Текстовое примечание с данными бронирования
+    await fetch(`https://${AMOCRM_SUBDOMAIN}.amocrm.ru/api/v4/leads/${leadId}/notes`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${AMOCRM_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify([{ note_type: 'common', params: { text } }])
+    });
+    console.log(`📎 AmoCRM: примечание добавлено к лиду ${leadId}`);
+  } catch (e) { console.error('AmoCRM note error:', e.message); }
 }
 
 // =============================================
@@ -1640,8 +1663,20 @@ app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, re
 
     // AmoCRM (асинхронно)
     const userFull = await pool.query('SELECT * FROM users WHERE id = $1', [booking.user_id]);
+    const passportFile = req.file || null;
     syncToAmoCRM(booking, userFull.rows[0], unit).then(async (leadId) => {
-      if (leadId) await pool.query('UPDATE bookings SET amocrm_lead_id = $1, amocrm_synced = TRUE WHERE id = $2', [String(leadId), booking.id]);
+      if (leadId) {
+        await pool.query('UPDATE bookings SET amocrm_lead_id = $1, amocrm_synced = TRUE WHERE id = $2', [String(leadId), booking.id]);
+        // Добавляем примечание с полными данными бронирования
+        const noteText = `📋 Данные бронирования\n\n` +
+          `🏠 Квартира: №${unit.number}, этаж ${unit.floor}, ${unit.rooms}-к, ${unit.area} м²\n` +
+          `💰 Цена: ${Number(unit.price).toLocaleString('ru-RU')} ₽\n` +
+          `📁 Проект: ${booking.project_id}\n\n` +
+          `👤 Покупатель: ${buyerName || '—'}\n📞 Телефон покупателя: ${buyerPhone || '—'}\n\n` +
+          `🤝 Риелтор: ${booking.agent_name} (${booking.agent_company})\n📞 Телефон риелтора: ${booking.agent_phone}\n\n` +
+          `📎 Паспорт: ${passportFile ? passportFile.originalname : 'отправлен на email'}`;
+        await attachNoteToAmoCRM(leadId, noteText, passportFile);
+      }
     }).catch(e => console.error('AmoCRM error:', e));
 
     res.json({ success: true, emailSent, stage: 'PASSPORT_SENT' });

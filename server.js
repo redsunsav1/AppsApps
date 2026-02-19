@@ -288,6 +288,7 @@ const initDb = async () => {
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS consent_transfer_at TIMESTAMP;');
     // 38-ФЗ: застройщик проекта (рекламная пометка)
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS developer_name TEXT;');
+    await pool.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS video_url TEXT;');
 
     // --- Миссии (автоматические достижения) ---
     await pool.query(`CREATE TABLE IF NOT EXISTS missions (
@@ -881,8 +882,8 @@ app.get('/api/news', async (req, res) => {
 app.post('/api/news', async (req, res) => {
   try {
     if (await isAdmin(req.body.initData)) {
-      const { title, text, image_url, project_name, progress, checklist } = req.body;
-      await pool.query('INSERT INTO news (title, text, image_url, project_name, progress, checklist) VALUES ($1, $2, $3, $4, $5, $6)', [title, text, image_url, project_name, progress, JSON.stringify(checklist)]);
+      const { title, text, image_url, video_url, project_name, progress, checklist } = req.body;
+      await pool.query('INSERT INTO news (title, text, image_url, video_url, project_name, progress, checklist) VALUES ($1, $2, $3, $4, $5, $6, $7)', [title, text, image_url, video_url, project_name, progress, JSON.stringify(checklist)]);
       const usersRes = await pool.query('SELECT telegram_id FROM users WHERE is_registered = TRUE');
       const projectLabel = project_name ? ` (${project_name})` : '';
       const newsText = `📰 <b>Новая новость${projectLabel}</b>\n\n${title}\n\n${(text || '').slice(0, 150)}${(text || '').length > 150 ? '...' : ''}`;
@@ -927,8 +928,8 @@ app.delete('/api/news/:id', async (req, res) => {
 app.put('/api/news/:id', async (req, res) => {
   try {
     if (await isAdmin(req.body.initData)) {
-      const { title, text, image_url, project_name, progress, checklist } = req.body;
-      await pool.query(`UPDATE news SET title=$1, text=$2, image_url=$3, project_name=$4, progress=$5, checklist=$6 WHERE id=$7`, [title, text, image_url, project_name, progress, JSON.stringify(checklist), req.params.id]);
+      const { title, text, image_url, video_url, project_name, progress, checklist } = req.body;
+      await pool.query(`UPDATE news SET title=$1, text=$2, image_url=$3, video_url=$4, project_name=$5, progress=$6, checklist=$7 WHERE id=$8`, [title, text, image_url, video_url, project_name, progress, JSON.stringify(checklist), req.params.id]);
       res.json({ success: true });
     } else res.status(403).json({ error: 'Forbidden' });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
@@ -1397,6 +1398,18 @@ app.post('/api/events/:id/register', async (req, res) => {
     notifyUserTelegram(tgUser.id, `✅ Вы записаны на <b>${event.title}</b>!\n📅 ${event.date} в ${event.time || ''}`);
     res.json({ success: true });
   } catch (e) { console.error('Event register error:', e); res.status(500).json({ error: 'Server error' }); }
+});
+
+// Отменить участие в событии
+app.post('/api/events/:id/unregister', async (req, res) => {
+  try {
+    const tgUser = await resolveAuth(req.body.initData);
+    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
+    const userRes = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [tgUser.id]);
+    if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    await pool.query('DELETE FROM event_registrations WHERE event_id = $1 AND user_id = $2', [req.params.id, userRes.rows[0].id]);
+    res.json({ success: true });
+  } catch (e) { console.error('Event unregister error:', e); res.status(500).json({ error: 'Server error' }); }
 });
 
 // =============================================

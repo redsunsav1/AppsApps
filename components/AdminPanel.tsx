@@ -58,6 +58,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [progress, setProgress] = useState(0);
   const [text, setText] = useState('');
   const [image, setImage] = useState('');
+  const [videoUrl, setVideoUrl] = useState('');
   const [checklistRaw, setChecklistRaw] = useState('');
 
   // Import
@@ -120,6 +121,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
       setProgress(editData.progress || 0);
       setText(editData.text);
       setImage(editData.image_url || '');
+      setVideoUrl(editData.video_url || '');
       if (Array.isArray(editData.checklist)) {
         setChecklistRaw(editData.checklist.join('\n'));
       }
@@ -238,7 +240,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     setLoading(true);
     const body = {
       initData: getAuthData(),
-      title, text, image_url: image,
+      title, text, image_url: image, video_url: videoUrl,
       project_name: projectName,
       progress: Number(progress),
       checklist: checklistRaw.split('\n').filter(l => l.trim())
@@ -472,6 +474,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                 </div>
                 <textarea placeholder="Текст..." value={text} onChange={e => setText(e.target.value)} className="p-3 border rounded-lg w-full h-24 text-black bg-gray-50" />
                 <input placeholder="Ссылка на картинку" value={image} onChange={e => setImage(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
+                <input placeholder="Ссылка на видео (Rutube, YouTube, VK)" value={videoUrl} onChange={e => setVideoUrl(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
                 <div><label className="text-xs font-bold text-gray-500 uppercase">Чек-лист:</label><textarea value={checklistRaw} onChange={e => setChecklistRaw(e.target.value)} className="p-3 border rounded-lg w-full h-24 text-black bg-gray-50 mt-1" /></div>
                 <div className="flex gap-2 mt-2 pt-2 border-t">
                     <button onClick={handleSubmitNews} disabled={loading} className="flex-1 bg-[#BA8F50] text-white p-3 rounded-lg font-bold shadow-md">{loading ? '...' : 'Сохранить'}</button>

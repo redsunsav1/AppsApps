@@ -54,6 +54,7 @@ export interface ConstructionUpdate {
   images: string[];
   date: string;
   progress: number;
+  video_url?: string;
 }
 
 export interface ShopItem {

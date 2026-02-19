@@ -136,11 +136,6 @@ const Marketplace: React.FC<MarketplaceProps> = ({ items: propItems, silver: sil
               </div>
 
               <div className="flex-1 flex flex-col">
-                <div className="mb-2">
-                   <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md border ${isGold ? 'text-brand-black/60 border-brand-black/10' : 'text-brand-grey border-brand-cream'}`}>
-                     {item.category}
-                   </span>
-                </div>
                 <h3 className="font-bold text-sm leading-tight mb-1 line-clamp-2 text-brand-black">{item.name}</h3>
                 <div className="mt-auto pt-3">
                     <button

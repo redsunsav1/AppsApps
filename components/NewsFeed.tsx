@@ -178,6 +178,27 @@ const NewsDetailModal: React.FC<{ item: ConstructionUpdate, onClose: () => void,
                     </div>
                 )}
 
+                {/* Video embed */}
+                {item.video_url && (() => {
+                    let embedUrl = '';
+                    const url = item.video_url || '';
+                    if (url.includes('rutube.ru')) {
+                        const match = url.match(/video\/([a-f0-9]+)/);
+                        if (match) embedUrl = `https://rutube.ru/play/embed/${match[1]}`;
+                    } else if (url.includes('youtube.com') || url.includes('youtu.be')) {
+                        const match = url.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]+)/);
+                        if (match) embedUrl = `https://www.youtube.com/embed/${match[1]}`;
+                    } else if (url.includes('vk.com/video')) {
+                        const match = url.match(/video(-?\d+_\d+)/);
+                        if (match) embedUrl = `https://vk.com/video_ext.php?oid=${match[1].split('_')[0]}&id=${match[1].split('_')[1]}`;
+                    }
+                    return embedUrl ? (
+                        <div style={{ position: 'relative', paddingBottom: '56.25%', height: 0, background: '#000' }}>
+                            <iframe src={embedUrl} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', border: 'none' }} allowFullScreen />
+                        </div>
+                    ) : null;
+                })()}
+
                 {/* Text content — generous bottom padding for safe area */}
                 <div style={{ padding: '1.5rem', paddingBottom: '2rem' }}>
                     <div className="mb-4">

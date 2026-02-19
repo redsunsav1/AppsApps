@@ -14,6 +14,7 @@ import { User, Newspaper, ShoppingBag, Grid3X3, LayoutGrid, ArrowLeft, Settings 
 import WebApp from '@twa-dev/sdk';
 import { getAuthData, savePwaToken, getPwaToken, isTelegramEnv } from './utils/auth';
 import { showToast } from './utils/toast';
+import PullToRefresh from './components/PullToRefresh';
 
 enum Tab {
   PROFILE = 'PROFILE',
@@ -91,6 +92,7 @@ const App: React.FC = () => {
           checklist: Array.isArray(item.checklist) ? item.checklist : [],
           date: item.created_at ? new Date(item.created_at).toLocaleDateString('ru-RU') : '',
           materialsLink: item.materials_link || '',
+          video_url: item.video_url || '',
         }));
         setNews(mapped);
       })
@@ -362,6 +364,26 @@ const App: React.FC = () => {
   const handleOpenCreate = () => { setEditingItem(null); setIsAdminModalOpen(true); };
   const handleOpenEdit = (item: any) => { setEditingItem(item); setIsAdminModalOpen(true); };
 
+  const handlePullRefresh = async () => {
+    fetchNews();
+    fetchStats();
+    fetchProjects();
+    fetchMortgagePrograms();
+    // Перезагрузить профиль
+    const authData = getAuthData();
+    if (authData) {
+      try {
+        const res = await fetch('/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData: authData }),
+        });
+        const data = await res.json();
+        if (data.user) applyAuthUser(data.user);
+      } catch {}
+    }
+  };
+
   const onClaimQuest = (questId: string) => {
     fetch('/api/quests/claim', {
       method: 'POST',
@@ -575,12 +597,12 @@ const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-[100dvh] w-full max-w-md mx-auto bg-brand-cream relative shadow-2xl overflow-hidden text-brand-black">
-      <div className="flex-1 overflow-y-auto custom-scrollbar pb-24">
+      <PullToRefresh onRefresh={handlePullRefresh} className="flex-1 overflow-y-auto custom-scrollbar pb-24">
         {activeTab === Tab.PROFILE && <Dashboard user={user} quests={quests} stats={stats} missions={missions} onClaimQuest={onClaimQuest} pwaToken={pwaToken} />}
         {activeTab === Tab.CONTENT && <ContentHub news={news} isAdmin={user.is_admin} onEdit={handleOpenEdit} onRefresh={fetchNews} />}
         {activeTab === Tab.MARKET && <Marketplace userSilver={user.silverCoins} userGold={user.goldCoins} isAdmin={user.is_admin} />}
         {activeTab === Tab.SECTIONS && renderSectionsContent()}
-      </div>
+      </PullToRefresh>
 
       {/* Admin FAB - only for is_admin users */}
       {user.is_admin && !isAdminModalOpen && (

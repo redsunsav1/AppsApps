@@ -37,8 +37,8 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
   const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 500 * 1024) {
-      alert('Фото слишком большое (макс. 500KB)');
+    if (file.size > 1024 * 1024) {
+      alert('Фото слишком большое (макс. 1MB)');
       return;
     }
     const reader = new FileReader();

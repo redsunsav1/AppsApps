@@ -755,7 +755,7 @@ app.post('/api/avatar', async (req, res) => {
     const tgUser = await resolveAuth(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
     if (!avatarData) return res.status(400).json({ error: 'No avatar data' });
-    if (avatarData.length > 700000) return res.status(400).json({ error: 'Image too large' });
+    if (avatarData.length > 1400000) return res.status(400).json({ error: 'Image too large' });
     await pool.query('UPDATE users SET avatar_url = $1 WHERE telegram_id = $2', [avatarData, tgUser.id]);
     res.json({ success: true, avatar_url: avatarData });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
@@ -1679,6 +1679,10 @@ app.post('/api/bookings/:id/documents', upload.array('documents', 10), async (re
     );
 
     await pool.query(`UPDATE bookings SET docs_sent = TRUE, docs_sent_at = NOW(), stage = 'DOCS_SENT' WHERE id = $1`, [req.params.id]);
+    // Увеличиваем счетчик продаж агента
+    await pool.query('UPDATE users SET deals_closed = deals_closed + 1 WHERE id = $1', [booking.user_id]);
+    // Обновляем статус квартиры на SOLD
+    await pool.query(`UPDATE units SET status = 'SOLD' WHERE id = $1`, [booking.unit_id]);
     res.json({ success: true, emailSent, stage: 'DOCS_SENT' });
   } catch (e) {
     console.error('Documents upload error:', e);

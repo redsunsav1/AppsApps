@@ -1294,8 +1294,9 @@ app.get('/api/statistics', async (req, res) => {
 // =============================================
 // AmoCRM sync
 // =============================================
-// Кэш воронок AmoCRM (заполняется при старте)
+// Кэш воронок и кастомных полей AmoCRM (заполняется при старте)
 let amocrmPipelineCache = { pipelineId: null, statusId: null };
+let amocrmFieldsCache = {}; // { 'метраж': fieldId, 'этаж': fieldId, ... }
 
 async function fetchAmoCRMPipelines() {
   const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
@@ -1327,16 +1328,84 @@ async function fetchAmoCRMPipelines() {
   } catch (e) { console.error('❌ AmoCRM pipelines fetch error:', e.message); }
 }
 
+async function fetchAmoCRMCustomFields() {
+  const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
+  const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
+  if (!AMOCRM_SUBDOMAIN || !AMOCRM_TOKEN) return;
+  try {
+    const res = await fetch(`https://${AMOCRM_SUBDOMAIN}.amocrm.ru/api/v4/leads/custom_fields?limit=50`, {
+      headers: { 'Authorization': `Bearer ${AMOCRM_TOKEN}` }
+    });
+    if (!res.ok) { console.error('❌ AmoCRM custom fields error:', res.status); return; }
+    const data = await res.json();
+    const fields = data?._embedded?.custom_fields || [];
+    console.log('📋 AmoCRM кастомные поля лида:');
+    for (const f of fields) {
+      const key = f.name.toLowerCase().trim();
+      amocrmFieldsCache[key] = { id: f.id, type: f.type, name: f.name };
+      console.log(`  "${f.name}" (ID: ${f.id}, type: ${f.type})`);
+    }
+  } catch (e) { console.error('❌ AmoCRM fields fetch error:', e.message); }
+}
+
+function buildAmoCRMCustomFields(unitData, projectName) {
+  const fields = [];
+  const fc = amocrmFieldsCache;
+  const area = parseFloat(unitData.area) || 0;
+  const price = parseInt(unitData.price) || 0;
+  const pricePerSqm = area > 0 ? Math.round(price / area * 100) / 100 : 0;
+
+  // Маппинг: название поля в AmoCRM (lowercase) → значение
+  const mapping = {
+    'метраж': area,
+    'метраж, м2': area,
+    'площадь': area,
+    'этаж': parseInt(unitData.floor) || 0,
+    'номер помещения': unitData.number || '',
+    'цена за м2': pricePerSqm,
+    'цена за м²': pricePerSqm,
+    'подъезд': unitData.section || '',
+    'секция': unitData.section || '',
+    'тип помещения': 'Квартира',
+    'дом': projectName || unitData.project_id || '',
+    'жк': projectName || '',
+    'id помещения': unitData.id || '',
+  };
+
+  for (const [key, value] of Object.entries(mapping)) {
+    if (fc[key] && value !== '' && value !== 0 && value !== null && value !== undefined) {
+      const field = fc[key];
+      let fieldValue;
+      if (field.type === 'numeric') {
+        fieldValue = typeof value === 'number' ? value : parseFloat(value) || 0;
+      } else {
+        fieldValue = String(value);
+      }
+      fields.push({ field_id: field.id, values: [{ value: fieldValue }] });
+    }
+  }
+  return fields.length > 0 ? fields : undefined;
+}
+
 async function syncToAmoCRM(booking, userData, unitData) {
   const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
   const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
   if (!AMOCRM_SUBDOMAIN || !AMOCRM_TOKEN) { console.warn('⚠️ AmoCRM не настроен.'); return null; }
   try {
+    // Получаем имя проекта
+    let projectName = unitData.project_id || '';
+    try {
+      const projRes = await pool.query('SELECT name FROM projects WHERE id = $1', [unitData.project_id]);
+      if (projRes.rows.length > 0) projectName = projRes.rows[0].name;
+    } catch {}
+
+    const customFields = buildAmoCRMCustomFields(unitData, projectName);
     const leadData = [{
-      name: `Бронь: кв.${unitData.number}, ${unitData.rooms}-к, ${unitData.area}м², эт.${unitData.floor} — ${unitData.project_id}`,
+      name: `Бронь: кв.${unitData.number}, ${unitData.rooms}-к, ${unitData.area}м², эт.${unitData.floor} — ${projectName}`,
       price: parseInt(unitData.price) || 0,
       ...(amocrmPipelineCache.pipelineId && { pipeline_id: amocrmPipelineCache.pipelineId }),
       ...(amocrmPipelineCache.statusId && { status_id: amocrmPipelineCache.statusId }),
+      ...(customFields && { custom_fields_values: customFields }),
       _embedded: { contacts: [{ first_name: userData.first_name || '', custom_fields_values: [{ field_code: 'PHONE', values: [{ value: userData.phone || '' }] }] }] }
     }];
     console.log(`📤 AmoCRM: отправка лида в ${AMOCRM_SUBDOMAIN}.amocrm.ru...`);
@@ -1842,7 +1911,7 @@ process.on('SIGTERM', () => { pool.end().then(() => process.exit(0)); });
 // Старт: подключаемся к БД + регистрируем webhook
 initDb().then(() => {
   registerWebhook();
-  fetchAmoCRMPipelines();
+  fetchAmoCRMPipelines().then(() => fetchAmoCRMCustomFields());
   app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 }).catch(err => {
   console.error('❌ Fatal: could not init DB, starting anyway...', err);

@@ -1718,6 +1718,15 @@ app.post('/api/bookings', async (req, res) => {
       );
       return { success: true, bookingId: bookingRes.rows[0].id };
     });
+    // AmoCRM (асинхронно, не блокирует ответ)
+    const unitRes2 = await pool.query('SELECT * FROM units WHERE id = $1', [unitId]);
+    const unitData = unitRes2.rows[0] || {};
+    syncToAmoCRM({ ...result, unit_id: unitId, project_id: unitData.project_id || projectId }, user, unitData).then(async (leadId) => {
+      if (leadId) {
+        await pool.query('UPDATE bookings SET amocrm_lead_id = $1, amocrm_synced = TRUE WHERE id = $2', [String(leadId), result.bookingId]);
+      }
+    }).catch(e => console.error('AmoCRM sync error при бронировании:', e));
+
     // Автопроверка миссий (асинхронно, не блокирует ответ)
     checkMissions(user.id, 'booking').then(rewards => {
       if (rewards.length > 0) console.log(`🎯 Миссии после бронирования user=${user.id}:`, rewards.map(r => r.title).join(', '));
@@ -1859,7 +1868,7 @@ app.post('/api/bookings/all', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
-// Снять бронь (админ ИЛИ автор бронирования)
+// Снять бронь (только админ)
 app.post('/api/bookings/cancel', async (req, res) => {
   try {
     const { initData, unitId } = req.body;
@@ -1872,18 +1881,9 @@ app.post('/api/bookings/cancel', async (req, res) => {
     if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
     const user = userRes.rows[0];
 
-    // Находим активное бронирование на эту квартиру
-    const bookingRes = await pool.query(
-      "SELECT id, user_id FROM bookings WHERE unit_id = $1 AND stage != 'CANCELLED' ORDER BY created_at DESC LIMIT 1",
-      [unitId]
-    );
-    if (bookingRes.rows.length === 0) return res.status(404).json({ error: 'Активное бронирование не найдено' });
-    const booking = bookingRes.rows[0];
-
-    // Проверка прав: админ ИЛИ автор бронирования
-    const isOwner = booking.user_id === user.id;
-    if (!user.is_admin && !isOwner) {
-      return res.status(403).json({ error: 'Только админ или автор бронирования может снять бронь' });
+    // Только админ может снимать бронь
+    if (!user.is_admin) {
+      return res.status(403).json({ error: 'Только администратор может снять бронь' });
     }
 
     await withTransaction(async (client) => {

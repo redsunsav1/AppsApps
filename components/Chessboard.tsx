@@ -485,8 +485,8 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                 </button>
                             )}
 
-                            {/* Cancel Booking - admin OR booking owner */}
-                            {bookingUnit.status === 'BOOKED' && (isAdmin || myBookedUnitIds.has(bookingUnit.id)) && (
+                            {/* Cancel Booking - admin only */}
+                            {bookingUnit.status === 'BOOKED' && isAdmin && (
                                 <button
                                     onClick={handleCancelBooking}
                                     disabled={cancelLoading}

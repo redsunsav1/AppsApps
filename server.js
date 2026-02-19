@@ -48,7 +48,7 @@ setInterval(() => { const now = Date.now(); for (const [k, v] of rlMap) { if (no
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 20,
+  max: 80,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
 });

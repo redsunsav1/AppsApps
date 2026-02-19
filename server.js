@@ -648,7 +648,7 @@ async function syncProjectWithXml(projectId, url) {
   return diag;
 }
 
-cron.schedule('0 10 * * *', async () => {
+cron.schedule('0 */2 * * *', async () => {
   try {
     const res = await pool.query('SELECT id, feed_url FROM projects WHERE feed_url IS NOT NULL');
     for (const project of res.rows) {

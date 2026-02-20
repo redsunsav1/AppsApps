@@ -48,7 +48,7 @@ setInterval(() => { const now = Date.now(); for (const [k, v] of rlMap) { if (no
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 20,
+  max: 80,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
 });
@@ -1391,6 +1391,21 @@ async function syncToAmoCRM(booking, userData, unitData) {
   const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
   const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
   if (!AMOCRM_SUBDOMAIN || !AMOCRM_TOKEN) { console.warn('⚠️ AmoCRM не настроен.'); return null; }
+
+  // Защита от дубликатов: если лид уже создан для этого бронирования — не создаём повторно
+  if (booking.amocrm_lead_id) {
+    console.log(`⏩ AmoCRM: лид уже существует (ID=${booking.amocrm_lead_id}), пропускаем создание`);
+    return booking.amocrm_lead_id;
+  }
+  // Двойная проверка из БД (на случай race condition)
+  try {
+    const check = await pool.query('SELECT amocrm_lead_id FROM bookings WHERE id = $1', [booking.id]);
+    if (check.rows[0]?.amocrm_lead_id) {
+      console.log(`⏩ AmoCRM: лид найден в БД (ID=${check.rows[0].amocrm_lead_id}), пропускаем`);
+      return check.rows[0].amocrm_lead_id;
+    }
+  } catch {}
+
   try {
     // Получаем имя проекта
     let projectName = unitData.project_id || '';
@@ -1718,15 +1733,6 @@ app.post('/api/bookings', async (req, res) => {
       );
       return { success: true, bookingId: bookingRes.rows[0].id };
     });
-    // AmoCRM (асинхронно, не блокирует ответ)
-    const unitRes2 = await pool.query('SELECT * FROM units WHERE id = $1', [unitId]);
-    const unitData = unitRes2.rows[0] || {};
-    syncToAmoCRM({ ...result, unit_id: unitId, project_id: unitData.project_id || projectId }, user, unitData).then(async (leadId) => {
-      if (leadId) {
-        await pool.query('UPDATE bookings SET amocrm_lead_id = $1, amocrm_synced = TRUE WHERE id = $2', [String(leadId), result.bookingId]);
-      }
-    }).catch(e => console.error('AmoCRM sync error при бронировании:', e));
-
     // Автопроверка миссий (асинхронно, не блокирует ответ)
     checkMissions(user.id, 'booking').then(rewards => {
       if (rewards.length > 0) console.log(`🎯 Миссии после бронирования user=${user.id}:`, rewards.map(r => r.title).join(', '));
@@ -1773,13 +1779,16 @@ app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, re
       await client.query(`UPDATE units SET status = 'BOOKED' WHERE id = $1`, [booking.unit_id]);
     });
 
-    // AmoCRM (асинхронно)
+    // AmoCRM: создаём лид при загрузке паспорта (когда есть все данные покупателя)
+    console.log(`🔖 [PASSPORT endpoint] booking #${booking.id}: вызываю syncToAmoCRM`);
     const userFull = await pool.query('SELECT * FROM users WHERE id = $1', [booking.user_id]);
+    // Перечитываем booking из БД — может уже быть amocrm_lead_id (от параллельного вызова)
+    const freshBooking = await pool.query('SELECT * FROM bookings WHERE id = $1', [booking.id]);
+    const bookingForCRM = { ...booking, amocrm_lead_id: freshBooking.rows[0]?.amocrm_lead_id || booking.amocrm_lead_id };
     const passportFile = req.file || null;
-    syncToAmoCRM(booking, userFull.rows[0], unit).then(async (leadId) => {
+    syncToAmoCRM(bookingForCRM, userFull.rows[0], unit).then(async (leadId) => {
       if (leadId) {
         await pool.query('UPDATE bookings SET amocrm_lead_id = $1, amocrm_synced = TRUE WHERE id = $2', [String(leadId), booking.id]);
-        // Добавляем примечание с полными данными бронирования
         const noteText = `📋 Данные бронирования\n\n` +
           `🏠 Квартира: №${unit.number}, этаж ${unit.floor}, ${unit.rooms}-к, ${unit.area} м²\n` +
           `💰 Цена: ${Number(unit.price).toLocaleString('ru-RU')} ₽\n` +
@@ -1912,7 +1921,7 @@ process.on('SIGTERM', () => { pool.end().then(() => process.exit(0)); });
 initDb().then(() => {
   registerWebhook();
   fetchAmoCRMPipelines().then(() => fetchAmoCRMCustomFields());
-  app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+  app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT} | v2025-02-20-dedup`));
 }).catch(err => {
   console.error('❌ Fatal: could not init DB, starting anyway...', err);
   app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT} (DB may be unavailable)`));

@@ -1391,6 +1391,21 @@ async function syncToAmoCRM(booking, userData, unitData) {
   const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
   const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
   if (!AMOCRM_SUBDOMAIN || !AMOCRM_TOKEN) { console.warn('⚠️ AmoCRM не настроен.'); return null; }
+
+  // Защита от дубликатов: если лид уже создан для этого бронирования — не создаём повторно
+  if (booking.amocrm_lead_id) {
+    console.log(`⏩ AmoCRM: лид уже существует (ID=${booking.amocrm_lead_id}), пропускаем создание`);
+    return booking.amocrm_lead_id;
+  }
+  // Двойная проверка из БД (на случай race condition)
+  try {
+    const check = await pool.query('SELECT amocrm_lead_id FROM bookings WHERE id = $1', [booking.id]);
+    if (check.rows[0]?.amocrm_lead_id) {
+      console.log(`⏩ AmoCRM: лид найден в БД (ID=${check.rows[0].amocrm_lead_id}), пропускаем`);
+      return check.rows[0].amocrm_lead_id;
+    }
+  } catch {}
+
   try {
     // Получаем имя проекта
     let projectName = unitData.project_id || '';
@@ -1765,9 +1780,13 @@ app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, re
     });
 
     // AmoCRM: создаём лид при загрузке паспорта (когда есть все данные покупателя)
+    console.log(`🔖 [PASSPORT endpoint] booking #${booking.id}: вызываю syncToAmoCRM`);
     const userFull = await pool.query('SELECT * FROM users WHERE id = $1', [booking.user_id]);
+    // Перечитываем booking из БД — может уже быть amocrm_lead_id (от параллельного вызова)
+    const freshBooking = await pool.query('SELECT * FROM bookings WHERE id = $1', [booking.id]);
+    const bookingForCRM = { ...booking, amocrm_lead_id: freshBooking.rows[0]?.amocrm_lead_id || booking.amocrm_lead_id };
     const passportFile = req.file || null;
-    syncToAmoCRM(booking, userFull.rows[0], unit).then(async (leadId) => {
+    syncToAmoCRM(bookingForCRM, userFull.rows[0], unit).then(async (leadId) => {
       if (leadId) {
         await pool.query('UPDATE bookings SET amocrm_lead_id = $1, amocrm_synced = TRUE WHERE id = $2', [String(leadId), booking.id]);
         const noteText = `📋 Данные бронирования\n\n` +
@@ -1902,7 +1921,7 @@ process.on('SIGTERM', () => { pool.end().then(() => process.exit(0)); });
 initDb().then(() => {
   registerWebhook();
   fetchAmoCRMPipelines().then(() => fetchAmoCRMCustomFields());
-  app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+  app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT} | v2025-02-20-dedup`));
 }).catch(err => {
   console.error('❌ Fatal: could not init DB, starting anyway...', err);
   app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT} (DB may be unavailable)`));

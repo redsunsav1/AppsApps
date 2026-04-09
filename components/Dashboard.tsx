@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import BookingChecklist from './BookingChecklist';
 import { UserProfile, DailyQuest, ProjectStat, getRank, Mission } from '../types';
 import { ChevronRight, ChevronDown, CheckCircle2, Phone, Send, MessageCircle, FileText, Camera, Target, Trophy, Key, Layers, Crown, MapPin, Globe, User, Flame, Download, Copy } from 'lucide-react';
@@ -29,6 +29,28 @@ const MISSION_ICONS: Record<string, React.ReactNode> = {
 const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, onClaimQuest, pwaToken }) => {
   const progressPercent = (user.currentXP / user.nextLevelXP) * 100;
   const currentRank = getRank(user.dealsClosed);
+
+  const [mySales, setMySales] = useState<{ project: string; count: number }[]>([]);
+
+  useEffect(() => {
+    fetch('/api/bookings/my', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: getAuthData() }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (!Array.isArray(data)) return;
+        const completed = data.filter((b: any) => b.stage === 'COMPLETE');
+        const grouped: Record<string, number> = {};
+        completed.forEach((b: any) => {
+          const name = b.project_name || 'Без проекта';
+          grouped[name] = (grouped[name] || 0) + 1;
+        });
+        setMySales(Object.entries(grouped).map(([project, count]) => ({ project, count })));
+      })
+      .catch(() => {});
+  }, []);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [avatarUrl, setAvatarUrl] = useState(user.avatar || '');
@@ -306,9 +328,21 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
                   })}
               </div>
 
-              <div className="mt-6 pt-4 border-t border-brand-light flex justify-between items-center">
-                  <span className="text-xs text-brand-grey font-medium">Ваших сделок</span>
-                  <span className="text-xl font-black text-brand-black">{user.dealsClosed}</span>
+              <div className="mt-6 pt-4 border-t border-brand-light">
+                  <div className="flex justify-between items-center">
+                      <span className="text-xs text-brand-grey font-medium">Ваших сделок</span>
+                      <span className="text-xl font-black text-brand-black">{user.dealsClosed}</span>
+                  </div>
+                  {mySales.length > 0 && (
+                      <div className="mt-2 space-y-1">
+                          {mySales.map(s => (
+                              <div key={s.project} className="flex justify-between items-center">
+                                  <span className="text-xs text-brand-grey">{s.project}</span>
+                                  <span className="text-xs font-bold text-brand-black">продано ({s.count})</span>
+                              </div>
+                          ))}
+                      </div>
+                  )}
               </div>
           </div>
       </div>

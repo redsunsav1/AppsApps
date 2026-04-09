@@ -117,13 +117,13 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
          </div>
       </div>
 
-      {/* Business Card / Contacts */}
+      {/* Contact Developer */}
       <div className="mt-6 mx-4">
          <div className="bg-white rounded-2xl p-5 shadow-sm border border-brand-light">
-            <h3 className="text-sm font-bold text-brand-black mb-4 uppercase tracking-wide opacity-70">Визитка</h3>
+            <h3 className="text-sm font-bold text-brand-black mb-4 uppercase tracking-wide opacity-70">Связь с застройщиком</h3>
 
-            <div className="grid grid-cols-3 gap-3">
-                <a href={`https://t.me/${(user.telegram || '').replace('@', '')}`} target="_blank" rel="noreferrer"
+            <div className="grid grid-cols-2 gap-3">
+                <a href="https://t.me/gk_horosho" target="_blank" rel="noreferrer"
                    className="flex flex-col items-center justify-center gap-2 py-4 bg-blue-50 rounded-xl border border-blue-100 active:scale-[0.97] transition-transform">
                     <div className="w-10 h-10 bg-blue-500 text-white rounded-full flex items-center justify-center shadow-md shadow-blue-200">
                         <Send size={18} className="-ml-0.5 mt-0.5" />
@@ -131,15 +131,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
                     <span className="text-[10px] font-bold text-blue-600">Telegram</span>
                 </a>
 
-                <a href={`https://wa.me/${(user.whatsapp || '').replace(/[^0-9]/g, '')}`} target="_blank" rel="noreferrer"
-                   className="flex flex-col items-center justify-center gap-2 py-4 bg-green-50 rounded-xl border border-green-100 active:scale-[0.97] transition-transform">
-                    <div className="w-10 h-10 bg-green-500 text-white rounded-full flex items-center justify-center shadow-md shadow-green-200">
-                        <MessageCircle size={18} />
-                    </div>
-                    <span className="text-[10px] font-bold text-green-600">WhatsApp</span>
-                </a>
-
-                <a href={`tel:${user.phone}`}
+                <a href="tel:+78512432222"
                    className="flex flex-col items-center justify-center gap-2 py-4 bg-brand-cream rounded-xl border border-brand-beige active:scale-[0.97] transition-transform">
                     <div className="w-10 h-10 bg-brand-black text-brand-gold rounded-full flex items-center justify-center shadow-md">
                         <Phone size={18} />
@@ -149,7 +141,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
             </div>
 
             <div className="mt-4 flex justify-center">
-                <p className="text-xs text-brand-grey font-medium">{user.phone}</p>
+                <p className="text-xs text-brand-grey font-medium">+7 (8512) 43-22-22</p>
             </div>
          </div>
       </div>
@@ -291,25 +283,32 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
           <h3 className="text-lg font-bold text-brand-black mb-4">Статистика продаж</h3>
           <div className="bg-brand-white rounded-3xl p-6 shadow-sm border border-brand-light">
               <div className="space-y-6">
-                  {stats.map(stat => (
-                      <div key={stat.id}>
-                          <div className="flex justify-between items-end mb-2">
-                              <span className="text-sm font-bold text-brand-black">{stat.name}</span>
-                              <span className="text-xs font-medium text-brand-grey">{stat.sales} / {stat.totalUnits} кв.</span>
+                  {stats.map(stat => {
+                      const percent = stat.totalUnits > 0 ? Math.round((stat.sales / stat.totalUnits) * 100) : 0;
+                      return (
+                          <div key={stat.id}>
+                              <div className="flex justify-between items-end mb-1">
+                                  <span className="text-sm font-bold text-brand-black">{stat.name}</span>
+                                  <span className="text-xs font-medium text-brand-grey">{percent}% продано</span>
+                              </div>
+                              <div className="flex justify-between items-center text-[10px] text-brand-grey mb-1.5">
+                                  <span>Продано {stat.sales} из {stat.totalUnits} кв.</span>
+                                  <span>Свободно {stat.totalUnits - stat.sales}</span>
+                              </div>
+                              <div className="h-2.5 w-full bg-brand-cream rounded-full overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full transition-all duration-700 ${stat.color}`}
+                                    style={{ width: `${percent}%` }}
+                                  ></div>
+                              </div>
                           </div>
-                          <div className="h-2 w-full bg-brand-cream rounded-full overflow-hidden">
-                              <div
-                                className={`h-full rounded-full ${stat.color}`}
-                                style={{ width: `${(stat.sales / 20) * 100}%` }}
-                              ></div>
-                          </div>
-                      </div>
-                  ))}
+                      );
+                  })}
               </div>
 
               <div className="mt-6 pt-4 border-t border-brand-light flex justify-between items-center">
-                  <span className="text-xs text-brand-grey font-medium">Всего за месяц</span>
-                  <span className="text-xl font-black text-brand-black">{user.dealsClosed} сделок</span>
+                  <span className="text-xs text-brand-grey font-medium">Ваших сделок</span>
+                  <span className="text-xl font-black text-brand-black">{user.dealsClosed}</span>
               </div>
           </div>
       </div>

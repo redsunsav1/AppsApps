@@ -228,9 +228,9 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex flex-col bg-brand-cream animate-fade-in text-brand-black">
+        <div className="fixed inset-0 z-50 flex flex-col bg-brand-cream animate-fade-in text-brand-black" style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
 
-            <div className="px-6 pt-8 pb-4 flex justify-between items-center bg-brand-white border-b border-brand-light">
+            <div className="px-6 pt-4 pb-4 flex justify-between items-center bg-brand-white border-b border-brand-light">
                 {selectedProject ? (
                     <button onClick={() => setSelectedProject(null)} className="flex items-center gap-2 text-brand-black font-bold hover:text-brand-gold transition-colors active:opacity-60">
                         <ArrowLeft size={20} /> К проектам

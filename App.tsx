@@ -606,7 +606,7 @@ const App: React.FC = () => {
 
       {/* Admin FAB - only for is_admin users */}
       {user.is_admin && !isAdminModalOpen && (
-        <button onClick={handleOpenCreate} style={{ position: 'fixed', bottom: '90px', right: '20px', background: '#433830', color: '#BA8F50', border: 'none', borderRadius: '50%', width: '50px', height: '50px', fontSize: '24px', zIndex: 100, cursor: 'pointer', boxShadow: '0 4px 10px rgba(0,0,0,0.3)' }}>
+        <button onClick={handleOpenCreate} className="fixed z-[100] w-[50px] h-[50px] rounded-full bg-brand-black text-brand-gold flex items-center justify-center shadow-lg cursor-pointer" style={{ bottom: 'calc(90px + env(safe-area-inset-bottom, 0px))', right: '20px' }}>
           <Settings size={20} style={{ margin: 'auto' }} />
         </button>
       )}
@@ -614,7 +614,7 @@ const App: React.FC = () => {
       {isAdminModalOpen && <AdminPanel onNewsAdded={fetchNews} onClose={() => setIsAdminModalOpen(false)} editData={editingItem} />}
 
       {/* Bottom Navigation */}
-      <div className="fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-gray-200 pb-6 pt-2">
+      <div className="fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-gray-200 pb-safe pt-2">
         <div className="flex justify-around items-center h-[60px] px-2 max-w-md mx-auto">
           <NavBtn icon={User} label="Профиль" active={activeTab === Tab.PROFILE} onClick={() => setActiveTab(Tab.PROFILE)} />
           <NavBtn icon={Newspaper} label="Новости" active={activeTab === Tab.CONTENT} onClick={() => { setActiveTab(Tab.CONTENT); markNewsSeen(); }} badge={unreadNewsCount} />

@@ -152,6 +152,18 @@ const EventCalendar: React.FC = () => {
                 </div>
               </div>
 
+              {/* RSVP deadline warning */}
+              {(event as any).rsvp_deadline && !event.isRegistered && new Date((event as any).rsvp_deadline) > new Date() && (
+                <div className="text-[11px] text-amber-600 font-medium bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-100">
+                  ⏳ Запись до {new Date((event as any).rsvp_deadline).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                </div>
+              )}
+              {(event as any).rsvp_deadline && !event.isRegistered && new Date((event as any).rsvp_deadline) <= new Date() && (
+                <div className="text-[11px] text-red-500 font-medium bg-red-50 px-3 py-1.5 rounded-lg border border-red-100">
+                  Время записи истекло
+                </div>
+              )}
+
               {event.isRegistered ? (
                 <button
                   onClick={() => handleUnregister(event.id)}

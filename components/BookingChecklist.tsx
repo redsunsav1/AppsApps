@@ -98,7 +98,7 @@ const BookingChecklist: React.FC = () => {
           { label: 'Бронирование создано', done: stageIdx >= 0 },
           { label: 'Паспорт покупателя отправлен', done: stageIdx >= 1 },
           { label: 'Документы для ипотеки', done: stageIdx >= 2 },
-          { label: 'Ожидание одобрения', done: stageIdx >= 3 },
+          { label: 'Ожидание подтверждения сделки', done: stageIdx >= 3 },
         ];
 
         return (

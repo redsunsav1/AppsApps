@@ -328,6 +328,24 @@ const initDb = async () => {
     await pool.query('CREATE INDEX IF NOT EXISTS idx_ev_date ON events(date);');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_evreg ON event_registrations(event_id, user_id);');
 
+    // --- События: приватные + дедлайн RSVP ---
+    await pool.query('ALTER TABLE events ADD COLUMN IF NOT EXISTS is_private BOOLEAN DEFAULT FALSE;');
+    await pool.query('ALTER TABLE events ADD COLUMN IF NOT EXISTS rsvp_deadline TIMESTAMP;');
+    await pool.query(`CREATE TABLE IF NOT EXISTS event_invitations (
+      id SERIAL PRIMARY KEY,
+      event_id INT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(event_id, user_id)
+    );`);
+    // --- Ипотека: мин. первоначальный взнос (глобальная настройка) ---
+    await pool.query(`CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );`);
+    await pool.query(`INSERT INTO app_settings (key, value) VALUES ('min_down_payment_percent', '10') ON CONFLICT DO NOTHING;`);
+
     // Сид-данные
     const projCheck = await pool.query('SELECT count(*) FROM projects');
     if (parseInt(projCheck.rows[0].count) === 0) {
@@ -1147,7 +1165,7 @@ app.post('/api/admin/users', async (req, res) => {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
     const result = await pool.query(
       `SELECT id, telegram_id, username, first_name, last_name, company, company_type, phone,
-              is_registered, is_admin, approval_status, balance, gold_balance, xp_points, deals_closed, created_at
+              is_registered, is_admin, approval_status, balance, gold_balance, xp_points, deals_closed, avatar_url, created_at
        FROM users ORDER BY created_at DESC`
     );
     res.json(result.rows);
@@ -1271,6 +1289,32 @@ app.delete('/api/quests/:id', async (req, res) => {
   try {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
     await pool.query('UPDATE quests SET is_active = FALSE WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// =============================================
+// API: НАСТРОЙКИ ПРИЛОЖЕНИЯ
+// =============================================
+app.get('/api/settings', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT key, value FROM app_settings');
+    const settings = {};
+    for (const row of result.rows) settings[row.key] = row.value;
+    res.json(settings);
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+app.post('/api/settings', async (req, res) => {
+  try {
+    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    const { key, value } = req.body;
+    if (!key || value === undefined) return res.status(400).json({ error: 'key and value required' });
+    await pool.query(
+      `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, NOW())
+       ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+      [key, String(value)]
+    );
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -1474,16 +1518,20 @@ app.post('/api/events/list', async (req, res) => {
     }
     let result;
     if (userId) {
+      // Показываем: все публичные + приватные, на которые пользователь приглашён
       result = await pool.query(`
         SELECT e.*, (SELECT COUNT(*) FROM event_registrations WHERE event_id = e.id)::int as spots_taken,
           EXISTS(SELECT 1 FROM event_registrations WHERE event_id = e.id AND user_id = $1) as is_registered
-        FROM events e ORDER BY e.date ASC, e.time ASC
+        FROM events e
+        WHERE e.is_private = FALSE
+           OR EXISTS(SELECT 1 FROM event_invitations WHERE event_id = e.id AND user_id = $1)
+        ORDER BY e.date ASC, e.time ASC
       `, [userId]);
     } else {
       result = await pool.query(`
         SELECT e.*, (SELECT COUNT(*) FROM event_registrations WHERE event_id = e.id)::int as spots_taken,
           false as is_registered
-        FROM events e ORDER BY e.date ASC, e.time ASC
+        FROM events e WHERE e.is_private = FALSE ORDER BY e.date ASC, e.time ASC
       `);
     }
     res.json(result.rows);
@@ -1494,11 +1542,19 @@ app.post('/api/events/list', async (req, res) => {
 app.post('/api/events', async (req, res) => {
   try {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
-    const { title, description, date, time, type, spots_total } = req.body;
+    const { title, description, date, time, type, spots_total, is_private, rsvp_deadline, invited_user_ids } = req.body;
     if (!title || !date) return res.status(400).json({ error: 'title and date required' });
-    await pool.query('INSERT INTO events (title, description, date, time, type, spots_total) VALUES ($1,$2,$3,$4,$5,$6)',
-      [title, description || '', date, time || '10:00', type || 'TOUR', spots_total || 30]);
-    res.json({ success: true });
+    const eventRes = await pool.query(
+      'INSERT INTO events (title, description, date, time, type, spots_total, is_private, rsvp_deadline) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
+      [title, description || '', date, time || '10:00', type || 'TOUR', spots_total || 30, is_private || false, rsvp_deadline || null]);
+    const eventId = eventRes.rows[0].id;
+    // Добавляем приглашения для приватного события
+    if (is_private && Array.isArray(invited_user_ids) && invited_user_ids.length > 0) {
+      for (const uid of invited_user_ids) {
+        await pool.query('INSERT INTO event_invitations (event_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [eventId, uid]);
+      }
+    }
+    res.json({ success: true, eventId });
   } catch (e) { console.error('Create event error:', e); res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -1506,9 +1562,16 @@ app.post('/api/events', async (req, res) => {
 app.put('/api/events/:id', async (req, res) => {
   try {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
-    const { title, description, date, time, type, spots_total } = req.body;
-    await pool.query('UPDATE events SET title=$1, description=$2, date=$3, time=$4, type=$5, spots_total=$6 WHERE id=$7',
-      [title, description, date, time, type, spots_total, req.params.id]);
+    const { title, description, date, time, type, spots_total, is_private, rsvp_deadline, invited_user_ids } = req.body;
+    await pool.query('UPDATE events SET title=$1, description=$2, date=$3, time=$4, type=$5, spots_total=$6, is_private=$7, rsvp_deadline=$8 WHERE id=$9',
+      [title, description, date, time, type, spots_total, is_private || false, rsvp_deadline || null, req.params.id]);
+    // Обновляем приглашения
+    if (is_private && Array.isArray(invited_user_ids)) {
+      await pool.query('DELETE FROM event_invitations WHERE event_id = $1', [req.params.id]);
+      for (const uid of invited_user_ids) {
+        await pool.query('INSERT INTO event_invitations (event_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, uid]);
+      }
+    }
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -1533,6 +1596,10 @@ app.post('/api/events/:id/register', async (req, res) => {
     const eventRes = await pool.query('SELECT * FROM events WHERE id = $1', [req.params.id]);
     if (eventRes.rows.length === 0) return res.status(404).json({ error: 'Event not found' });
     const event = eventRes.rows[0];
+    // Проверка дедлайна RSVP
+    if (event.rsvp_deadline && new Date() > new Date(event.rsvp_deadline)) {
+      return res.status(400).json({ error: 'Время регистрации истекло' });
+    }
     const countRes = await pool.query('SELECT COUNT(*) FROM event_registrations WHERE event_id = $1', [req.params.id]);
     if (parseInt(countRes.rows[0].count) >= event.spots_total) return res.status(400).json({ error: 'Мест нет' });
     await pool.query('INSERT INTO event_registrations (event_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, userId]);
@@ -1835,15 +1902,61 @@ app.post('/api/bookings/:id/documents', upload.array('documents', 10), async (re
     );
 
     await pool.query(`UPDATE bookings SET docs_sent = TRUE, docs_sent_at = NOW(), stage = 'DOCS_SENT' WHERE id = $1`, [req.params.id]);
-    // Увеличиваем счетчик продаж агента
-    await pool.query('UPDATE users SET deals_closed = deals_closed + 1 WHERE id = $1', [booking.user_id]);
-    // Обновляем статус квартиры на SOLD
-    await pool.query(`UPDATE units SET status = 'SOLD' WHERE id = $1`, [booking.unit_id]);
+    // Квартира остаётся BOOKED, deals_closed НЕ увеличивается
+    // Сделка подтверждается админом через /api/bookings/:id/complete
     res.json({ success: true, emailSent, stage: 'DOCS_SENT' });
   } catch (e) {
     console.error('Documents upload error:', e);
     res.status(500).json({ error: 'Server error' });
   }
+});
+
+// Подтверждение сделки (только админ) — присуждает золотую монету
+app.post('/api/bookings/:id/complete', async (req, res) => {
+  try {
+    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    const bookingRes = await pool.query('SELECT * FROM bookings WHERE id = $1', [req.params.id]);
+    if (bookingRes.rows.length === 0) return res.status(404).json({ error: 'Booking not found' });
+    const booking = bookingRes.rows[0];
+    if (booking.stage === 'COMPLETE') return res.status(400).json({ error: 'Сделка уже подтверждена' });
+    if (booking.stage !== 'DOCS_SENT') return res.status(400).json({ error: 'Документы ещё не отправлены' });
+
+    await withTransaction(async (client) => {
+      await client.query(`UPDATE bookings SET stage = 'COMPLETE' WHERE id = $1`, [booking.id]);
+      await client.query(`UPDATE units SET status = 'SOLD' WHERE id = $1`, [booking.unit_id]);
+      await client.query('UPDATE users SET deals_closed = deals_closed + 1, gold_balance = gold_balance + 1 WHERE id = $1', [booking.user_id]);
+    });
+
+    // Уведомление риелтору
+    const userRes = await pool.query('SELECT telegram_id, first_name FROM users WHERE id = $1', [booking.user_id]);
+    if (userRes.rows[0]) {
+      notifyUserTelegram(userRes.rows[0].telegram_id,
+        `🎉 <b>Сделка подтверждена!</b>\n\nПоздравляем, ${userRes.rows[0].first_name || 'партнёр'}! Вам начислена 1 золотая монета 🪙`);
+    }
+    checkMissions(booking.user_id, 'booking').catch(() => {});
+    console.log(`✅ Сделка подтверждена: booking=${booking.id}, user=${booking.user_id}, +1 gold`);
+    res.json({ success: true, stage: 'COMPLETE' });
+  } catch (e) { console.error('Complete booking error:', e); res.status(500).json({ error: 'Server error' }); }
+});
+
+// Отмена подтверждения сделки (только админ) — отзыв золотой монеты
+app.post('/api/bookings/:id/revoke', async (req, res) => {
+  try {
+    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    const bookingRes = await pool.query('SELECT * FROM bookings WHERE id = $1', [req.params.id]);
+    if (bookingRes.rows.length === 0) return res.status(404).json({ error: 'Booking not found' });
+    const booking = bookingRes.rows[0];
+    if (booking.stage !== 'COMPLETE') return res.status(400).json({ error: 'Сделка не была подтверждена' });
+
+    await withTransaction(async (client) => {
+      await client.query(`UPDATE bookings SET stage = 'DOCS_SENT' WHERE id = $1`, [booking.id]);
+      await client.query(`UPDATE units SET status = 'BOOKED' WHERE id = $1`, [booking.unit_id]);
+      await client.query('UPDATE users SET deals_closed = GREATEST(deals_closed - 1, 0), gold_balance = GREATEST(gold_balance - 1, 0) WHERE id = $1', [booking.user_id]);
+    });
+
+    console.log(`🔄 Сделка отозвана: booking=${booking.id}, user=${booking.user_id}, -1 gold`);
+    res.json({ success: true, stage: 'DOCS_SENT' });
+  } catch (e) { console.error('Revoke booking error:', e); res.status(500).json({ error: 'Server error' }); }
 });
 
 // Мои бронирования

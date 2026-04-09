@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { getAuthData } from '../utils/auth';
-import { Newspaper, Building2, Link, ShoppingBag, Zap, Trash2, UserCheck, Users, Calendar, Calculator, Edit3 } from 'lucide-react';
+import { Newspaper, Building2, Link, ShoppingBag, Zap, Trash2, UserCheck, Users, Calendar, Calculator, Edit3, X, Phone, Send, ChevronRight, Database, ArrowLeft } from 'lucide-react';
 import { showToast } from '../utils/toast';
+import { getRank } from '../types';
 
 interface AdminPanelProps {
   onNewsAdded: () => void;
@@ -50,7 +51,13 @@ interface MortgageProgramItem {
 }
 
 export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) => {
-  const [activeTab, setActiveTab] = useState<'news' | 'import' | 'shop' | 'quests' | 'applications' | 'users' | 'events' | 'mortgage' | 'projects'>('news');
+  const [activeTab, setActiveTab] = useState<'news' | 'import' | 'shop' | 'quests' | 'applications' | 'users' | 'events' | 'mortgage' | 'projects' | 'база'>('news');
+
+  // База — mini profile
+  const [bazaUsers, setBazaUsers] = useState<any[]>([]);
+  const [bazaSearch, setBazaSearch] = useState('');
+  const [selectedProfile, setSelectedProfile] = useState<any | null>(null);
+  const [profileBookings, setProfileBookings] = useState<any[]>([]);
 
   // News
   const [title, setTitle] = useState('');
@@ -96,6 +103,10 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [eventType, setEventType] = useState('TOUR');
   const [eventSpots, setEventSpots] = useState(20);
   const [editingEventId, setEditingEventId] = useState<number | null>(null);
+  const [eventIsPrivate, setEventIsPrivate] = useState(false);
+  const [eventRsvpDeadline, setEventRsvpDeadline] = useState('');
+  const [eventInvitedIds, setEventInvitedIds] = useState<number[]>([]);
+  const [eventUsersForInvite, setEventUsersForInvite] = useState<any[]>([]);
 
   // Mortgage Programs
   const [mortgageList, setMortgageList] = useState<MortgageProgramItem[]>([]);
@@ -103,6 +114,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [mpRate, setMpRate] = useState(6);
   const [mpDescription, setMpDescription] = useState('');
   const [editingMortgageId, setEditingMortgageId] = useState<number | null>(null);
+  const [minDownPayment, setMinDownPayment] = useState('10');
 
   // Projects
   const [projectsList, setProjectsList] = useState<any[]>([]);
@@ -135,7 +147,32 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     if (activeTab === 'events') fetchEvents();
     if (activeTab === 'mortgage') fetchMortgagePrograms();
     if (activeTab === 'projects') fetchProjects();
+    if (activeTab === 'база') fetchBazaUsers();
   }, [activeTab]);
+
+  const fetchBazaUsers = () => {
+    fetch('/api/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: getAuthData() }),
+    })
+      .then(res => res.json())
+      .then(data => setBazaUsers(Array.isArray(data) ? data.filter((u: any) => u.is_registered && u.approval_status === 'approved') : []))
+      .catch(e => console.error('Baza fetch error:', e));
+  };
+
+  const openProfile = async (user: any) => {
+    setSelectedProfile(user);
+    try {
+      const res = await fetch('/api/bookings/all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: getAuthData() }),
+      });
+      const allBookings = await res.json();
+      setProfileBookings(Array.isArray(allBookings) ? allBookings.filter((b: any) => b.user_id === user.id) : []);
+    } catch { setProfileBookings([]); }
+  };
 
   const fetchProjects = () => {
     fetch('/api/projects').then(r => r.json()).then(data => setProjectsList(data)).catch(e => console.error(e));
@@ -221,6 +258,9 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
       .then(res => res.json())
       .then(data => setMortgageList(Array.isArray(data) ? data : []))
       .catch(e => console.error('Mortgage fetch error:', e));
+    fetch('/api/settings').then(r => r.json()).then(d => {
+      if (d.min_down_payment_percent) setMinDownPayment(d.min_down_payment_percent);
+    }).catch(() => {});
   };
 
   const handleDeleteUser = async (userId: number) => {
@@ -354,11 +394,14 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     if (!eventTitle || !eventDate) return showToast('Заполни название и дату', 'error');
     setLoading(true);
     try {
-      const body = {
+      const body: any = {
         initData: getAuthData(),
         title: eventTitle, description: eventDescription,
         date: eventDate, time: eventTime,
         type: eventType, spots_total: Number(eventSpots),
+        is_private: eventIsPrivate,
+        rsvp_deadline: eventRsvpDeadline || null,
+        invited_user_ids: eventIsPrivate ? eventInvitedIds : [],
       };
       if (editingEventId) {
         await fetch(`/api/events/${editingEventId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -396,6 +439,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     setEventTitle(''); setEventDescription('');
     setEventDate(''); setEventTime('');
     setEventType('TOUR'); setEventSpots(20);
+    setEventIsPrivate(false); setEventRsvpDeadline(''); setEventInvitedIds([]);
   };
 
   // --- Mortgage Programs CRUD ---
@@ -460,6 +504,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
             <button onClick={() => setActiveTab('events')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'events' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Calendar size={14}/> События</button>
             <button onClick={() => setActiveTab('mortgage')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'mortgage' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Calculator size={14}/> Ипотека</button>
             <button onClick={() => setActiveTab('projects')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'projects' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Building2 size={14}/> Проекты</button>
+            <button onClick={() => setActiveTab('база')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'база' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Database size={14}/> База</button>
         </div>
 
         {activeTab === 'news' && (
@@ -644,6 +689,35 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                         <input type="number" value={eventSpots} onChange={e => setEventSpots(Number(e.target.value))} className="w-full bg-transparent outline-none text-black font-bold" />
                     </div>
                 </div>
+                {/* RSVP Deadline */}
+                <div>
+                    <label className="text-[10px] font-bold text-gray-500 uppercase block mb-1">Дедлайн ответа (RSVP)</label>
+                    <input type="datetime-local" value={eventRsvpDeadline} onChange={e => setEventRsvpDeadline(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50 text-sm" />
+                </div>
+                {/* Private event */}
+                <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={eventIsPrivate} onChange={e => {
+                        setEventIsPrivate(e.target.checked);
+                        if (e.target.checked && eventUsersForInvite.length === 0) {
+                            fetch('/api/admin/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) })
+                                .then(r => r.json()).then(d => setEventUsersForInvite(Array.isArray(d) ? d.filter((u: any) => u.is_registered && u.approval_status === 'approved') : []));
+                        }
+                    }} className="w-4 h-4 accent-brand-gold" />
+                    <span className="text-sm font-bold text-black">Приватное событие (только для приглашённых)</span>
+                </label>
+                {eventIsPrivate && eventUsersForInvite.length > 0 && (
+                    <div className="max-h-40 overflow-y-auto border rounded-lg p-2 space-y-1">
+                        {eventUsersForInvite.map((u: any) => (
+                            <label key={u.id} className="flex items-center gap-2 py-1 px-2 rounded hover:bg-gray-50 cursor-pointer">
+                                <input type="checkbox" checked={eventInvitedIds.includes(u.id)} onChange={e => {
+                                    setEventInvitedIds(prev => e.target.checked ? [...prev, u.id] : prev.filter(id => id !== u.id));
+                                }} className="w-3.5 h-3.5 accent-brand-gold" />
+                                <span className="text-xs text-black">{u.first_name} {u.last_name || ''}</span>
+                                <span className="text-[10px] text-gray-400 ml-auto">{u.deals_closed || 0} сделок</span>
+                            </label>
+                        ))}
+                    </div>
+                )}
                 <div className="flex gap-2">
                     <button onClick={handleSaveEvent} disabled={loading} className="flex-1 bg-blue-600 text-white p-3 rounded-lg font-bold shadow-md">
                         {loading ? '...' : editingEventId ? 'Сохранить' : 'Создать'}
@@ -681,6 +755,40 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
         {/* Mortgage Programs Tab */}
         {activeTab === 'mortgage' && (
             <div className="flex flex-col gap-3 animate-fade-in">
+                {/* Min down payment setting */}
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                    <label className="text-xs font-bold text-amber-700 block mb-1.5">Мин. первоначальный взнос (%)</label>
+                    <div className="flex gap-2">
+                        <input
+                            type="number"
+                            min="0"
+                            max="90"
+                            value={minDownPayment}
+                            onChange={e => setMinDownPayment(e.target.value)}
+                            className="w-24 p-2 border border-amber-300 rounded-lg text-black font-bold bg-white text-center"
+                        />
+                        <button
+                            onClick={async () => {
+                                try {
+                                    const res = await fetch('/api/settings', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ initData: getAuthData(), key: 'min_down_payment_percent', value: minDownPayment }),
+                                    });
+                                    const data = await res.json();
+                                    if (data.success) showToast('Сохранено', 'success');
+                                    else showToast(data.error || 'Ошибка', 'error');
+                                } catch { showToast('Ошибка сети', 'error'); }
+                            }}
+                            className="px-4 py-2 bg-amber-600 text-white rounded-lg text-xs font-bold"
+                        >
+                            Сохранить
+                        </button>
+                    </div>
+                    <p className="text-[10px] text-amber-600 mt-1">Применяется ко всем пользователям в калькуляторе</p>
+                </div>
+
+                <div className="border-t pt-3">
                 <h4 className="font-bold text-black text-sm">{editingMortgageId ? 'Редактировать программу' : 'Новая программа'}</h4>
                 <input placeholder="Название (Семейная, IT и т.д.)" value={mpName} onChange={e => setMpName(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
                 <div className="flex gap-2">
@@ -720,6 +828,235 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                         </div>
                     )}
                 </div>
+                </div>
+            </div>
+        )}
+
+        {/* База (registered users table + mini profiles) */}
+        {activeTab === 'база' && !selectedProfile && (
+            <div className="flex flex-col gap-3 animate-fade-in">
+                <div className="flex items-center justify-between">
+                    <h4 className="font-bold text-black text-sm">База партнёров ({bazaUsers.length})</h4>
+                </div>
+                <input
+                    placeholder="Поиск по имени, компании, телефону..."
+                    value={bazaSearch}
+                    onChange={e => setBazaSearch(e.target.value)}
+                    className="p-3 border rounded-lg w-full text-black bg-gray-50 text-sm"
+                />
+                {bazaUsers.length === 0 ? (
+                    <p className="text-gray-400 text-sm text-center py-8">Нет зарегистрированных партнёров</p>
+                ) : (
+                    <div className="space-y-1">
+                        {/* Table header */}
+                        <div className="grid grid-cols-[1fr_1fr_auto] gap-2 px-3 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-wide border-b">
+                            <span>ФИО</span>
+                            <span>Компания / Тел.</span>
+                            <span>Дата</span>
+                        </div>
+                        {bazaUsers
+                            .filter(u => {
+                                if (!bazaSearch.trim()) return true;
+                                const s = bazaSearch.toLowerCase();
+                                return (
+                                    `${u.first_name || ''} ${u.last_name || ''}`.toLowerCase().includes(s) ||
+                                    (u.company || '').toLowerCase().includes(s) ||
+                                    (u.phone || '').includes(s)
+                                );
+                            })
+                            .map(u => (
+                            <div
+                                key={u.id}
+                                onClick={() => openProfile(u)}
+                                className="grid grid-cols-[1fr_1fr_auto] gap-2 px-3 py-3 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100 active:scale-[0.99] transition-all items-center"
+                            >
+                                <div className="min-w-0">
+                                    <div className="font-bold text-black text-sm truncate">{u.first_name || ''} {u.last_name || ''}</div>
+                                    <div className="text-[10px] text-gray-400">{u.deals_closed || 0} сделок</div>
+                                </div>
+                                <div className="min-w-0">
+                                    <div className="text-xs text-gray-600 truncate">{u.company_type === 'ip' ? 'ИП' : 'АН'}: {u.company || '—'}</div>
+                                    <div className="text-[10px] text-gray-400">{u.phone || '—'}</div>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                    <span className="text-[10px] text-gray-400 whitespace-nowrap">
+                                        {u.created_at ? new Date(u.created_at).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '—'}
+                                    </span>
+                                    <ChevronRight size={14} className="text-gray-300" />
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+        )}
+
+        {/* Mini Profile */}
+        {activeTab === 'база' && selectedProfile && (
+            <div className="flex flex-col gap-4 animate-fade-in">
+                <button onClick={() => { setSelectedProfile(null); setProfileBookings([]); }} className="flex items-center gap-1 text-sm font-bold text-gray-500 hover:text-black self-start">
+                    <ArrowLeft size={16} /> Назад к базе
+                </button>
+
+                {/* Profile header */}
+                <div className="bg-gray-50 rounded-2xl p-5 flex flex-col items-center text-center">
+                    <div className="w-20 h-20 rounded-full bg-gradient-to-br from-brand-gold to-brand-beige p-1 mb-3">
+                        {selectedProfile.avatar_url ? (
+                            <img src={selectedProfile.avatar_url} alt="" className="w-full h-full rounded-full object-cover border-2 border-white" />
+                        ) : (
+                            <div className="w-full h-full rounded-full bg-brand-cream flex items-center justify-center text-2xl font-black text-brand-gold border-2 border-white">
+                                {(selectedProfile.first_name || '?')[0]}
+                            </div>
+                        )}
+                    </div>
+                    <h3 className="text-lg font-extrabold text-black">{selectedProfile.first_name || ''} {selectedProfile.last_name || ''}</h3>
+                    <p className="text-xs text-gray-500 mt-0.5">{selectedProfile.company_type === 'ip' ? 'ИП' : 'Агентство'}: {selectedProfile.company || '—'}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">{selectedProfile.phone || '—'}</p>
+                    <div className="mt-2 px-3 py-1 rounded-full bg-brand-gold/10 border border-brand-gold/20">
+                        <span className="text-xs font-bold text-brand-gold">{getRank(selectedProfile.deals_closed || 0)}</span>
+                    </div>
+                </div>
+
+                {/* Coins & Stats */}
+                <div className="grid grid-cols-3 gap-2">
+                    <div className="bg-slate-50 rounded-xl p-3 text-center border">
+                        <div className="text-lg font-black text-black">{selectedProfile.balance || 0}</div>
+                        <div className="text-[10px] text-gray-400 font-bold uppercase">Silver</div>
+                    </div>
+                    <div className="bg-brand-gold/5 rounded-xl p-3 text-center border border-brand-gold/20">
+                        <div className="text-lg font-black text-brand-gold">{selectedProfile.gold_balance || 0}</div>
+                        <div className="text-[10px] text-brand-gold font-bold uppercase">Gold</div>
+                    </div>
+                    <div className="bg-gray-50 rounded-xl p-3 text-center border">
+                        <div className="text-lg font-black text-black">{selectedProfile.deals_closed || 0}</div>
+                        <div className="text-[10px] text-gray-400 font-bold uppercase">Сделок</div>
+                    </div>
+                </div>
+
+                {/* Contact (admin-only business card) */}
+                <div className="bg-white rounded-xl p-4 border">
+                    <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">Визитка риелтора</h4>
+                    <div className="grid grid-cols-2 gap-2">
+                        <a href={`https://t.me/${(selectedProfile.username || '').replace('@', '')}`} target="_blank" rel="noreferrer"
+                           className="flex items-center gap-2 p-3 bg-blue-50 rounded-xl border border-blue-100 active:scale-[0.97] transition-transform">
+                            <Send size={16} className="text-blue-500" />
+                            <span className="text-xs font-bold text-blue-600">Telegram</span>
+                        </a>
+                        <a href={`tel:${selectedProfile.phone}`}
+                           className="flex items-center gap-2 p-3 bg-gray-50 rounded-xl border active:scale-[0.97] transition-transform">
+                            <Phone size={16} className="text-gray-600" />
+                            <span className="text-xs font-bold text-gray-700">Позвонить</span>
+                        </a>
+                    </div>
+                </div>
+
+                {/* Bookings */}
+                <div className="bg-white rounded-xl p-4 border">
+                    <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">Бронирования ({profileBookings.length})</h4>
+                    {profileBookings.length === 0 ? (
+                        <p className="text-gray-400 text-sm text-center py-4">Нет бронирований</p>
+                    ) : (
+                        <div className="space-y-2">
+                            {profileBookings.map((b: any) => (
+                                <div key={b.id} className="bg-gray-50 p-3 rounded-lg text-xs">
+                                    <div className="flex justify-between items-start">
+                                        <div>
+                                            <span className="font-bold text-black">Кв. №{b.unit_number}</span>
+                                            <span className="text-gray-400 ml-1">· эт. {b.unit_floor} · {b.unit_area} м²</span>
+                                        </div>
+                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                            b.stage === 'INIT' ? 'bg-gray-100 text-gray-500' :
+                                            b.stage === 'PASSPORT_SENT' ? 'bg-yellow-100 text-yellow-700' :
+                                            b.stage === 'DOCS_SENT' ? 'bg-blue-100 text-blue-700' :
+                                            b.stage === 'COMPLETE' ? 'bg-green-100 text-green-700' :
+                                            b.stage === 'CANCELLED' ? 'bg-red-100 text-red-600' :
+                                            'bg-gray-100 text-gray-500'
+                                        }`}>
+                                            {b.stage === 'INIT' ? 'Создано' :
+                                             b.stage === 'PASSPORT_SENT' ? 'Паспорт' :
+                                             b.stage === 'DOCS_SENT' ? 'Документы' :
+                                             b.stage === 'COMPLETE' ? 'Завершено' :
+                                             b.stage === 'CANCELLED' ? 'Отменено' : b.stage}
+                                        </span>
+                                    </div>
+                                    <div className="text-gray-400 mt-1">
+                                        {b.project_name || b.project_id} · {b.unit_price ? Number(b.unit_price).toLocaleString('ru-RU') + ' ₽' : ''}
+                                    </div>
+                                    {b.buyer_name && (
+                                        <div className="text-gray-500 mt-0.5">Покупатель: {b.buyer_name} {b.buyer_phone ? `· ${b.buyer_phone}` : ''}</div>
+                                    )}
+                                    {/* Admin actions */}
+                                    {b.stage === 'DOCS_SENT' && (
+                                        <button
+                                            onClick={async (e) => {
+                                                e.stopPropagation();
+                                                if (!confirm('Подтвердить сделку и начислить золотую монету?')) return;
+                                                try {
+                                                    const res = await fetch(`/api/bookings/${b.id}/complete`, {
+                                                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                        body: JSON.stringify({ initData: getAuthData() }),
+                                                    });
+                                                    const data = await res.json();
+                                                    if (data.success) { showToast('Сделка подтверждена! +1 золотая монета', 'success'); openProfile(selectedProfile); }
+                                                    else showToast(data.error || 'Ошибка', 'error');
+                                                } catch { showToast('Ошибка сети', 'error'); }
+                                            }}
+                                            className="mt-2 w-full py-1.5 bg-green-100 text-green-700 rounded-lg text-[11px] font-bold active:scale-[0.98]"
+                                        >
+                                            ✅ Подтвердить сделку (+1 Gold)
+                                        </button>
+                                    )}
+                                    {b.stage === 'COMPLETE' && (
+                                        <button
+                                            onClick={async (e) => {
+                                                e.stopPropagation();
+                                                if (!confirm('Отозвать подтверждение? Золотая монета будет списана.')) return;
+                                                try {
+                                                    const res = await fetch(`/api/bookings/${b.id}/revoke`, {
+                                                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                        body: JSON.stringify({ initData: getAuthData() }),
+                                                    });
+                                                    const data = await res.json();
+                                                    if (data.success) { showToast('Сделка отозвана, монета списана', 'info'); openProfile(selectedProfile); }
+                                                    else showToast(data.error || 'Ошибка', 'error');
+                                                } catch { showToast('Ошибка сети', 'error'); }
+                                            }}
+                                            className="mt-2 w-full py-1.5 bg-red-50 text-red-600 rounded-lg text-[11px] font-bold active:scale-[0.98]"
+                                        >
+                                            🔄 Отозвать сделку (-1 Gold)
+                                        </button>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                {/* Sales by project */}
+                {profileBookings.length > 0 && (
+                    <div className="bg-white rounded-xl p-4 border">
+                        <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">Продажи по ЖК</h4>
+                        <div className="space-y-2">
+                            {Object.entries(
+                                profileBookings.reduce((acc: Record<string, { total: number; completed: number }>, b: any) => {
+                                    const name = b.project_name || b.project_id || 'Неизвестный';
+                                    if (!acc[name]) acc[name] = { total: 0, completed: 0 };
+                                    acc[name].total++;
+                                    if (b.stage === 'DOCS_SENT' || b.stage === 'COMPLETE') acc[name].completed++;
+                                    return acc;
+                                }, {})
+                            ).map(([name, data]: [string, any]) => (
+                                <div key={name} className="flex justify-between items-center bg-gray-50 p-3 rounded-lg">
+                                    <span className="text-sm font-bold text-black">{name}</span>
+                                    <div className="text-right">
+                                        <span className="text-sm font-black text-brand-gold">{data.completed}</span>
+                                        <span className="text-xs text-gray-400 ml-1">/ {data.total} брон.</span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
             </div>
         )}
 

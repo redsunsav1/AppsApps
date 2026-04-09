@@ -19,6 +19,7 @@ const DEFAULT_PROGRAMS: MortgageProgram[] = [
 
 const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, programs, onClose, embedded = false }) => {
   const [loadedPrograms, setLoadedPrograms] = useState<MortgageProgram[]>(programs || DEFAULT_PROGRAMS);
+  const [minDownPaymentPct, setMinDownPaymentPct] = useState(10);
 
   // Store display strings separately so user can clear fields and type freely
   const [priceStr, setPriceStr] = useState(String(initialPrice));
@@ -30,9 +31,19 @@ const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, pro
 
   // Derive numeric values for calculations
   const price = Number(priceStr) || 0;
-  const initialPaymentPercent = Math.min(90, Math.max(0, Number(pctStr) || 0));
+  const initialPaymentPercent = Math.min(90, Math.max(minDownPaymentPct, Number(pctStr) || 0));
   const termYears = Number(termStr) || 1;
   const rate = Number(rateStr) || 0;
+
+  // Fetch min down payment setting
+  useEffect(() => {
+    fetch('/api/settings').then(r => r.json()).then(data => {
+      if (data.min_down_payment_percent) {
+        const val = Number(data.min_down_payment_percent);
+        if (val > 0) { setMinDownPaymentPct(val); if (Number(pctStr) < val) setPctStr(String(val)); }
+      }
+    }).catch(() => {});
+  }, []);
 
   // Fetch from API if no programs were passed as props
   useEffect(() => {
@@ -165,10 +176,13 @@ const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, pro
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-brand-grey text-sm font-medium">₽</span>
             </div>
           </div>
+          {minDownPaymentPct > 0 && (
+            <p className="text-[10px] text-amber-600 mb-1">Минимальный первоначальный взнос: {minDownPaymentPct}%</p>
+          )}
           {/* Range slider as secondary control */}
           <input
             type="range"
-            min="0" max="90" step="1"
+            min={minDownPaymentPct} max="90" step="1"
             value={initialPaymentPercent}
             onChange={(e) => { setPctStr(e.target.value); setAmountEditing(false); }}
             className="w-full h-2 bg-brand-light rounded-lg appearance-none cursor-pointer accent-brand-gold"

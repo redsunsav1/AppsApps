@@ -142,10 +142,10 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
       {/* Contact Developer */}
       <div className="mt-6 mx-4">
          <div className="bg-white rounded-2xl p-5 shadow-sm border border-brand-light">
-            <h3 className="text-sm font-bold text-brand-black mb-4 uppercase tracking-wide opacity-70">Связь с застройщиком</h3>
+            <h3 className="text-sm font-bold text-brand-black mb-4 uppercase tracking-wide opacity-70">Связь с отделом продаж</h3>
 
-            <div className="grid grid-cols-2 gap-3">
-                <a href="https://t.me/gk_horosho" target="_blank" rel="noreferrer"
+            <div className="grid grid-cols-3 gap-3">
+                <a href="https://t.me/+79886003222" target="_blank" rel="noreferrer"
                    className="flex flex-col items-center justify-center gap-2 py-4 bg-blue-50 rounded-xl border border-blue-100 active:scale-[0.97] transition-transform">
                     <div className="w-10 h-10 bg-blue-500 text-white rounded-full flex items-center justify-center shadow-md shadow-blue-200">
                         <Send size={18} className="-ml-0.5 mt-0.5" />
@@ -153,7 +153,15 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
                     <span className="text-[10px] font-bold text-blue-600">Telegram</span>
                 </a>
 
-                <a href="tel:+78512432222"
+                <a href="https://max.ru/call/+79886003222" target="_blank" rel="noreferrer"
+                   className="flex flex-col items-center justify-center gap-2 py-4 bg-purple-50 rounded-xl border border-purple-100 active:scale-[0.97] transition-transform">
+                    <div className="w-10 h-10 bg-purple-600 text-white rounded-full flex items-center justify-center shadow-md shadow-purple-200">
+                        <MessageCircle size={18} />
+                    </div>
+                    <span className="text-[10px] font-bold text-purple-600">Max</span>
+                </a>
+
+                <a href="tel:+79886003222"
                    className="flex flex-col items-center justify-center gap-2 py-4 bg-brand-cream rounded-xl border border-brand-beige active:scale-[0.97] transition-transform">
                     <div className="w-10 h-10 bg-brand-black text-brand-gold rounded-full flex items-center justify-center shadow-md">
                         <Phone size={18} />
@@ -163,7 +171,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
             </div>
 
             <div className="mt-4 flex justify-center">
-                <p className="text-xs text-brand-grey font-medium">+7 (8512) 43-22-22</p>
+                <p className="text-xs text-brand-grey font-medium">+7 (988) 600-32-22</p>
             </div>
          </div>
       </div>

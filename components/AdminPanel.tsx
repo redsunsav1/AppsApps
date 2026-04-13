@@ -58,6 +58,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [bazaSearch, setBazaSearch] = useState('');
   const [selectedProfile, setSelectedProfile] = useState<any | null>(null);
   const [profileBookings, setProfileBookings] = useState<any[]>([]);
+  const [profilePrizes, setProfilePrizes] = useState<any[]>([]);
 
   // News
   const [title, setTitle] = useState('');
@@ -79,6 +80,8 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [shopPrice, setShopPrice] = useState(0);
   const [shopCurrency, setShopCurrency] = useState('SILVER');
   const [shopImage, setShopImage] = useState('');
+  const [editingProductId, setEditingProductId] = useState<number | null>(null);
+  const [shopProducts, setShopProducts] = useState<any[]>([]);
 
   // Quests
   const [questsList, setQuestsList] = useState<QuestItem[]>([]);
@@ -148,6 +151,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     if (activeTab === 'mortgage') fetchMortgagePrograms();
     if (activeTab === 'projects') fetchProjects();
     if (activeTab === 'база') fetchBazaUsers();
+    if (activeTab === 'shop') fetchShopProducts();
   }, [activeTab]);
 
   const fetchBazaUsers = () => {
@@ -161,17 +165,31 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
       .catch(e => console.error('Baza fetch error:', e));
   };
 
+  const fetchShopProducts = () => {
+    fetch('/api/products').then(r => r.json()).then(d => setShopProducts(Array.isArray(d) ? d : [])).catch(() => {});
+  };
+
   const openProfile = async (user: any) => {
     setSelectedProfile(user);
+    setProfilePrizes([]);
     try {
-      const res = await fetch('/api/bookings/all', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData: getAuthData() }),
-      });
-      const allBookings = await res.json();
+      const [bookingsRes, prizesRes] = await Promise.all([
+        fetch('/api/bookings/all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData: getAuthData() }),
+        }),
+        fetch('/api/admin/user-orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData: getAuthData(), userId: user.id }),
+        }),
+      ]);
+      const allBookings = await bookingsRes.json();
       setProfileBookings(Array.isArray(allBookings) ? allBookings.filter((b: any) => b.user_id === user.id) : []);
-    } catch { setProfileBookings([]); }
+      const prizes = await prizesRes.json();
+      setProfilePrizes(Array.isArray(prizes) ? prizes : []);
+    } catch { setProfileBookings([]); setProfilePrizes([]); }
   };
 
   const fetchProjects = () => {
@@ -327,8 +345,10 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     if (!shopTitle || !shopPrice) return showToast('Заполни название и цену', 'error');
     setLoading(true);
     try {
-        await fetch('/api/products', {
-            method: 'POST',
+        const url = editingProductId ? `/api/products/${editingProductId}` : '/api/products';
+        const method = editingProductId ? 'PUT' : 'POST';
+        await fetch(url, {
+            method,
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 initData: getAuthData(),
@@ -338,9 +358,23 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                 image_url: shopImage
             })
         });
-        showToast('Товар добавлен!', 'success');
-        setShopTitle(''); setShopPrice(0); setShopImage('');
+        showToast(editingProductId ? 'Товар обновлён!' : 'Товар добавлен!', 'success');
+        resetShopForm();
+        fetchShopProducts();
     } catch (e) { showToast('Ошибка', 'error'); } finally { setLoading(false); }
+  };
+
+  const handleEditProduct = (p: any) => {
+    setEditingProductId(p.id);
+    setShopTitle(p.title);
+    setShopPrice(p.price);
+    setShopCurrency(p.currency);
+    setShopImage(p.image_url || '');
+  };
+
+  const resetShopForm = () => {
+    setEditingProductId(null);
+    setShopTitle(''); setShopPrice(0); setShopCurrency('SILVER'); setShopImage('');
   };
 
   const handleCreateQuest = async () => {
@@ -551,6 +585,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
 
         {activeTab === 'shop' && (
             <div className="flex flex-col gap-3 animate-fade-in">
+                <h4 className="font-bold text-black text-sm">{editingProductId ? 'Редактировать товар' : 'Новый товар'}</h4>
                 <input placeholder="Название товара (Худи)" value={shopTitle} onChange={e => setShopTitle(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
                 <div className="flex gap-2">
                     <input type="number" placeholder="Цена" value={shopPrice} onChange={e => setShopPrice(Number(e.target.value))} className="p-3 border rounded-lg w-1/2 text-black bg-gray-50" />
@@ -560,9 +595,39 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                     </select>
                 </div>
                 <input placeholder="Ссылка на фото" value={shopImage} onChange={e => setShopImage(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
-                <div className="flex gap-2 mt-2 pt-2 border-t">
-                    <button onClick={handleSubmitProduct} disabled={loading} className="flex-1 bg-green-600 text-white p-3 rounded-lg font-bold shadow-md">{loading ? '...' : 'Добавить товар'}</button>
-                    <button onClick={onClose} className="bg-gray-200 text-black p-3 rounded-lg font-medium">Закрыть</button>
+                <div className="flex gap-2">
+                    <button onClick={handleSubmitProduct} disabled={loading} className="flex-1 bg-emerald-600 text-white p-3 rounded-lg font-bold shadow-md">
+                        {loading ? '...' : editingProductId ? 'Сохранить' : 'Добавить товар'}
+                    </button>
+                    {editingProductId && (
+                        <button onClick={resetShopForm} className="bg-gray-200 text-black p-3 rounded-lg font-medium">Отмена</button>
+                    )}
+                </div>
+                <div className="border-t pt-3 mt-2">
+                    <h4 className="font-bold text-black text-sm mb-2">Товары ({shopProducts.length})</h4>
+                    {shopProducts.length === 0 ? (
+                        <p className="text-gray-400 text-sm text-center py-4">Товаров пока нет</p>
+                    ) : (
+                        <div className="space-y-2">
+                            {shopProducts.map(p => (
+                                <div key={p.id} className="flex items-center justify-between bg-gray-50 p-3 rounded-lg">
+                                    <div className="flex-1 min-w-0">
+                                        <div className="font-bold text-black text-sm truncate">{p.title}</div>
+                                        <div className="text-[10px] text-gray-400">{p.price} {p.currency === 'GOLD' ? 'Gold' : 'Silver'}</div>
+                                    </div>
+                                    <div className="flex gap-1 ml-2">
+                                        <button onClick={() => handleEditProduct(p)} className="p-2 text-blue-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit3 size={16} /></button>
+                                        <button onClick={async () => {
+                                            if (!confirm('Удалить товар?')) return;
+                                            await fetch(`/api/products/${p.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
+                                            fetchShopProducts();
+                                            showToast('Товар удалён', 'info');
+                                        }} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 size={16} /></button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </div>
             </div>
         )}
@@ -1052,6 +1117,28 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                         <span className="text-sm font-black text-brand-gold">{data.completed}</span>
                                         <span className="text-xs text-gray-400 ml-1">/ {data.total} брон.</span>
                                     </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* Prizes / Orders */}
+                {profilePrizes.length > 0 && (
+                    <div className="bg-white rounded-xl p-4 border">
+                        <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">🎁 Призы ({profilePrizes.length})</h4>
+                        <div className="space-y-2">
+                            {profilePrizes.map((o: any) => (
+                                <div key={o.id} className="flex justify-between items-center bg-amber-50 p-3 rounded-lg border border-amber-100">
+                                    <div className="flex-1 min-w-0">
+                                        <div className="text-sm font-bold text-black truncate">{o.product_title || 'Товар'}</div>
+                                        <div className="text-[10px] text-gray-400">{new Date(o.created_at).toLocaleDateString('ru-RU')}</div>
+                                    </div>
+                                    <span className={`text-xs font-bold px-2 py-1 rounded-full ${
+                                        o.currency === 'GOLD' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'
+                                    }`}>
+                                        {o.price} {o.currency === 'GOLD' ? 'Gold' : 'Silver'}
+                                    </span>
                                 </div>
                             ))}
                         </div>

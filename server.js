@@ -380,6 +380,37 @@ const initDb = async () => {
         ('login_streak_30',  'Месяц верности',        'Заходите в приложение 30 дней подряд',          3,    'GOLD',   30, 'loyalty',  'fire',      9)
       ON CONFLICT (code) DO NOTHING`);
     }
+    // Тестовые риелторы для презентации
+    const testRealtors = [
+      { tgId: 999000001, firstName: 'Арман', lastName: 'Бисенов', company: 'АН Лидер', deals: 14, bookings: [
+        { project: 'mnh', count: 10 }, { project: 'bbk', count: 4 }
+      ]},
+      { tgId: 999000002, firstName: 'Вагон', lastName: 'Продажев', company: 'АН Триумф', deals: 14, bookings: [
+        { project: 'bbk', count: 5 }, { project: 'mnh', count: 9 }
+      ]},
+    ];
+    for (const r of testRealtors) {
+      const exists = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [r.tgId]);
+      if (exists.rows.length === 0) {
+        const uRes = await pool.query(
+          `INSERT INTO users (telegram_id, first_name, last_name, company, company_type, phone, is_registered, approval_status, balance, gold_balance, xp_points, deals_closed)
+           VALUES ($1, $2, $3, $4, 'agency', '+70000000000', TRUE, 'approved', 500, $5, $6, $5)
+           RETURNING id`,
+          [r.tgId, r.firstName, r.lastName, r.company, r.deals, r.deals * 100]
+        );
+        const userId = uRes.rows[0].id;
+        for (const b of r.bookings) {
+          for (let i = 0; i < b.count; i++) {
+            await pool.query(
+              `INSERT INTO bookings (user_id, unit_id, project_id, stage, user_name, user_company, created_at)
+               VALUES ($1, $2, $3, 'COMPLETE', $4, $5, NOW() - interval '1 day' * $6)`,
+              [userId, `test-${r.tgId}-${b.project}-${i}`, b.project, `${r.firstName} ${r.lastName}`, r.company, Math.floor(Math.random() * 90)]
+            );
+          }
+        }
+      }
+    }
+
   } catch (err) { console.error('❌ DB Error:', err); }
 };
 
@@ -973,6 +1004,17 @@ app.post('/api/products', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
+app.put('/api/products/:id', async (req, res) => {
+  try {
+    if (await isAdmin(req.body.initData)) {
+      const { title, price, currency, image_url } = req.body;
+      await pool.query('UPDATE products SET title = $1, price = $2, currency = $3, image_url = $4 WHERE id = $5',
+        [title, price, currency || 'SILVER', image_url, req.params.id]);
+      res.json({ success: true });
+    } else res.status(403).json({ error: 'Forbidden' });
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
 app.delete('/api/products/:id', async (req, res) => {
   try {
     if (await isAdmin(req.body.initData)) {
@@ -1007,6 +1049,19 @@ app.post('/api/buy', async (req, res) => {
     if (e.status) return res.status(e.status).json({ error: e.msg });
     res.status(500).json({ error: 'Buy error' });
   }
+});
+
+app.post('/api/admin/user-orders', async (req, res) => {
+  try {
+    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    const { userId } = req.body;
+    const result = await pool.query(`
+      SELECT o.id, o.price, o.currency, o.status, o.created_at, p.title as product_title
+      FROM orders o LEFT JOIN products p ON o.product_id = p.id
+      WHERE o.user_id = $1 ORDER BY o.created_at DESC
+    `, [userId]);
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
 // =============================================
@@ -1216,13 +1271,31 @@ app.post('/api/admin/clear-users', async (req, res) => {
 // =============================================
 app.get('/api/leaderboard', async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT id, telegram_id, first_name as name, last_name, company,
-        deals_closed as deals, xp_points as xp
-      FROM users WHERE is_registered = TRUE
-      ORDER BY deals_closed DESC, xp_points DESC LIMIT 50
-    `);
-    res.json(result.rows);
+    const { period } = req.query;
+    if (period === 'month' || period === 'quarter') {
+      const dateFilter = period === 'month'
+        ? `AND b.created_at >= date_trunc('month', CURRENT_DATE)`
+        : `AND b.created_at >= date_trunc('quarter', CURRENT_DATE)`;
+      const result = await pool.query(`
+        SELECT u.id, u.telegram_id, u.first_name as name, u.last_name, u.company,
+          COUNT(b.id)::int as deals, u.xp_points as xp
+        FROM users u
+        LEFT JOIN bookings b ON b.user_id = u.id AND b.stage = 'COMPLETE' ${dateFilter}
+        WHERE u.is_registered = TRUE
+        GROUP BY u.id
+        HAVING COUNT(b.id) > 0
+        ORDER BY deals DESC, u.xp_points DESC LIMIT 50
+      `);
+      res.json(result.rows);
+    } else {
+      const result = await pool.query(`
+        SELECT id, telegram_id, first_name as name, last_name, company,
+          deals_closed as deals, xp_points as xp
+        FROM users WHERE is_registered = TRUE
+        ORDER BY deals_closed DESC, xp_points DESC LIMIT 50
+      `);
+      res.json(result.rows);
+    }
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 

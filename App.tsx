@@ -12,7 +12,7 @@ import { UserProfile, DailyQuest, ConstructionUpdate, ShopItem, ProjectStat, Cur
 import React, { useState, useEffect } from 'react';
 import { User, Newspaper, ShoppingBag, Grid3X3, LayoutGrid, ArrowLeft, Settings } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
-import { getAuthData, savePwaToken, getPwaToken, isTelegramEnv, isMaxEnv, isMaybeMaxContext, initMaxBridge, detectPlatform } from './utils/auth';
+import { getAuthData, savePwaToken, getPwaToken, isTelegramEnv, isMaxEnv, isMaybeMaxContext, initMaxBridge, detectPlatform, waitForMaxInitData } from './utils/auth';
 import { showToast } from './utils/toast';
 import PullToRefresh from './components/PullToRefresh';
 
@@ -238,16 +238,21 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
+    let cancelled = false;
+
     // Инициализация SDK мессенджера в зависимости от платформы.
     // Если открыто не в мессенджере (PWA-режим в браузере) — оба вызова
     // тихо упадут в catch и приложение продолжит работу как обычный сайт.
-    const platform = detectPlatform();
-    console.log(`[platform] detected: ${platform}`);
-    if (platform === 'telegram') {
-      try { WebApp.ready(); WebApp.expand(); } catch (e) { console.log('TG init skipped:', e); }
-    } else if (platform === 'max') {
-      try { initMaxBridge(); } catch (e) { console.log('MAX init skipped:', e); }
-    }
+    const boot = async () => {
+      const maxLaunchData = isMaybeMaxContext() ? await waitForMaxInitData() : '';
+      if (cancelled) return;
+      const platform = maxLaunchData ? 'max' : detectPlatform();
+      console.log(`[platform] detected: ${platform}`);
+      if (platform === 'telegram') {
+        try { WebApp.ready(); WebApp.expand(); } catch (e) { console.log('TG init skipped:', e); }
+      } else if (platform === 'max') {
+        try { initMaxBridge(); } catch (e) { console.log('MAX init skipped:', e); }
+      }
 
     fetchNews();
     fetchStats();
@@ -310,7 +315,7 @@ const App: React.FC = () => {
     }
 
     // Путь 1-bis: MAX initData (только если запущено в MAX-мессенджере)
-    const maxInitData = isMaxEnv() ? getAuthData() : '';
+    const maxInitData = maxLaunchData || (isMaxEnv() ? getAuthData() : '');
     if (maxInitData) {
       fetch('/api/auth/max', {
         method: 'POST',
@@ -366,6 +371,10 @@ const App: React.FC = () => {
 
     // Путь 3: Нет данных → экран приветствия
     setLoading(false);
+    };
+
+    boot();
+    return () => { cancelled = true; };
   }, []);
 
   const handleRegistration = () => {

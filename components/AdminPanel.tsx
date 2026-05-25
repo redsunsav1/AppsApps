@@ -23,6 +23,8 @@ interface QuestItem {
 interface ApplicationItem {
   id: number;
   telegram_id: number;
+  max_id?: number;
+  platform?: string;
   first_name: string;
   last_name: string;
   company: string;
@@ -688,7 +690,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                         {u.company_type === 'ip' ? 'ИП' : 'АН'}: {u.company || '—'} · {u.phone || '—'}
                                     </div>
                                     <div className="text-[10px] text-gray-400">
-                                        TG: {u.telegram_id} · {u.approval_status || 'none'} · {u.is_registered ? 'Активен' : 'Не зарег.'}
+                                        {(u.platform === 'max' || u.max_id) ? `MAX: ${u.max_id || '—'}` : `TG: ${u.telegram_id || '—'}`} · {u.approval_status || 'none'} · {u.is_registered ? 'Активен' : 'Не зарег.'}
                                     </div>
                                     <div className="text-[10px] text-gray-400">
                                         Серебро: {u.balance || 0} · Золото: {u.gold_balance || 0} · XP: {u.xp_points || 0} · Сделки: {u.deals_closed || 0}
@@ -1002,10 +1004,10 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                 <div className="bg-white rounded-xl p-4 border">
                     <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">Визитка риелтора</h4>
                     <div className="grid grid-cols-2 gap-2">
-                        <a href={`https://t.me/${(selectedProfile.username || '').replace('@', '')}`} target="_blank" rel="noreferrer"
+                        <a href={selectedProfile.platform === 'max' ? `https://max.ru/${selectedProfile.username || ''}` : `https://t.me/${(selectedProfile.username || '').replace('@', '')}`} target="_blank" rel="noreferrer"
                            className="flex items-center gap-2 p-3 bg-blue-50 rounded-xl border border-blue-100 active:scale-[0.97] transition-transform">
                             <Send size={16} className="text-blue-500" />
-                            <span className="text-xs font-bold text-blue-600">Telegram</span>
+                            <span className="text-xs font-bold text-blue-600">{selectedProfile.platform === 'max' ? 'MAX' : 'Telegram'}</span>
                         </a>
                         <a href={`tel:${selectedProfile.phone}`}
                            className="flex items-center gap-2 p-3 bg-gray-50 rounded-xl border active:scale-[0.97] transition-transform">

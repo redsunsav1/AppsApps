@@ -47,7 +47,7 @@ const EventCalendar: React.FC = () => {
       });
       const data = await res.json();
       if (data.success) {
-        showToast('Вы записаны! Уведомление отправлено в Telegram.', 'success');
+        showToast('Вы записаны! Уведомление отправлено в мессенджер.', 'success');
         // Update local state
         setEvents(prev => prev.map(e =>
           e.id === eventId

@@ -105,10 +105,10 @@ async function sendMaxMessage(recipientId, text, attachments) {
   return result;
 }
 
-async function notifyAdminMax(text) {
+async function notifyAdminMax(text, inlineKeyboard) {
   const adminId = process.env.ADMIN_MAX_ID;
   if (!adminId) { console.warn('[MAX] ADMIN_MAX_ID не задан'); return { ok: false, error: 'no ADMIN_MAX_ID' }; }
-  return sendMaxMessage(adminId, text);
+  return sendMaxMessage(adminId, text, buildMaxInlineKeyboard(inlineKeyboard));
 }
 
 async function registerMaxWebhook() {
@@ -136,10 +136,32 @@ function buildMaxStartKeyboard() {
     type: 'inline_keyboard',
     payload: {
       buttons: [[
-        { type: 'link', text: 'Открыть mini-app', url: getMaxMiniAppLink() },
+        { type: 'open_app', text: 'Открыть приложение', web_app: getMaxMiniAppLink() },
+      ], [
+        { type: 'link', text: 'Открыть по ссылке', url: getMaxMiniAppLink() },
       ]],
     },
   }];
+}
+
+function buildMaxInlineKeyboard(inlineKeyboard) {
+  if (!inlineKeyboard || !Array.isArray(inlineKeyboard)) return undefined;
+  const buttons = inlineKeyboard
+    .map(row => (Array.isArray(row) ? row : []).map(button => {
+      if (button.callback_data) {
+        return { type: 'callback', text: button.text, payload: button.callback_data };
+      }
+      if (button.url) {
+        return { type: 'link', text: button.text, url: button.url };
+      }
+      if (button.web_app) {
+        return { type: 'open_app', text: button.text, web_app: button.web_app.url || button.web_app };
+      }
+      return null;
+    }).filter(Boolean))
+    .filter(row => row.length > 0);
+  if (!buttons.length) return undefined;
+  return [{ type: 'inline_keyboard', payload: { buttons } }];
 }
 
 function getMaxUpdateUserId(update) {
@@ -154,6 +176,36 @@ function getMaxUpdateUserId(update) {
 
 function getMaxUpdateText(update) {
   return String(update?.message?.body?.text || update?.message?.text || update?.text || '').trim();
+}
+
+function getMaxCallbackPayload(update) {
+  return update?.callback?.payload
+    || update?.callback?.button?.payload
+    || update?.callback?.data
+    || update?.message?.callback?.payload
+    || update?.message?.body?.payload
+    || update?.payload
+    || '';
+}
+
+function getMaxCallbackId(update) {
+  return update?.callback?.callback_id
+    || update?.callback_id
+    || update?.message?.callback?.callback_id
+    || '';
+}
+
+function getMaxMessageText(update) {
+  return String(update?.message?.body?.text || update?.message?.text || '').trim();
+}
+
+async function answerMaxCallback(callbackId, notification, messageText) {
+  if (!callbackId) return { ok: false, error: 'no callback_id' };
+  const body = { notification };
+  if (messageText) {
+    body.message = { text: messageText, format: 'html', attachments: [] };
+  }
+  return _maxApiCall('POST', `/answers?callback_id=${encodeURIComponent(String(callbackId))}`, body);
 }
 
 console.log(isMaxEnabled() ? '🟣 MAX platform ENABLED' : '⚪ MAX platform disabled (set MAX_ENABLED=true to enable)');
@@ -444,14 +496,14 @@ async function notifyUser(userOrId, text, inlineKeyboard) {
   }
   const platform = userOrId.platform || (userOrId.telegram_id ? 'telegram' : userOrId.max_id ? 'max' : null);
   if (platform === 'max' && userOrId.max_id) {
-    return sendMaxMessage(userOrId.max_id, text);
+    return sendMaxMessage(userOrId.max_id, text, buildMaxInlineKeyboard(inlineKeyboard));
   }
   if (platform === 'telegram' && userOrId.telegram_id) {
     return notifyUserTelegram(userOrId.telegram_id, text, inlineKeyboard);
   }
   // Fallback: пробуем оба, что найдётся
   if (userOrId.telegram_id) return notifyUserTelegram(userOrId.telegram_id, text, inlineKeyboard);
-  if (userOrId.max_id) return sendMaxMessage(userOrId.max_id, text);
+  if (userOrId.max_id) return sendMaxMessage(userOrId.max_id, text, buildMaxInlineKeyboard(inlineKeyboard));
   return { ok: false, error: 'no platform id on user' };
 }
 
@@ -459,7 +511,7 @@ async function notifyAdmin(text, inlineKeyboard) {
   // Дублируем уведомление во все настроенные каналы (TG + MAX), не блокируя друг друга
   const results = await Promise.allSettled([
     notifyAdminTelegram(text, inlineKeyboard),
-    isMaxEnabled() ? notifyAdminMax(text) : Promise.resolve({ ok: false, skipped: true }),
+    isMaxEnabled() ? notifyAdminMax(text, inlineKeyboard) : Promise.resolve({ ok: false, skipped: true }),
   ]);
   return results;
 }
@@ -1117,6 +1169,29 @@ app.post('/api/auth/max', rateLimit(900000, 10), async (req, res) => {
   }
 });
 
+async function applyApplicationDecision(userId, action) {
+  const id = Number(userId);
+  if (!id || !['approve', 'reject'].includes(action)) {
+    return { ok: false, status: 'bad_request', message: 'Некорректное действие' };
+  }
+
+  const userRes = await pool.query('SELECT id, telegram_id, max_id, platform, first_name FROM users WHERE id = $1', [id]);
+  if (userRes.rows.length === 0) {
+    return { ok: false, status: 'not_found', message: 'Заявка не найдена' };
+  }
+
+  const user = userRes.rows[0];
+  if (action === 'approve') {
+    await pool.query(`UPDATE users SET is_registered = TRUE, approval_status = 'approved' WHERE id = $1`, [id]);
+    notifyUser(user, `🎉 <b>Добро пожаловать в Клуб Партнёров!</b>\n\nПривет, ${user.first_name || 'партнёр'}! Ваша заявка одобрена.`);
+    return { ok: true, label: 'ОДОБРЕНО', notification: '✅ Одобрено!' };
+  }
+
+  await pool.query(`UPDATE users SET approval_status = 'rejected' WHERE id = $1`, [id]);
+  notifyUser(user, `❌ <b>Заявка отклонена</b>\n\nЕсли это ошибка, свяжитесь с отделом продаж.`);
+  return { ok: true, label: 'ОТКЛОНЕНО', notification: '❌ Отклонено' };
+}
+
 // =============================================
 // API: WEBHOOK MAX MESSENGER
 // =============================================
@@ -1131,17 +1206,40 @@ app.post('/api/max-webhook', async (req, res) => {
     return;
   }
   try {
-    const update = req.body;
-    console.log('[MAX] webhook update:', JSON.stringify(update).slice(0, 500));
-    const updateType = update?.update_type;
-    const text = getMaxUpdateText(update).toLowerCase();
-    if (updateType === 'bot_started' || text === '/start' || text === 'start') {
-      const userId = getMaxUpdateUserId(update);
-      await sendMaxMessage(
-        userId,
-        `Добро пожаловать в Клуб Партнёров!\n\nОткройте мини-приложение кнопкой ниже или через кнопку mini-app в чате.\n${getMaxMiniAppLink()}`,
-        buildMaxStartKeyboard()
-      );
+    const updates = Array.isArray(req.body?.updates) ? req.body.updates : [req.body];
+    for (const update of updates) {
+      console.log('[MAX] webhook update:', JSON.stringify(update).slice(0, 500));
+      const updateType = update?.update_type;
+      const text = getMaxUpdateText(update).toLowerCase();
+
+      if (updateType === 'message_callback') {
+        const payload = getMaxCallbackPayload(update);
+        const callbackId = getMaxCallbackId(update);
+        const [action, userIdStr] = String(payload).split('_');
+        const actorId = getMaxUpdateUserId(update);
+
+        if (process.env.ADMIN_MAX_ID && String(actorId) !== String(process.env.ADMIN_MAX_ID)) {
+          await answerMaxCallback(callbackId, 'Недостаточно прав');
+          continue;
+        }
+
+        if (action === 'approve' || action === 'reject') {
+          const result = await applyApplicationDecision(userIdStr, action);
+          const originalText = getMaxMessageText(update) || 'Заявка обработана';
+          const statusLine = result.ok ? `\n\n${action === 'approve' ? '✅' : '❌'} <b>${result.label}</b>` : `\n\n⚠️ <b>${result.message}</b>`;
+          await answerMaxCallback(callbackId, result.notification || result.message, originalText + statusLine);
+        }
+        continue;
+      }
+
+      if (updateType === 'bot_started' || text === '/start' || text === 'start') {
+        const userId = getMaxUpdateUserId(update);
+        await sendMaxMessage(
+          userId,
+          `Добро пожаловать в Клуб Партнёров!\n\nОткройте мини-приложение кнопкой ниже или через кнопку mini-app в чате.\n${getMaxMiniAppLink()}`,
+          buildMaxStartKeyboard()
+        );
+      }
     }
   } catch (e) {
     console.error('[MAX] webhook error:', e.message);
@@ -1216,13 +1314,8 @@ app.post('/api/applications', async (req, res) => {
 app.post('/api/applications/:userId/approve', async (req, res) => {
   try {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
-    await pool.query(`UPDATE users SET is_registered = TRUE, approval_status = 'approved' WHERE id = $1`, [req.params.userId]);
-    // Селектим все возможные ID платформ — notifyUser сам выберет куда слать
-    const userRes = await pool.query('SELECT telegram_id, max_id, platform, first_name FROM users WHERE id = $1', [req.params.userId]);
-    if (userRes.rows.length > 0) {
-      const u = userRes.rows[0];
-      notifyUser(u, `🎉 <b>Добро пожаловать в Клуб Партнёров!</b>\n\nПривет, ${u.first_name || 'партнёр'}! Ваша заявка одобрена.`);
-    }
+    const result = await applyApplicationDecision(req.params.userId, 'approve');
+    if (!result.ok) return res.status(result.status === 'not_found' ? 404 : 400).json({ error: result.message });
     res.json({ success: true });
   } catch (e) { console.error('Approve error:', e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -1231,7 +1324,8 @@ app.post('/api/applications/:userId/approve', async (req, res) => {
 app.post('/api/applications/:userId/reject', async (req, res) => {
   try {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
-    await pool.query(`UPDATE users SET approval_status = 'rejected' WHERE id = $1`, [req.params.userId]);
+    const result = await applyApplicationDecision(req.params.userId, 'reject');
+    if (!result.ok) return res.status(result.status === 'not_found' ? 404 : 400).json({ error: result.message });
     res.json({ success: true });
   } catch (e) { console.error('Reject error:', e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -1247,27 +1341,27 @@ app.post('/api/telegram-webhook', async (req, res) => {
     const BOT_TOKEN = process.env.BOT_TOKEN;
 
     if (action === 'approve') {
-      await pool.query(`UPDATE users SET is_registered = TRUE, approval_status = 'approved' WHERE id = $1`, [userId]);
+      const decision = await applyApplicationDecision(userId, 'approve');
       if (BOT_TOKEN) {
         await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ callback_query_id: callback.id, text: '✅ Одобрено!' })
+          body: JSON.stringify({ callback_query_id: callback.id, text: decision.notification || decision.message })
         });
         await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: callback.message.chat.id, message_id: callback.message.message_id, text: callback.message.text + '\n\n✅ <b>ОДОБРЕНО</b>', parse_mode: 'HTML' })
+          body: JSON.stringify({ chat_id: callback.message.chat.id, message_id: callback.message.message_id, text: callback.message.text + `\n\n✅ <b>${decision.label || 'ОДОБРЕНО'}</b>`, parse_mode: 'HTML' })
         });
       }
     } else if (action === 'reject') {
-      await pool.query(`UPDATE users SET approval_status = 'rejected' WHERE id = $1`, [userId]);
+      const decision = await applyApplicationDecision(userId, 'reject');
       if (BOT_TOKEN) {
         await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ callback_query_id: callback.id, text: '❌ Отклонено' })
+          body: JSON.stringify({ callback_query_id: callback.id, text: decision.notification || decision.message })
         });
         await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: callback.message.chat.id, message_id: callback.message.message_id, text: callback.message.text + '\n\n❌ <b>ОТКЛОНЕНО</b>', parse_mode: 'HTML' })
+          body: JSON.stringify({ chat_id: callback.message.chat.id, message_id: callback.message.message_id, text: callback.message.text + `\n\n❌ <b>${decision.label || 'ОТКЛОНЕНО'}</b>`, parse_mode: 'HTML' })
         });
       }
     }
@@ -1574,7 +1668,7 @@ app.post('/api/admin/users', async (req, res) => {
   try {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
     const result = await pool.query(
-      `SELECT id, telegram_id, username, first_name, last_name, company, company_type, phone,
+      `SELECT id, telegram_id, max_id, platform, username, first_name, last_name, company, company_type, phone,
               is_registered, is_admin, approval_status, balance, gold_balance, xp_points, deals_closed, avatar_url, created_at
        FROM users ORDER BY created_at DESC`
     );

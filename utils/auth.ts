@@ -12,11 +12,14 @@ export type Platform = 'telegram' | 'max' | 'pwa';
 function getMaxBridge(): any {
   if (typeof window === 'undefined') return null;
   const w = window as any;
-  // Возможные имена: window.maxBridge, window.MAX, window.WebApp (если не Telegram)
+  // Явные имена MAX SDK
   if (w.maxBridge) return w.maxBridge;
   if (w.MAX && typeof w.MAX === 'object') return w.MAX;
-  // Опасный путь: window.WebApp может быть и Telegram. Берём только если Telegram-SDK отсутствует.
-  if (w.WebApp && !w.Telegram) return w.WebApp;
+  // MAX инжектирует window.WebApp как ОТДЕЛЬНЫЙ объект от window.Telegram.WebApp.
+  // Даже если Telegram SDK загружен и установил window.Telegram, MAX всё равно
+  // ставит свой window.WebApp — они разные объекты по ссылке.
+  const tgWebApp = w.Telegram?.WebApp;
+  if (w.WebApp && w.WebApp !== tgWebApp) return w.WebApp;
   return null;
 }
 
@@ -29,6 +32,19 @@ function getMaxInitData(): string {
 
 export function isMaxEnv(): boolean {
   return !!getMaxBridge() && !!getMaxInitData();
+}
+
+// Эвристика: возможно открыто в MAX (по UserAgent или наличию bridge без initData).
+// Используется только для UI — не для авторизации.
+export function isMaybeMaxContext(): boolean {
+  if (isMaxEnv()) return true;
+  if (typeof window === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  // MAX использует WebView на базе Chromium; VK/Mail.ru — разработчики
+  if (/VKMAX|VKWebView|MaxMessenger|max\.ru/i.test(ua)) return true;
+  // Если bridge есть (но без initData — URL ещё не зарегистрирован в MAX)
+  if (getMaxBridge()) return true;
+  return false;
 }
 
 // MAX SDK инициализация (аналог WebApp.ready() / WebApp.expand() в Telegram).

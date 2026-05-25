@@ -12,7 +12,7 @@ import { UserProfile, DailyQuest, ConstructionUpdate, ShopItem, ProjectStat, Cur
 import React, { useState, useEffect } from 'react';
 import { User, Newspaper, ShoppingBag, Grid3X3, LayoutGrid, ArrowLeft, Settings } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
-import { getAuthData, savePwaToken, getPwaToken, isTelegramEnv, isMaxEnv, initMaxBridge, detectPlatform } from './utils/auth';
+import { getAuthData, savePwaToken, getPwaToken, isTelegramEnv, isMaxEnv, isMaybeMaxContext, initMaxBridge, detectPlatform } from './utils/auth';
 import { showToast } from './utils/toast';
 import PullToRefresh from './components/PullToRefresh';
 
@@ -469,31 +469,58 @@ const App: React.FC = () => {
 
   if (loading) return <div className="flex items-center justify-center h-screen bg-brand-cream w-full text-black">Загрузка...</div>;
 
-  if (!user) return (
-    <div className="flex flex-col items-center justify-center h-screen bg-brand-cream p-6 text-brand-black text-center max-w-md mx-auto">
-      <div className="w-24 h-24 bg-brand-gold/20 rounded-full mb-6 flex items-center justify-center">
-        <span className="text-4xl">🏠</span>
+  if (!user) {
+    const inMax = isMaybeMaxContext();
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-brand-cream p-6 text-brand-black text-center max-w-md mx-auto">
+        <div className="w-24 h-24 bg-brand-gold/20 rounded-full mb-6 flex items-center justify-center">
+          <span className="text-4xl">🏠</span>
+        </div>
+        <h1 className="text-2xl font-bold mb-3">Клуб Партнёров</h1>
+        {inMax ? (
+          <>
+            <p className="text-gray-500 text-sm mb-6 leading-relaxed">
+              Для входа нажмите кнопку запуска мини-приложения в <b>боте MAX</b>.
+            </p>
+            <div className="bg-white p-5 rounded-2xl border border-brand-beige w-full text-left space-y-3">
+              <div className="flex items-start gap-3">
+                <span className="text-brand-gold font-bold text-lg">1</span>
+                <p className="text-sm text-gray-600">Найдите бота «Клуб Партнёров» в MAX</p>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-brand-gold font-bold text-lg">2</span>
+                <p className="text-sm text-gray-600">Нажмите кнопку запуска приложения</p>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-brand-gold font-bold text-lg">3</span>
+                <p className="text-sm text-gray-600">Приложение откроется с автоматическим входом</p>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-gray-500 text-sm mb-6 leading-relaxed">
+              Для входа откройте приложение через <b>бота</b> в Telegram или MAX. После первого входа вы сможете установить приложение на домашний экран.
+            </p>
+            <div className="bg-white p-5 rounded-2xl border border-brand-beige w-full text-left space-y-3">
+              <div className="flex items-start gap-3">
+                <span className="text-brand-gold font-bold text-lg">1</span>
+                <p className="text-sm text-gray-600">Откройте бота в Telegram или MAX</p>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-brand-gold font-bold text-lg">2</span>
+                <p className="text-sm text-gray-600">Нажмите кнопку запуска приложения</p>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-brand-gold font-bold text-lg">3</span>
+                <p className="text-sm text-gray-600">В профиле скопируйте ссылку для установки на экран</p>
+              </div>
+            </div>
+          </>
+        )}
       </div>
-      <h1 className="text-2xl font-bold mb-3">Клуб Партнёров</h1>
-      <p className="text-gray-500 text-sm mb-6 leading-relaxed">
-        Для входа откройте приложение через <b>Telegram-бота</b>. После первого входа вы сможете установить приложение на домашний экран и пользоваться без Telegram.
-      </p>
-      <div className="bg-white p-5 rounded-2xl border border-brand-beige w-full text-left space-y-3">
-        <div className="flex items-start gap-3">
-          <span className="text-brand-gold font-bold text-lg">1</span>
-          <p className="text-sm text-gray-600">Откройте бота в Telegram</p>
-        </div>
-        <div className="flex items-start gap-3">
-          <span className="text-brand-gold font-bold text-lg">2</span>
-          <p className="text-sm text-gray-600">Нажмите кнопку запуска приложения</p>
-        </div>
-        <div className="flex items-start gap-3">
-          <span className="text-brand-gold font-bold text-lg">3</span>
-          <p className="text-sm text-gray-600">В профиле скопируйте ссылку для установки PWA</p>
-        </div>
-      </div>
-    </div>
-  );
+    );
+  }
 
   // --- WAIT-LIST: Ожидание одобрения ---
   if (approvalStatus === 'pending' || user.approval_status === 'pending') {

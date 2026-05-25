@@ -471,6 +471,16 @@ const App: React.FC = () => {
 
   if (!user) {
     const inMax = isMaybeMaxContext();
+    const w = window as any;
+    const dbg = {
+      platform: detectPlatform(),
+      maxBridge: !!w.maxBridge,
+      MAX: !!w.MAX,
+      WebApp: !!w.WebApp,
+      WebAppInitData: w.WebApp?.initData?.slice(0,40) || '—',
+      TgInitData: w.Telegram?.WebApp?.initData?.slice(0,40) || '—',
+      UA: navigator.userAgent.slice(0, 80),
+    };
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-brand-cream p-6 text-brand-black text-center max-w-md mx-auto">
         <div className="w-24 h-24 bg-brand-gold/20 rounded-full mb-6 flex items-center justify-center">
@@ -518,6 +528,12 @@ const App: React.FC = () => {
             </div>
           </>
         )}
+        {/* ВРЕМЕННЫЙ DEBUG — удалить после диагностики */}
+        <div className="mt-4 w-full bg-gray-100 rounded-xl p-3 text-left text-xs text-gray-500 break-all">
+          {Object.entries(dbg).map(([k,v]) => (
+            <div key={k}><b>{k}:</b> {String(v)}</div>
+          ))}
+        </div>
       </div>
     );
   }

@@ -1,9 +1,8 @@
 // Service Worker — Клуб Партнёров PWA
-const CACHE_NAME = 'kp-cache-v1';
+const CACHE_NAME = 'kp-cache-v2';
 
 // Static assets to cache on install
 const STATIC_ASSETS = [
-  '/',
   '/manifest.json',
   '/icon-192x192.png',
   '/icon-512x512.png',
@@ -35,7 +34,7 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Fetch: Network-first strategy for API, Cache-first for static assets
+// Fetch: network-first for HTML/API, stale-while-revalidate for static assets.
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
@@ -48,7 +47,16 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // API calls: network-first, no cache fallback (data must be fresh)
+  if (request.mode === 'navigate' || url.pathname === '/' || url.pathname.endsWith('.html')) {
+    event.respondWith(
+      fetch(request).catch(() => new Response('Приложение временно недоступно без подключения к интернету', {
+        status: 503,
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      }))
+    );
+    return;
+  }
+
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(
       fetch(request).catch(() => {

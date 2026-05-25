@@ -96,10 +96,11 @@ async function _maxApiCall(method, path2, body) {
 async function sendMaxMessage(recipientId, text, attachments) {
   if (!isMaxEnabled()) return { ok: false, error: 'MAX не активен' };
   if (!recipientId) return { ok: false, error: 'recipientId пустой' };
-  const body = { text, recipient: { user_id: Number(recipientId) } };
+  const body = { text };
+  if (/<\/?[a-z][\s\S]*>/i.test(String(text))) body.format = 'html';
   if (attachments && attachments.length) body.attachments = attachments;
   console.log(`[MAX] 📤 → user ${recipientId}: ${String(text).slice(0, 80)}`);
-  const result = await _maxApiCall('POST', '/messages', body);
+  const result = await _maxApiCall('POST', `/messages?user_id=${encodeURIComponent(String(recipientId))}`, body);
   if (result.ok) console.log(`[MAX] ✅ delivered to ${recipientId}`);
   return result;
 }
@@ -115,9 +116,44 @@ async function registerMaxWebhook() {
   const baseUrl = process.env.MAX_WEBHOOK_URL || process.env.WEBHOOK_URL;
   if (!baseUrl) { console.warn('[MAX] WEBHOOK_URL не задан — webhook не зарегистрирован'); return; }
   const fullUrl = `${baseUrl.replace(/\/$/, '')}/api/max-webhook`;
-  const result = await _maxApiCall('POST', '/subscriptions', { url: fullUrl });
+  const body = {
+    url: fullUrl,
+    update_types: ['bot_started', 'message_created', 'message_callback'],
+  };
+  if (process.env.MAX_WEBHOOK_SECRET) body.secret = process.env.MAX_WEBHOOK_SECRET;
+  const result = await _maxApiCall('POST', '/subscriptions', body);
   console.log('[MAX] 🔗 webhook:', result.ok ? `registered → ${fullUrl}` : result.error);
   return result;
+}
+
+function getMaxMiniAppLink() {
+  const botName = process.env.MAX_BOT_USERNAME || process.env.MAX_BOT_NAME || 'id301904538307_bot';
+  return `https://max.ru/${botName}?startapp`;
+}
+
+function buildMaxStartKeyboard() {
+  return [{
+    type: 'inline_keyboard',
+    payload: {
+      buttons: [[
+        { type: 'link', text: 'Открыть mini-app', url: getMaxMiniAppLink() },
+      ]],
+    },
+  }];
+}
+
+function getMaxUpdateUserId(update) {
+  return update?.user?.user_id
+    || update?.user?.id
+    || update?.message?.sender?.user_id
+    || update?.message?.sender?.id
+    || update?.message?.from?.user_id
+    || update?.message?.from?.id
+    || update?.chat_id;
+}
+
+function getMaxUpdateText(update) {
+  return String(update?.message?.body?.text || update?.message?.text || update?.text || '').trim();
 }
 
 console.log(isMaxEnabled() ? '🟣 MAX platform ENABLED' : '⚪ MAX platform disabled (set MAX_ENABLED=true to enable)');
@@ -1090,10 +1126,23 @@ app.post('/api/max-webhook', async (req, res) => {
   // Всегда отвечаем 200 быстро, чтобы MAX не ретраил
   res.status(200).json({ ok: true });
   if (!isMaxEnabled()) return;
+  if (process.env.MAX_WEBHOOK_SECRET && req.get('X-Max-Bot-Api-Secret') !== process.env.MAX_WEBHOOK_SECRET) {
+    console.warn('[MAX] webhook secret mismatch');
+    return;
+  }
   try {
     const update = req.body;
     console.log('[MAX] webhook update:', JSON.stringify(update).slice(0, 500));
-    // TODO: обработка кнопок, команд (/start) — добавится позже по аналогии с telegram-webhook
+    const updateType = update?.update_type;
+    const text = getMaxUpdateText(update).toLowerCase();
+    if (updateType === 'bot_started' || text === '/start' || text === 'start') {
+      const userId = getMaxUpdateUserId(update);
+      await sendMaxMessage(
+        userId,
+        `Добро пожаловать в Клуб Партнёров!\n\nОткройте мини-приложение кнопкой ниже или через кнопку mini-app в чате.\n${getMaxMiniAppLink()}`,
+        buildMaxStartKeyboard()
+      );
+    }
   } catch (e) {
     console.error('[MAX] webhook error:', e.message);
   }

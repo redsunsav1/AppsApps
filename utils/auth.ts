@@ -6,9 +6,7 @@ const PWA_TOKEN_KEY = 'kp_pwa_token';
 export type Platform = 'telegram' | 'max' | 'pwa';
 
 // --- MAX Messenger Bridge ---
-// SDK инжектируется WebView'ом MAX при открытии мини-приложения.
-// Документация: https://dev.max.ru/docs/webapps
-// Точное имя глобального объекта может отличаться — поэтому пробуем несколько.
+// SDK подключается в index.html: https://st.max.ru/js/max-web-app.js
 function getMaxBridge(): any {
   if (typeof window === 'undefined') return null;
   const w = window as any;
@@ -23,14 +21,17 @@ function getMaxBridge(): any {
 // Формат: ip=...&user={"id":123,"first_name":"..."}[&hash=...]
 function getMaxHashData(): string {
   if (typeof window === 'undefined') return '';
-  const hash = window.location.hash;
-  if (!hash.startsWith('#WebAppData=')) return '';
+  const hash = window.location.hash.replace(/^#/, '');
+  if (!hash) return '';
   try {
-    // Декодируем один уровень — URLSearchParams на сервере декодирует второй
-    return decodeURIComponent(hash.slice(12)); // убираем '#WebAppData='
+    const params = new URLSearchParams(hash);
+    const webAppData = params.get('WebAppData');
+    if (webAppData) return webAppData;
   } catch {
-    return hash.slice(12);
+    // Fallback below handles old/simple hash formats.
   }
+  if (!hash.startsWith('WebAppData=')) return '';
+  return hash.slice('WebAppData='.length).split('&WebAppPlatform=')[0].split('&WebAppVersion=')[0];
 }
 
 function getMaxInitData(): string {
@@ -52,6 +53,18 @@ export function isMaxEnv(): boolean {
   return false;
 }
 
+function hasMaxLaunchParams(): boolean {
+  if (typeof window === 'undefined') return false;
+  const hash = window.location.hash.replace(/^#/, '');
+  if (!hash) return false;
+  try {
+    const params = new URLSearchParams(hash);
+    return params.has('WebAppData') || params.has('WebAppPlatform') || params.has('WebAppVersion');
+  } catch {
+    return hash.includes('WebAppData=');
+  }
+}
+
 // User-Agent содержит MAX/версия — точное определение платформы
 export function isMaxUA(): boolean {
   if (typeof navigator === 'undefined') return false;
@@ -61,8 +74,24 @@ export function isMaxUA(): boolean {
 // Эвристика для UI (не для авторизации)
 export function isMaybeMaxContext(): boolean {
   if (isMaxEnv()) return true;
+  if (hasMaxLaunchParams()) return true;
   if (isMaxUA()) return true;
   return false;
+}
+
+export function waitForMaxInitData(timeoutMs = 1200): Promise<string> {
+  const startedAt = Date.now();
+  return new Promise((resolve) => {
+    const tick = () => {
+      const data = getMaxInitData();
+      if (data || Date.now() - startedAt >= timeoutMs) {
+        resolve(data);
+        return;
+      }
+      window.setTimeout(tick, 50);
+    };
+    tick();
+  });
 }
 
 // MAX SDK инициализация (аналог WebApp.ready() / WebApp.expand() в Telegram).

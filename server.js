@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import pg from 'pg';
 import path from 'path';
@@ -138,8 +139,17 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').filter(Boolean);
 app.use(ALLOWED_ORIGINS.length > 0 ? cors({ origin: ALLOWED_ORIGINS }) : cors());
 
+app.use(compression({ level: 6 }));
 app.use(express.json({ limit: '5mb' }));
-app.use(express.static(path.join(__dirname, 'dist')));
+// Статика: кэш 7 дней для ассетов, 0 для index.html (всегда свежий)
+app.use(express.static(path.join(__dirname, 'dist'), {
+  maxAge: '7d',
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('index.html') || filePath.endsWith('sw.js')) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+  },
+}));
 
 // Rate limiting (in-memory)
 const rlMap = new Map();
@@ -568,7 +578,7 @@ const initDb = async () => {
     // Сид-данные
     const projCheck = await pool.query('SELECT count(*) FROM projects');
     if (parseInt(projCheck.rows[0].count) === 0) {
-      await pool.query(`INSERT INTO projects (id, name, floors, units_per_floor, image_url) VALUES ('brk', 'ЖК Бруклин', 12, 6, 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00') ON CONFLICT DO NOTHING`);
+      await pool.query(`INSERT INTO projects (id, name, floors, units_per_floor, image_url) VALUES ('brk', 'ЖК Бруклин', 12, 6, NULL) ON CONFLICT DO NOTHING`);
     }
     // Обновляем developer_name для известных проектов
     await pool.query(`UPDATE projects SET developer_name = 'ООО СЗ «ХОРОШО»' WHERE id = 'brk' AND developer_name IS NULL`);

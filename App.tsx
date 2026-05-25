@@ -24,8 +24,10 @@ enum Tab {
 }
 
 // --- ЗАГЛУШКИ (Для полей, которые не приходят с сервера) ---
+// SVG-аватар по умолчанию — работает без интернета, не зависит от CDN
+const DEFAULT_AVATAR_SVG = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='256' height='256' viewBox='0 0 256 256'><rect width='256' height='256' fill='%231a1a1a' rx='128'/><circle cx='128' cy='96' r='48' fill='%23c9a84c'/><ellipse cx='128' cy='200' rx='72' ry='48' fill='%23c9a84c'/></svg>`;
 const MOCK_DEFAULTS = {
-  avatar: 'https://images.unsplash.com/photo-1560250097-0b93528c311a?ixlib=rb-4.0.3&auto=format&fit=crop&w=256&q=80',
+  avatar: DEFAULT_AVATAR_SVG,
   level: 1, currentXP: 0, nextLevelXP: 1000, telegram: '', whatsapp: ''
 };
 
@@ -471,20 +473,6 @@ const App: React.FC = () => {
 
   if (!user) {
     const inMax = isMaybeMaxContext();
-    const w = window as any;
-    const urlSearch = window.location.search;
-    const urlHash = window.location.hash;
-    const dbg = {
-      platform: detectPlatform(),
-      maxBridge: !!w.maxBridge,
-      MAX: !!w.MAX,
-      WebApp: !!w.WebApp,
-      WebAppInitData: w.WebApp?.initData?.slice(0,40) || '—',
-      TgInitData: w.Telegram?.WebApp?.initData?.slice(0,40) || '—',
-      urlSearch: urlSearch.slice(0, 100) || '(пусто)',
-      urlHash: urlHash.slice(0, 100) || '(пусто)',
-      UA: navigator.userAgent.slice(40, 130),
-    };
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-brand-cream p-6 text-brand-black text-center max-w-md mx-auto">
         <div className="w-24 h-24 bg-brand-gold/20 rounded-full mb-6 flex items-center justify-center">
@@ -532,12 +520,6 @@ const App: React.FC = () => {
             </div>
           </>
         )}
-        {/* ВРЕМЕННЫЙ DEBUG — удалить после диагностики */}
-        <div className="mt-4 w-full bg-gray-100 rounded-xl p-3 text-left text-xs text-gray-500 break-all">
-          {Object.entries(dbg).map(([k,v]) => (
-            <div key={k}><b>{k}:</b> {String(v)}</div>
-          ))}
-        </div>
       </div>
     );
   }

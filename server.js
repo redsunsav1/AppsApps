@@ -279,9 +279,14 @@ async function resolveAuth(initDataOrToken, platformHint) {
 async function isAdmin(initData) {
   if (!initData) return false;
   try {
-    const tgUser = await resolveAuth(initData);
-    if (!tgUser) return false;
-    const res = await pool.query('SELECT is_admin FROM users WHERE telegram_id = $1', [tgUser.id]);
+    const user = await resolveAuth(initData);
+    if (!user) return false;
+    let res;
+    if (user._platform === 'max') {
+      res = await pool.query('SELECT is_admin FROM users WHERE max_id = $1', [user.id]);
+    } else {
+      res = await pool.query('SELECT is_admin FROM users WHERE telegram_id = $1', [user.id]);
+    }
     return res.rows.length > 0 && res.rows[0].is_admin;
   } catch (e) { return false; }
 }
@@ -1010,13 +1015,20 @@ app.post('/api/auth/max', rateLimit(900000, 10), async (req, res) => {
     const maxUser = parseMaxInitData(initData);
     if (!maxUser || !maxUser.id) return res.status(401).json({ error: 'Invalid MAX initData signature' });
 
+    const isAdminMaxId = process.env.ADMIN_MAX_ID && String(maxUser.id) === String(process.env.ADMIN_MAX_ID);
+
     let dbUser = await pool.query('SELECT * FROM users WHERE max_id = $1', [maxUser.id]);
     if (dbUser.rows.length === 0) {
       dbUser = await pool.query(
-        `INSERT INTO users (max_id, username, first_name, platform, gold_balance, balance)
-         VALUES ($1, $2, $3, 'max', 0, 0) RETURNING *`,
-        [maxUser.id, maxUser.username || null, maxUser.first_name || '']
+        `INSERT INTO users (max_id, username, first_name, platform, gold_balance, balance, is_admin, is_registered)
+         VALUES ($1, $2, $3, 'max', 0, 0, $4, $4) RETURNING *`,
+        [maxUser.id, maxUser.username || null, maxUser.first_name || '', isAdminMaxId]
       );
+    } else if (isAdminMaxId && !dbUser.rows[0].is_admin) {
+      // Если юзер уже есть, но флаг admin ещё не выставлен — ставим
+      await pool.query('UPDATE users SET is_admin = TRUE, is_registered = TRUE WHERE max_id = $1', [maxUser.id]);
+      dbUser.rows[0].is_admin = true;
+      dbUser.rows[0].is_registered = true;
     }
     const user = dbUser.rows[0];
 

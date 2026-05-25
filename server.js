@@ -9,6 +9,15 @@ import cron from 'node-cron';
 import multer from 'multer';
 import nodemailer from 'nodemailer';
 
+// MAX Messenger platform adapter (изолированный, активируется через MAX_ENABLED=true)
+import {
+  isMaxEnabled,
+  parseMaxInitData,
+  sendMaxMessage,
+  notifyAdminMax,
+  registerMaxWebhook,
+} from './server/platforms/max.js';
+
 // Поддержка обоих имён переменной (TELEGRAM_BOT_TOKEN в Amvera, BOT_TOKEN в коде)
 if (!process.env.BOT_TOKEN && process.env.TELEGRAM_BOT_TOKEN) {
   process.env.BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -108,18 +117,55 @@ function parseTelegramUser(initData) {
   } catch (e) { return null; }
 }
 
-// Универсальная авторизация: Telegram initData ИЛИ PWA-токен
-async function resolveAuth(initDataOrToken) {
+// Универсальная авторизация: Telegram initData ИЛИ MAX initData ИЛИ PWA-токен
+// ВАЖНО: Telegram-путь не изменён, MAX и PWA — fallback после него.
+// Возвращает: { id, username, first_name, _platform: 'telegram'|'max'|'pwa' }
+async function resolveAuth(initDataOrToken, platformHint) {
   if (!initDataOrToken) return null;
-  // 1. Попытка: Telegram initData
-  const tgUser = parseTelegramUser(initDataOrToken);
-  if (tgUser) return tgUser;
-  // 2. Попытка: PWA-токен
+
+  // 1. Telegram initData (как раньше — приоритет, ничего не сломалось)
+  if (platformHint !== 'max') {
+    const tgUser = parseTelegramUser(initDataOrToken);
+    if (tgUser) return { ...tgUser, _platform: 'telegram' };
+  }
+
+  // 2. MAX initData (только если платформа активирована)
+  if (isMaxEnabled() && platformHint !== 'telegram') {
+    const maxUser = parseMaxInitData(initDataOrToken);
+    if (maxUser) {
+      // Для MAX-юзера ищем/создаём запись в users по max_id
+      try {
+        const res = await pool.query('SELECT * FROM users WHERE max_id = $1', [maxUser.id]);
+        if (res.rows.length > 0) {
+          const u = res.rows[0];
+          return {
+            id: u.max_id,
+            username: u.username,
+            first_name: u.first_name,
+            _platform: 'max',
+            _dbId: u.id,
+          };
+        }
+      } catch (e) {
+        console.error('resolveAuth max lookup error:', e.message);
+      }
+      // Юзер прошёл подпись, но в БД его ещё нет — возвращаем как нового
+      return { ...maxUser, _platform: 'max', _isNew: true };
+    }
+  }
+
+  // 3. PWA-токен (как раньше)
   try {
     const res = await pool.query('SELECT * FROM users WHERE pwa_token = $1', [initDataOrToken]);
     if (res.rows.length > 0) {
       const user = res.rows[0];
-      return { id: user.telegram_id, username: user.username, first_name: user.first_name };
+      return {
+        id: user.telegram_id || user.max_id,
+        username: user.username,
+        first_name: user.first_name,
+        _platform: user.platform || (user.telegram_id ? 'telegram' : 'max'),
+        _dbId: user.id,
+      };
     }
   } catch (e) {
     console.error('resolveAuth pwa_token error:', e.message);
@@ -216,6 +262,41 @@ async function notifyAdminTelegram(text, inlineKeyboard) {
 }
 
 // =============================================
+// УНИВЕРСАЛЬНЫЕ УВЕДОМЛЕНИЯ (Telegram + MAX)
+// =============================================
+// Принимает либо объект пользователя из БД (с полями telegram_id, max_id, platform),
+// либо просто id одной из платформ. Маршрутизирует уведомление автоматически.
+async function notifyUser(userOrId, text, inlineKeyboard) {
+  // Если передан примитив — считаем Telegram (обратная совместимость)
+  if (typeof userOrId === 'number' || typeof userOrId === 'string') {
+    return notifyUserTelegram(userOrId, text, inlineKeyboard);
+  }
+  if (!userOrId || typeof userOrId !== 'object') {
+    return { ok: false, error: 'invalid recipient' };
+  }
+  const platform = userOrId.platform || (userOrId.telegram_id ? 'telegram' : userOrId.max_id ? 'max' : null);
+  if (platform === 'max' && userOrId.max_id) {
+    return sendMaxMessage(userOrId.max_id, text);
+  }
+  if (platform === 'telegram' && userOrId.telegram_id) {
+    return notifyUserTelegram(userOrId.telegram_id, text, inlineKeyboard);
+  }
+  // Fallback: пробуем оба, что найдётся
+  if (userOrId.telegram_id) return notifyUserTelegram(userOrId.telegram_id, text, inlineKeyboard);
+  if (userOrId.max_id) return sendMaxMessage(userOrId.max_id, text);
+  return { ok: false, error: 'no platform id on user' };
+}
+
+async function notifyAdmin(text, inlineKeyboard) {
+  // Дублируем уведомление во все настроенные каналы (TG + MAX), не блокируя друг друга
+  const results = await Promise.allSettled([
+    notifyAdminTelegram(text, inlineKeyboard),
+    isMaxEnabled() ? notifyAdminMax(text) : Promise.resolve({ ok: false, skipped: true }),
+  ]);
+  return results;
+}
+
+// =============================================
 // WEBHOOK REGISTRATION
 // =============================================
 async function registerWebhook() {
@@ -289,6 +370,22 @@ const initDb = async () => {
     // 38-ФЗ: застройщик проекта (рекламная пометка)
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS developer_name TEXT;');
     await pool.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS video_url TEXT;');
+
+    // --- MAX Messenger platform support (dual-platform: Telegram + MAX) ---
+    // Колонка max_id — внешний ID пользователя в мессенджере MAX (аналог telegram_id)
+    // Колонка platform — на какой платформе изначально зарегистрировался пользователь
+    // ВАЖНО: telegram_id остаётся как был, но теперь допускает NULL (для MAX-юзеров)
+    await pool.query('ALTER TABLE users ALTER COLUMN telegram_id DROP NOT NULL;').catch(e => {
+      // Не критично — на новой БД constraint мог не существовать
+      if (!/does not exist/i.test(e.message)) console.warn('[migration] drop NOT NULL telegram_id:', e.message);
+    });
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS max_id BIGINT;');
+    await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'telegram';");
+    // Уникальный индекс на max_id (отдельно, partial — чтобы NULL не конфликтовали)
+    await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_max_id ON users(max_id) WHERE max_id IS NOT NULL;');
+    // Constraint: должен быть указан хотя бы один внешний ID
+    // Не добавляем CHECK constraint напрямую, т.к. он может уронить существующие строки
+    // при наличии аномалий. Логика гарантируется на уровне приложения.
 
     // --- Миссии (автоматические достижения) ---
     await pool.query(`CREATE TABLE IF NOT EXISTS missions (
@@ -796,6 +893,74 @@ app.post('/api/auth/token', rateLimit(900000, 10), async (req, res) => {
 });
 
 // =============================================
+// API: АВТОРИЗАЦИЯ ЧЕРЕЗ MAX MESSENGER
+// =============================================
+// Зеркало /api/auth, но валидирует MAX initData и работает с колонкой max_id.
+// Endpoint возвращает 503 если MAX_ENABLED != 'true' — это безопасный no-op.
+app.post('/api/auth/max', rateLimit(900000, 10), async (req, res) => {
+  if (!isMaxEnabled()) {
+    return res.status(503).json({ error: 'MAX platform отключена. Установите MAX_ENABLED=true.' });
+  }
+  const { initData } = req.body;
+  if (!initData) return res.status(400).json({ error: 'No data' });
+  try {
+    const maxUser = parseMaxInitData(initData);
+    if (!maxUser || !maxUser.id) return res.status(401).json({ error: 'Invalid MAX initData signature' });
+
+    let dbUser = await pool.query('SELECT * FROM users WHERE max_id = $1', [maxUser.id]);
+    if (dbUser.rows.length === 0) {
+      dbUser = await pool.query(
+        `INSERT INTO users (max_id, username, first_name, platform, gold_balance, balance)
+         VALUES ($1, $2, $3, 'max', 0, 0) RETURNING *`,
+        [maxUser.id, maxUser.username || null, maxUser.first_name || '']
+      );
+    }
+    const user = dbUser.rows[0];
+
+    // Генерировать PWA-токен если нет (универсальный, единая логика с Telegram)
+    if (!user.pwa_token) {
+      const token = crypto.randomBytes(32).toString('hex');
+      await pool.query('UPDATE users SET pwa_token = $1 WHERE id = $2', [token, user.id]);
+      user.pwa_token = token;
+    }
+
+    // Серия входов (единая логика с Telegram)
+    const today = new Date().toISOString().slice(0, 10);
+    const lastLogin = user.last_login_date ? new Date(user.last_login_date).toISOString().slice(0, 10) : null;
+    if (lastLogin !== today) {
+      const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+      const newStreak = (lastLogin === yesterday) ? (user.login_streak || 0) + 1 : 1;
+      await pool.query('UPDATE users SET last_login_date = $1, login_streak = $2 WHERE id = $3', [today, newStreak, user.id]);
+      user.login_streak = newStreak;
+      user.last_login_date = today;
+      checkMissions(user.id, 'login').catch(() => {});
+    }
+    res.json({ user });
+  } catch (e) {
+    console.error('[MAX] Auth error:', e);
+    res.status(500).json({ error: 'Auth error' });
+  }
+});
+
+// =============================================
+// API: WEBHOOK MAX MESSENGER
+// =============================================
+// Принимает обновления от MAX (новые сообщения, callback'и).
+// На старте просто логируем — обработка событий по мере необходимости.
+app.post('/api/max-webhook', async (req, res) => {
+  // Всегда отвечаем 200 быстро, чтобы MAX не ретраил
+  res.status(200).json({ ok: true });
+  if (!isMaxEnabled()) return;
+  try {
+    const update = req.body;
+    console.log('[MAX] webhook update:', JSON.stringify(update).slice(0, 500));
+    // TODO: обработка кнопок, команд (/start) — добавится позже по аналогии с telegram-webhook
+  } catch (e) {
+    console.error('[MAX] webhook error:', e.message);
+  }
+});
+
+// =============================================
 // АВАТАРКА
 // =============================================
 app.post('/api/avatar', async (req, res) => {
@@ -816,22 +981,28 @@ app.post('/api/avatar', async (req, res) => {
 app.post('/api/register', async (req, res) => {
   const { initData, firstName, lastName, companyType, company, phone, consentPd } = req.body;
   try {
-    const tgUser = await resolveAuth(initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
+    const authUser = await resolveAuth(initData);
+    if (!authUser) return res.status(401).json({ error: 'Invalid signature' });
     if (!consentPd) return res.status(400).json({ error: 'Необходимо согласие на обработку персональных данных' });
+
+    // Универсальный UPDATE — работает для Telegram и MAX (внешний ID в нужной колонке)
+    const platform = authUser._platform || 'telegram';
+    const idCol = platform === 'max' ? 'max_id' : 'telegram_id';
     await pool.query(
-      `UPDATE users SET first_name = $1, last_name = $2, company_type = $3, company = $4, phone = $5, approval_status = 'pending', consent_pd = TRUE, consent_pd_at = NOW() WHERE telegram_id = $6`,
-      [firstName, lastName, companyType || 'agency', company, phone, tgUser.id]
+      `UPDATE users SET first_name = $1, last_name = $2, company_type = $3, company = $4, phone = $5, approval_status = 'pending', consent_pd = TRUE, consent_pd_at = NOW() WHERE ${idCol} = $6`,
+      [firstName, lastName, companyType || 'agency', company, phone, authUser.id]
     );
-    const userRes = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [tgUser.id]);
+    const userRes = await pool.query(`SELECT id FROM users WHERE ${idCol} = $1`, [authUser.id]);
     const userId = userRes.rows[0]?.id;
     const typeLabel = companyType === 'ip' ? 'ИП' : 'Агентство';
-    const text = `📋 <b>Новая заявка на вход!</b>\n\n👤 ${firstName} ${lastName}\n🏢 ${typeLabel}: ${company}\n📞 ${phone}`;
+    const platformLabel = platform === 'max' ? '🟣 MAX' : '✈️ Telegram';
+    const text = `📋 <b>Новая заявка на вход!</b>\n\n👤 ${firstName} ${lastName}\n🏢 ${typeLabel}: ${company}\n📞 ${phone}\n📲 ${platformLabel}`;
     const keyboard = [[
       { text: '✅ Одобрить', callback_data: `approve_${userId}` },
       { text: '❌ Отклонить', callback_data: `reject_${userId}` }
     ]];
-    notifyAdminTelegram(text, keyboard);
+    // Дублируем уведомление админу в оба мессенджера (TG обязательно, MAX если включён)
+    notifyAdmin(text, keyboard);
     // Проверить миссию «профиль заполнен» (асинхронно)
     if (userId) checkMissions(userId, 'register').catch(() => {});
     res.json({ success: true, status: 'pending' });
@@ -846,7 +1017,7 @@ app.post('/api/applications', async (req, res) => {
   try {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
     const result = await pool.query(
-      `SELECT id, telegram_id, first_name, last_name, company_type, company, phone, created_at
+      `SELECT id, telegram_id, max_id, platform, first_name, last_name, company_type, company, phone, created_at
        FROM users WHERE approval_status = 'pending' ORDER BY created_at DESC`
     );
     res.json(result.rows);
@@ -861,10 +1032,11 @@ app.post('/api/applications/:userId/approve', async (req, res) => {
   try {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
     await pool.query(`UPDATE users SET is_registered = TRUE, approval_status = 'approved' WHERE id = $1`, [req.params.userId]);
-    const userRes = await pool.query('SELECT telegram_id, first_name FROM users WHERE id = $1', [req.params.userId]);
+    // Селектим все возможные ID платформ — notifyUser сам выберет куда слать
+    const userRes = await pool.query('SELECT telegram_id, max_id, platform, first_name FROM users WHERE id = $1', [req.params.userId]);
     if (userRes.rows.length > 0) {
       const u = userRes.rows[0];
-      notifyUserTelegram(u.telegram_id, `🎉 <b>Добро пожаловать в Клуб Партнёров!</b>\n\nПривет, ${u.first_name || 'партнёр'}! Ваша заявка одобрена.`);
+      notifyUser(u, `🎉 <b>Добро пожаловать в Клуб Партнёров!</b>\n\nПривет, ${u.first_name || 'партнёр'}! Ваша заявка одобрена.`);
     }
     res.json({ success: true });
   } catch (e) { console.error('Approve error:', e); res.status(500).json({ error: 'Server error' }); }
@@ -2106,6 +2278,13 @@ process.on('SIGTERM', () => { pool.end().then(() => process.exit(0)); });
 // Старт: подключаемся к БД + регистрируем webhook
 initDb().then(() => {
   registerWebhook();
+  // Регистрируем MAX webhook (no-op если MAX_ENABLED != 'true')
+  if (isMaxEnabled()) {
+    registerMaxWebhook().catch(e => console.error('[MAX] webhook reg error:', e?.message || e));
+    console.log('🟣 MAX platform: ENABLED');
+  } else {
+    console.log('⚪ MAX platform: disabled (set MAX_ENABLED=true to enable)');
+  }
   fetchAmoCRMPipelines().then(() => fetchAmoCRMCustomFields());
   app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT} | v2025-02-20-dedup`));
 }).catch(err => {

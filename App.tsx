@@ -12,7 +12,7 @@ import { UserProfile, DailyQuest, ConstructionUpdate, ShopItem, ProjectStat, Cur
 import React, { useState, useEffect } from 'react';
 import { User, Newspaper, ShoppingBag, Grid3X3, LayoutGrid, ArrowLeft, Settings } from 'lucide-react';
 import WebApp from '@twa-dev/sdk';
-import { getAuthData, savePwaToken, getPwaToken, isTelegramEnv } from './utils/auth';
+import { getAuthData, savePwaToken, getPwaToken, isTelegramEnv, isMaxEnv, initMaxBridge, detectPlatform } from './utils/auth';
 import { showToast } from './utils/toast';
 import PullToRefresh from './components/PullToRefresh';
 
@@ -236,11 +236,15 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
-    try {
-      WebApp.ready();
-      WebApp.expand();
-    } catch (e) {
-      console.log("Not in telegram");
+    // Инициализация SDK мессенджера в зависимости от платформы.
+    // Если открыто не в мессенджере (PWA-режим в браузере) — оба вызова
+    // тихо упадут в catch и приложение продолжит работу как обычный сайт.
+    const platform = detectPlatform();
+    console.log(`[platform] detected: ${platform}`);
+    if (platform === 'telegram') {
+      try { WebApp.ready(); WebApp.expand(); } catch (e) { console.log('TG init skipped:', e); }
+    } else if (platform === 'max') {
+      try { initMaxBridge(); } catch (e) { console.log('MAX init skipped:', e); }
     }
 
     fetchNews();
@@ -298,6 +302,36 @@ const App: React.FC = () => {
       .catch(err => {
         console.error(err);
         setDebugError(err.message || "Неизвестная ошибка соединения");
+      })
+      .finally(() => setLoading(false));
+      return;
+    }
+
+    // Путь 1-bis: MAX initData (только если запущено в MAX-мессенджере)
+    const maxInitData = isMaxEnv() ? getAuthData() : '';
+    if (maxInitData) {
+      fetch('/api/auth/max', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: maxInitData }),
+      })
+      .then(async (res) => {
+        if (res.status === 503) {
+          throw new Error('MAX-платформа отключена на сервере');
+        }
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`MAX auth error ${res.status}: ${text.slice(0, 100)}`);
+        }
+        return res.json();
+      })
+      .then((data) => {
+        if (data.user) applyAuthUser(data.user);
+        else throw new Error("Сервер не вернул пользователя (MAX)");
+      })
+      .catch(err => {
+        console.error('[MAX auth]', err);
+        setDebugError(err.message || "Ошибка авторизации MAX");
       })
       .finally(() => setLoading(false));
       return;

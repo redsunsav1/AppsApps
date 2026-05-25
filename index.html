@@ -25,6 +25,13 @@
   <!-- Telegram Web App SDK -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 
+  <!--
+    MAX Messenger Bridge SDK инжектируется самим WebView мессенджера MAX
+    при открытии мини-приложения (см. https://dev.max.ru/docs/webapps).
+    Доступен как window.WebApp (по аналогии с window.Telegram.WebApp).
+    Никаких внешних скриптов добавлять не нужно — определяется в runtime.
+  -->
+
   <!-- Fonts -->
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>

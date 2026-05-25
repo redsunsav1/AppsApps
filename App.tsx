@@ -214,7 +214,7 @@ const App: React.FC = () => {
     }
     setUser({
       ...MOCK_DEFAULTS,
-      id: String(sUser.telegram_id),
+      id: String(sUser.telegram_id || sUser.max_id || sUser.id),
       name: sUser.first_name,
       avatar: sUser.avatar_url || MOCK_DEFAULTS.avatar,
       silverCoins: sUser.balance,

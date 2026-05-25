@@ -1231,10 +1231,10 @@ app.post('/api/news', async (req, res) => {
     if (await isAdmin(req.body.initData)) {
       const { title, text, image_url, video_url, project_name, progress, checklist } = req.body;
       await pool.query('INSERT INTO news (title, text, image_url, video_url, project_name, progress, checklist) VALUES ($1, $2, $3, $4, $5, $6, $7)', [title, text, image_url, video_url, project_name, progress, JSON.stringify(checklist)]);
-      const usersRes = await pool.query('SELECT telegram_id FROM users WHERE is_registered = TRUE');
+      const usersRes = await pool.query('SELECT telegram_id, max_id, platform FROM users WHERE is_registered = TRUE');
       const projectLabel = project_name ? ` (${project_name})` : '';
       const newsText = `📰 <b>Новая новость${projectLabel}</b>\n\n${title}\n\n${(text || '').slice(0, 150)}${(text || '').length > 150 ? '...' : ''}`;
-      for (const u of usersRes.rows) { notifyUserTelegram(u.telegram_id, newsText); }
+      for (const u of usersRes.rows) { notifyUser(u, newsText); }
       res.json({ success: true });
     } else res.status(403).json({ error: 'Forbidden' });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
@@ -2277,9 +2277,9 @@ app.post('/api/bookings/:id/complete', async (req, res) => {
     });
 
     // Уведомление риелтору
-    const userRes = await pool.query('SELECT telegram_id, first_name FROM users WHERE id = $1', [booking.user_id]);
+    const userRes = await pool.query('SELECT telegram_id, max_id, platform, first_name FROM users WHERE id = $1', [booking.user_id]);
     if (userRes.rows[0]) {
-      notifyUserTelegram(userRes.rows[0].telegram_id,
+      notifyUser(userRes.rows[0],
         `🎉 <b>Сделка подтверждена!</b>\n\nПоздравляем, ${userRes.rows[0].first_name || 'партнёр'}! Вам начислена 1 золотая монета 🪙`);
     }
     checkMissions(booking.user_id, 'booking').catch(() => {});

@@ -9,14 +9,23 @@ import cron from 'node-cron';
 import multer from 'multer';
 import nodemailer from 'nodemailer';
 
-// MAX Messenger platform adapter (изолированный, активируется через MAX_ENABLED=true)
-import {
-  isMaxEnabled,
-  parseMaxInitData,
-  sendMaxMessage,
-  notifyAdminMax,
-  registerMaxWebhook,
-} from './server/platforms/max.js';
+// MAX Messenger platform adapter (опциональный — приложение запустится даже без модуля)
+let isMaxEnabled = () => false;
+let parseMaxInitData = () => null;
+let sendMaxMessage = async () => ({ ok: false, error: 'MAX module not loaded' });
+let notifyAdminMax = async () => ({ ok: false, error: 'MAX module not loaded' });
+let registerMaxWebhook = async () => {};
+try {
+  const maxModule = await import('./server/platforms/max.js');
+  isMaxEnabled = maxModule.isMaxEnabled;
+  parseMaxInitData = maxModule.parseMaxInitData;
+  sendMaxMessage = maxModule.sendMaxMessage;
+  notifyAdminMax = maxModule.notifyAdminMax;
+  registerMaxWebhook = maxModule.registerMaxWebhook;
+  console.log('🟣 MAX module loaded successfully');
+} catch (e) {
+  console.warn('⚪ MAX module not available — running in Telegram-only mode:', e?.code || e?.message);
+}
 
 // Поддержка обоих имён переменной (TELEGRAM_BOT_TOKEN в Amvera, BOT_TOKEN в коде)
 if (!process.env.BOT_TOKEN && process.env.TELEGRAM_BOT_TOKEN) {

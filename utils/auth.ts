@@ -12,38 +12,56 @@ export type Platform = 'telegram' | 'max' | 'pwa';
 function getMaxBridge(): any {
   if (typeof window === 'undefined') return null;
   const w = window as any;
-  // Явные имена MAX SDK
   if (w.maxBridge) return w.maxBridge;
   if (w.MAX && typeof w.MAX === 'object') return w.MAX;
-  // MAX инжектирует window.WebApp как ОТДЕЛЬНЫЙ объект от window.Telegram.WebApp.
-  // Даже если Telegram SDK загружен и установил window.Telegram, MAX всё равно
-  // ставит свой window.WebApp — они разные объекты по ссылке.
   const tgWebApp = w.Telegram?.WebApp;
   if (w.WebApp && w.WebApp !== tgWebApp) return w.WebApp;
   return null;
 }
 
+// MAX передаёт данные через URL-хеш: #WebAppData=<url-encoded-params>
+// Формат: ip=...&user={"id":123,"first_name":"..."}[&hash=...]
+function getMaxHashData(): string {
+  if (typeof window === 'undefined') return '';
+  const hash = window.location.hash;
+  if (!hash.startsWith('#WebAppData=')) return '';
+  try {
+    // Декодируем один уровень — URLSearchParams на сервере декодирует второй
+    return decodeURIComponent(hash.slice(12)); // убираем '#WebAppData='
+  } catch {
+    return hash.slice(12);
+  }
+}
+
 function getMaxInitData(): string {
+  // 1. JS bridge (Android / desktop MAX)
   const bridge = getMaxBridge();
-  if (!bridge) return '';
-  // Различные варианты доступа в зависимости от версии SDK
-  return bridge.initData || bridge.startParams || bridge.start_params || '';
+  if (bridge) {
+    const d = bridge.initData || bridge.startParams || bridge.start_params || '';
+    if (d) return d;
+  }
+  // 2. URL hash (iOS MAX: #WebAppData=...)
+  return getMaxHashData();
 }
 
 export function isMaxEnv(): boolean {
-  return !!getMaxBridge() && !!getMaxInitData();
+  // JS bridge + данные
+  if (!!getMaxBridge() && !!getMaxInitData()) return true;
+  // URL hash — MAX на iOS передаёт данные так
+  if (!!getMaxHashData()) return true;
+  return false;
 }
 
-// Эвристика: возможно открыто в MAX (по UserAgent или наличию bridge без initData).
-// Используется только для UI — не для авторизации.
+// User-Agent содержит MAX/версия — точное определение платформы
+export function isMaxUA(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /MAX\/\d/i.test(navigator.userAgent);
+}
+
+// Эвристика для UI (не для авторизации)
 export function isMaybeMaxContext(): boolean {
   if (isMaxEnv()) return true;
-  if (typeof window === 'undefined') return false;
-  const ua = navigator.userAgent || '';
-  // MAX использует WebView на базе Chromium; VK/Mail.ru — разработчики
-  if (/VKMAX|VKWebView|MaxMessenger|max\.ru/i.test(ua)) return true;
-  // Если bridge есть (но без initData — URL ещё не зарегистрирован в MAX)
-  if (getMaxBridge()) return true;
+  if (isMaxUA()) return true;
   return false;
 }
 

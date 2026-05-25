@@ -9,23 +9,117 @@ import cron from 'node-cron';
 import multer from 'multer';
 import nodemailer from 'nodemailer';
 
-// MAX Messenger platform adapter (опциональный — приложение запустится даже без модуля)
-let isMaxEnabled = () => false;
-let parseMaxInitData = () => null;
-let sendMaxMessage = async () => ({ ok: false, error: 'MAX module not loaded' });
-let notifyAdminMax = async () => ({ ok: false, error: 'MAX module not loaded' });
-let registerMaxWebhook = async () => {};
-try {
-  const maxModule = await import('./server/platforms/max.js');
-  isMaxEnabled = maxModule.isMaxEnabled;
-  parseMaxInitData = maxModule.parseMaxInitData;
-  sendMaxMessage = maxModule.sendMaxMessage;
-  notifyAdminMax = maxModule.notifyAdminMax;
-  registerMaxWebhook = maxModule.registerMaxWebhook;
-  console.log('🟣 MAX module loaded successfully');
-} catch (e) {
-  console.warn('⚪ MAX module not available — running in Telegram-only mode:', e?.code || e?.message);
+// =============================================
+// MAX Messenger Platform Adapter (inline)
+// =============================================
+// Встроен напрямую в server.js — без отдельного файла-модуля.
+// Активируется через env: MAX_ENABLED=true + MAX_BOT_TOKEN=<token>
+
+const MAX_API_BASE = process.env.MAX_API_BASE || 'https://platform-api.max.ru';
+
+function isMaxEnabled() {
+  return process.env.MAX_ENABLED === 'true';
 }
+
+function _maxGetToken() {
+  return process.env.MAX_BOT_TOKEN || '';
+}
+
+function _maxValidateInitData(initData) {
+  const token = _maxGetToken();
+  if (!token || !initData) return null;
+  try {
+    const urlParams = new URLSearchParams(initData);
+    const hash = urlParams.get('hash') || urlParams.get('sign') || urlParams.get('signature');
+    if (!hash) return null;
+    urlParams.delete('hash'); urlParams.delete('sign'); urlParams.delete('signature');
+    const pairs = [];
+    for (const [k, v] of urlParams.entries()) pairs.push(`${k}=${v}`);
+    pairs.sort();
+    const dataCheckString = pairs.join('\n');
+    const secretKey1 = crypto.createHmac('sha256', 'WebAppData').update(token).digest();
+    const checkHash1 = crypto.createHmac('sha256', secretKey1).update(dataCheckString).digest('hex');
+    const checkHash2 = crypto.createHmac('sha256', token).update(dataCheckString).digest('hex');
+    if (checkHash1 !== hash && checkHash2 !== hash) return null;
+    const userStr = urlParams.get('user');
+    if (userStr) {
+      try {
+        const u = JSON.parse(userStr);
+        return { id: Number(u.id || u.user_id), first_name: u.first_name || u.name || '', last_name: u.last_name || '', username: u.username || '' };
+      } catch {}
+    }
+    const userId = urlParams.get('user_id') || urlParams.get('id');
+    if (userId) return { id: Number(userId), first_name: urlParams.get('first_name') || '', last_name: urlParams.get('last_name') || '', username: urlParams.get('username') || '' };
+    return null;
+  } catch (e) {
+    console.error('[MAX] HMAC validation error:', e.message);
+    return null;
+  }
+}
+
+function parseMaxInitData(initData) {
+  if (!initData) return null;
+  if (process.env.MAX_TRUST_INIT_DATA === 'true') {
+    console.warn('[MAX] ⚠️ MAX_TRUST_INIT_DATA=true — валидация отключена (dev-режим)');
+    try {
+      const urlParams = new URLSearchParams(initData);
+      const userStr = urlParams.get('user');
+      if (userStr) { const u = JSON.parse(userStr); return { id: Number(u.id || u.user_id), first_name: u.first_name || u.name || '', last_name: u.last_name || '', username: u.username || '' }; }
+      const userId = urlParams.get('user_id') || urlParams.get('id');
+      if (userId) return { id: Number(userId), first_name: urlParams.get('first_name') || '', last_name: '', username: '' };
+    } catch {}
+    return null;
+  }
+  return _maxValidateInitData(initData);
+}
+
+async function _maxApiCall(method, path2, body) {
+  const token = _maxGetToken();
+  if (!token) return { ok: false, error: 'MAX_BOT_TOKEN не задан' };
+  try {
+    const resp = await fetch(`${MAX_API_BASE}${path2}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'Authorization': token },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await resp.text();
+    let data; try { data = JSON.parse(text); } catch { data = { raw: text }; }
+    if (!resp.ok) { console.error(`[MAX API] ${method} ${path2} → HTTP ${resp.status}:`, data); return { ok: false, status: resp.status, error: data.message || data.error || text, data }; }
+    return { ok: true, data };
+  } catch (e) {
+    console.error(`[MAX API] ${method} ${path2} → exception:`, e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+async function sendMaxMessage(recipientId, text, attachments) {
+  if (!isMaxEnabled()) return { ok: false, error: 'MAX не активен' };
+  if (!recipientId) return { ok: false, error: 'recipientId пустой' };
+  const body = { text, recipient: { user_id: Number(recipientId) } };
+  if (attachments && attachments.length) body.attachments = attachments;
+  console.log(`[MAX] 📤 → user ${recipientId}: ${String(text).slice(0, 80)}`);
+  const result = await _maxApiCall('POST', '/messages', body);
+  if (result.ok) console.log(`[MAX] ✅ delivered to ${recipientId}`);
+  return result;
+}
+
+async function notifyAdminMax(text) {
+  const adminId = process.env.ADMIN_MAX_ID;
+  if (!adminId) { console.warn('[MAX] ADMIN_MAX_ID не задан'); return { ok: false, error: 'no ADMIN_MAX_ID' }; }
+  return sendMaxMessage(adminId, text);
+}
+
+async function registerMaxWebhook() {
+  if (!isMaxEnabled()) return;
+  const baseUrl = process.env.MAX_WEBHOOK_URL || process.env.WEBHOOK_URL;
+  if (!baseUrl) { console.warn('[MAX] WEBHOOK_URL не задан — webhook не зарегистрирован'); return; }
+  const fullUrl = `${baseUrl.replace(/\/$/, '')}/api/max-webhook`;
+  const result = await _maxApiCall('POST', '/subscriptions', { url: fullUrl });
+  console.log('[MAX] 🔗 webhook:', result.ok ? `registered → ${fullUrl}` : result.error);
+  return result;
+}
+
+console.log(isMaxEnabled() ? '🟣 MAX platform ENABLED' : '⚪ MAX platform disabled (set MAX_ENABLED=true to enable)');
 
 // Поддержка обоих имён переменной (TELEGRAM_BOT_TOKEN в Amvera, BOT_TOKEN в коде)
 if (!process.env.BOT_TOKEN && process.env.TELEGRAM_BOT_TOKEN) {

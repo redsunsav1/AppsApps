@@ -276,18 +276,32 @@ async function resolveAuth(initDataOrToken, platformHint) {
   return null;
 }
 
+// Универсальный резолвер: всегда возвращает полную строку из таблицы users + _platform.
+// Работает для Telegram initData, MAX initData, MAX URL-hash и PWA-токена.
+async function resolveDbUser(initData, platformHint) {
+  const auth = await resolveAuth(initData, platformHint);
+  if (!auth) return null;
+  try {
+    let r;
+    if (auth._dbId) {
+      r = await pool.query('SELECT * FROM users WHERE id = $1', [auth._dbId]);
+    } else if (auth._platform === 'max') {
+      r = await pool.query('SELECT * FROM users WHERE max_id = $1', [auth.id]);
+    } else {
+      r = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [auth.id]);
+    }
+    return r.rows.length > 0 ? { ...r.rows[0], _platform: auth._platform } : null;
+  } catch (e) {
+    console.error('resolveDbUser error:', e.message);
+    return null;
+  }
+}
+
 async function isAdmin(initData) {
   if (!initData) return false;
   try {
-    const user = await resolveAuth(initData);
-    if (!user) return false;
-    let res;
-    if (user._platform === 'max') {
-      res = await pool.query('SELECT is_admin FROM users WHERE max_id = $1', [user.id]);
-    } else {
-      res = await pool.query('SELECT is_admin FROM users WHERE telegram_id = $1', [user.id]);
-    }
-    return res.rows.length > 0 && res.rows[0].is_admin;
+    const user = await resolveDbUser(initData);
+    return !!user?.is_admin;
   } catch (e) { return false; }
 }
 
@@ -1081,11 +1095,11 @@ app.post('/api/max-webhook', async (req, res) => {
 app.post('/api/avatar', async (req, res) => {
   try {
     const { initData, avatarData } = req.body;
-    const tgUser = await resolveAuth(initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
+    const dbUser = await resolveDbUser(initData);
+    if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
     if (!avatarData) return res.status(400).json({ error: 'No avatar data' });
     if (avatarData.length > 1400000) return res.status(400).json({ error: 'Image too large' });
-    await pool.query('UPDATE users SET avatar_url = $1 WHERE telegram_id = $2', [avatarData, tgUser.id]);
+    await pool.query('UPDATE users SET avatar_url = $1 WHERE id = $2', [avatarData, dbUser.id]);
     res.json({ success: true, avatar_url: avatarData });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -1096,19 +1110,16 @@ app.post('/api/avatar', async (req, res) => {
 app.post('/api/register', async (req, res) => {
   const { initData, firstName, lastName, companyType, company, phone, consentPd } = req.body;
   try {
-    const authUser = await resolveAuth(initData);
+    const authUser = await resolveDbUser(initData);
     if (!authUser) return res.status(401).json({ error: 'Invalid signature' });
     if (!consentPd) return res.status(400).json({ error: 'Необходимо согласие на обработку персональных данных' });
 
-    // Универсальный UPDATE — работает для Telegram и MAX (внешний ID в нужной колонке)
-    const platform = authUser._platform || 'telegram';
-    const idCol = platform === 'max' ? 'max_id' : 'telegram_id';
     await pool.query(
-      `UPDATE users SET first_name = $1, last_name = $2, company_type = $3, company = $4, phone = $5, approval_status = 'pending', consent_pd = TRUE, consent_pd_at = NOW() WHERE ${idCol} = $6`,
+      `UPDATE users SET first_name = $1, last_name = $2, company_type = $3, company = $4, phone = $5, approval_status = 'pending', consent_pd = TRUE, consent_pd_at = NOW() WHERE id = $6`,
       [firstName, lastName, companyType || 'agency', company, phone, authUser.id]
     );
-    const userRes = await pool.query(`SELECT id FROM users WHERE ${idCol} = $1`, [authUser.id]);
-    const userId = userRes.rows[0]?.id;
+    const userId = authUser.id;
+    const platform = authUser._platform || 'telegram';
     const typeLabel = companyType === 'ip' ? 'ИП' : 'Агентство';
     const platformLabel = platform === 'max' ? '🟣 MAX' : '✈️ Telegram';
     const text = `📋 <b>Новая заявка на вход!</b>\n\n👤 ${firstName} ${lastName}\n🏢 ${typeLabel}: ${company}\n📞 ${phone}\n📲 ${platformLabel}`;
@@ -1231,11 +1242,9 @@ app.post('/api/news', async (req, res) => {
 
 app.post('/api/news/unread-count', async (req, res) => {
   try {
-    const tgUser = await resolveAuth(req.body.initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
-    const userRes = await pool.query('SELECT last_seen_news_at FROM users WHERE telegram_id = $1', [tgUser.id]);
-    if (userRes.rows.length === 0) return res.json({ count: 0 });
-    const lastSeen = userRes.rows[0].last_seen_news_at;
+    const dbUser = await resolveDbUser(req.body.initData);
+    if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
+    const lastSeen = dbUser.last_seen_news_at;
     let countRes;
     if (lastSeen) { countRes = await pool.query('SELECT COUNT(*) FROM news WHERE created_at > $1', [lastSeen]); }
     else { countRes = await pool.query('SELECT COUNT(*) FROM news'); }
@@ -1245,9 +1254,9 @@ app.post('/api/news/unread-count', async (req, res) => {
 
 app.post('/api/news/mark-seen', async (req, res) => {
   try {
-    const tgUser = await resolveAuth(req.body.initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
-    await pool.query('UPDATE users SET last_seen_news_at = NOW() WHERE telegram_id = $1', [tgUser.id]);
+    const dbUser = await resolveDbUser(req.body.initData);
+    if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
+    await pool.query('UPDATE users SET last_seen_news_at = NOW() WHERE id = $1', [dbUser.id]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -1314,10 +1323,10 @@ app.delete('/api/products/:id', async (req, res) => {
 app.post('/api/buy', async (req, res) => {
   const { initData, productId } = req.body;
   try {
-    const tgUser = await resolveAuth(initData);
+    const tgUser = await resolveDbUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
     const result = await withTransaction(async (client) => {
-      const userRes = await client.query('SELECT * FROM users WHERE telegram_id = $1 FOR UPDATE', [tgUser.id]);
+      const userRes = await client.query('SELECT * FROM users WHERE id = $1 FOR UPDATE', [tgUser.id]);
       const prodRes = await client.query('SELECT * FROM products WHERE id = $1', [productId]);
       if (userRes.rows.length === 0 || prodRes.rows.length === 0) throw { status: 404, msg: 'Not found' };
       const user = userRes.rows[0]; const product = prodRes.rows[0];
@@ -1516,10 +1525,9 @@ app.post('/api/admin/users', async (req, res) => {
 
 app.delete('/api/admin/users/:id', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
-    const tgUser = await resolveAuth(req.body.initData);
-    const targetUser = await pool.query('SELECT telegram_id FROM users WHERE id = $1', [req.params.id]);
-    if (targetUser.rows.length > 0 && String(targetUser.rows[0].telegram_id) === String(tgUser.id)) {
+    const adminUser = await resolveDbUser(req.body.initData);
+    if (!adminUser?.is_admin) return res.status(403).json({ error: 'Forbidden' });
+    if (String(req.params.id) === String(adminUser.id)) {
       return res.status(400).json({ error: 'Нельзя удалить самого себя' });
     }
     const userId = req.params.id;
@@ -1545,10 +1553,9 @@ app.delete('/api/admin/users/:id', async (req, res) => {
 
 app.post('/api/admin/clear-users', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
-    const tgUser = await resolveAuth(req.body.initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
-    const result = await pool.query('DELETE FROM users WHERE telegram_id != $1', [tgUser.id]);
+    const adminUser = await resolveDbUser(req.body.initData);
+    if (!adminUser?.is_admin) return res.status(403).json({ error: 'Forbidden' });
+    const result = await pool.query('DELETE FROM users WHERE id != $1', [adminUser.id]);
     res.json({ success: true, deleted: result.rowCount });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -1609,11 +1616,8 @@ app.get('/api/quests', async (req, res) => {
 app.post('/api/quests/claim', async (req, res) => {
   const { initData, questId } = req.body;
   try {
-    const tgUser = await resolveAuth(initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
-    const userRes = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [tgUser.id]);
-    if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
-    const user = userRes.rows[0];
+    const user = await resolveDbUser(initData);
+    if (!user) return res.status(401).json({ error: 'Invalid signature' });
     const questRes = await pool.query('SELECT * FROM quests WHERE id = $1 AND is_active = TRUE', [questId]);
     if (questRes.rows.length === 0) return res.status(404).json({ error: 'Quest not found' });
     const quest = questRes.rows[0];
@@ -1870,11 +1874,8 @@ app.post('/api/events/list', async (req, res) => {
     const { initData } = req.body || {};
     let userId = null;
     if (initData) {
-      const tgUser = await resolveAuth(initData);
-      if (tgUser) {
-        const ur = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [tgUser.id]);
-        if (ur.rows.length > 0) userId = ur.rows[0].id;
-      }
+      const dbUser = await resolveDbUser(initData);
+      if (dbUser) userId = dbUser.id;
     }
     let result;
     if (userId) {
@@ -1948,11 +1949,8 @@ app.delete('/api/events/:id', async (req, res) => {
 // Записаться на событие
 app.post('/api/events/:id/register', async (req, res) => {
   try {
-    const tgUser = await resolveAuth(req.body.initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
-    const userRes = await pool.query('SELECT id, first_name FROM users WHERE telegram_id = $1', [tgUser.id]);
-    if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
-    const userId = userRes.rows[0].id;
+    const dbUser = await resolveDbUser(req.body.initData);
+    if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
     const eventRes = await pool.query('SELECT * FROM events WHERE id = $1', [req.params.id]);
     if (eventRes.rows.length === 0) return res.status(404).json({ error: 'Event not found' });
     const event = eventRes.rows[0];
@@ -1962,8 +1960,8 @@ app.post('/api/events/:id/register', async (req, res) => {
     }
     const countRes = await pool.query('SELECT COUNT(*) FROM event_registrations WHERE event_id = $1', [req.params.id]);
     if (parseInt(countRes.rows[0].count) >= event.spots_total) return res.status(400).json({ error: 'Мест нет' });
-    await pool.query('INSERT INTO event_registrations (event_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, userId]);
-    notifyUserTelegram(tgUser.id, `✅ Вы записаны на <b>${event.title}</b>!\n📅 ${event.date} в ${event.time || ''}`);
+    await pool.query('INSERT INTO event_registrations (event_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, dbUser.id]);
+    notifyUser(dbUser, `✅ Вы записаны на <b>${event.title}</b>!\n📅 ${event.date} в ${event.time || ''}`);
     res.json({ success: true });
   } catch (e) { console.error('Event register error:', e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -1971,11 +1969,9 @@ app.post('/api/events/:id/register', async (req, res) => {
 // Отменить участие в событии
 app.post('/api/events/:id/unregister', async (req, res) => {
   try {
-    const tgUser = await resolveAuth(req.body.initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
-    const userRes = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [tgUser.id]);
-    if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
-    await pool.query('DELETE FROM event_registrations WHERE event_id = $1 AND user_id = $2', [req.params.id, userRes.rows[0].id]);
+    const dbUser = await resolveDbUser(req.body.initData);
+    if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
+    await pool.query('DELETE FROM event_registrations WHERE event_id = $1 AND user_id = $2', [req.params.id, dbUser.id]);
     res.json({ success: true });
   } catch (e) { console.error('Event unregister error:', e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -2107,11 +2103,9 @@ async function checkMissions(userId, trigger) {
 app.post('/api/missions', async (req, res) => {
   try {
     const { initData } = req.body;
-    const tgUser = await resolveAuth(initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
-    const userRes = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [tgUser.id]);
-    if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
-    const userId = userRes.rows[0].id;
+    const dbUser = await resolveDbUser(initData);
+    if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
+    const userId = dbUser.id;
 
     await ensureUserMissions(userId);
     const result = await pool.query(`
@@ -2137,11 +2131,8 @@ app.post('/api/missions', async (req, res) => {
 app.post('/api/bookings', async (req, res) => {
   const { initData, unitId, projectId } = req.body;
   try {
-    const tgUser = await resolveAuth(initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
-    const userRes = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [tgUser.id]);
-    if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
-    const user = userRes.rows[0];
+    const user = await resolveDbUser(initData);
+    if (!user) return res.status(401).json({ error: 'Invalid signature' });
     if (!user.is_registered) return res.status(400).json({ error: 'Сначала зарегистрируйтесь' });
 
     const result = await withTransaction(async (client) => {
@@ -2176,15 +2167,14 @@ app.post('/api/bookings', async (req, res) => {
 app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, res) => {
   try {
     const { initData, buyerName, buyerPhone, consentTransfer } = req.body;
-    const tgUser = await resolveAuth(initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
+    const dbUser = await resolveDbUser(initData);
+    if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
 
     const bookingRes = await pool.query('SELECT b.*, u.first_name as agent_name, u.phone as agent_phone, u.company as agent_company FROM bookings b JOIN users u ON b.user_id = u.id WHERE b.id = $1', [req.params.id]);
     if (bookingRes.rows.length === 0) return res.status(404).json({ error: 'Booking not found' });
     const booking = bookingRes.rows[0];
 
-    const userRes = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [tgUser.id]);
-    if (userRes.rows[0]?.id !== booking.user_id) return res.status(403).json({ error: 'Not your booking' });
+    if (dbUser.id !== booking.user_id) return res.status(403).json({ error: 'Not your booking' });
     if (booking.passport_sent) return res.status(400).json({ error: 'Паспорт уже отправлен' });
 
     const unitRes = await pool.query('SELECT * FROM units WHERE id = $1', [booking.unit_id]);
@@ -2238,15 +2228,14 @@ app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, re
 app.post('/api/bookings/:id/documents', upload.array('documents', 10), async (req, res) => {
   try {
     const { initData } = req.body;
-    const tgUser = await resolveAuth(initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
+    const dbUser = await resolveDbUser(initData);
+    if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
 
     const bookingRes = await pool.query('SELECT b.*, u.first_name as agent_name, u.phone as agent_phone, u.company as agent_company FROM bookings b JOIN users u ON b.user_id = u.id WHERE b.id = $1', [req.params.id]);
     if (bookingRes.rows.length === 0) return res.status(404).json({ error: 'Booking not found' });
     const booking = bookingRes.rows[0];
 
-    const userRes = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [tgUser.id]);
-    if (userRes.rows[0]?.id !== booking.user_id) return res.status(403).json({ error: 'Not your booking' });
+    if (dbUser.id !== booking.user_id) return res.status(403).json({ error: 'Not your booking' });
     if (!booking.passport_sent) return res.status(400).json({ error: 'Сначала отправьте паспорт' });
     if (booking.docs_sent) return res.status(400).json({ error: 'Документы уже отправлены' });
 
@@ -2323,16 +2312,14 @@ app.post('/api/bookings/:id/revoke', async (req, res) => {
 app.post('/api/bookings/my', async (req, res) => {
   try {
     const { initData } = req.body;
-    const tgUser = await resolveAuth(initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
-    const userRes = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [tgUser.id]);
-    if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    const dbUser = await resolveDbUser(initData);
+    if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
     const result = await pool.query(`
       SELECT b.*, un.number as unit_number, un.floor as unit_floor, un.area as unit_area,
              un.price as unit_price, un.rooms as unit_rooms, un.status as unit_status, p.name as project_name
       FROM bookings b LEFT JOIN units un ON b.unit_id = un.id LEFT JOIN projects p ON b.project_id = p.id
       WHERE b.user_id = $1 AND b.stage != 'CANCELLED' ORDER BY b.created_at DESC
-    `, [userRes.rows[0].id]);
+    `, [dbUser.id]);
     res.json(result.rows);
   } catch (e) { console.error('My bookings error:', e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -2356,12 +2343,8 @@ app.post('/api/bookings/cancel', async (req, res) => {
     const { initData, unitId } = req.body;
     if (!unitId) return res.status(400).json({ error: 'unitId required' });
 
-    const tgUser = await resolveAuth(initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
-
-    const userRes = await pool.query('SELECT id, is_admin FROM users WHERE telegram_id = $1', [tgUser.id]);
-    if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
-    const user = userRes.rows[0];
+    const user = await resolveDbUser(initData);
+    if (!user) return res.status(401).json({ error: 'Invalid signature' });
 
     // Только админ может снимать бронь
     if (!user.is_admin) {

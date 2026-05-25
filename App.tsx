@@ -472,6 +472,8 @@ const App: React.FC = () => {
   if (!user) {
     const inMax = isMaybeMaxContext();
     const w = window as any;
+    const urlSearch = window.location.search;
+    const urlHash = window.location.hash;
     const dbg = {
       platform: detectPlatform(),
       maxBridge: !!w.maxBridge,
@@ -479,7 +481,9 @@ const App: React.FC = () => {
       WebApp: !!w.WebApp,
       WebAppInitData: w.WebApp?.initData?.slice(0,40) || '—',
       TgInitData: w.Telegram?.WebApp?.initData?.slice(0,40) || '—',
-      UA: navigator.userAgent.slice(0, 80),
+      urlSearch: urlSearch.slice(0, 100) || '(пусто)',
+      urlHash: urlHash.slice(0, 100) || '(пусто)',
+      UA: navigator.userAgent.slice(40, 130),
     };
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-brand-cream p-6 text-brand-black text-center max-w-md mx-auto">

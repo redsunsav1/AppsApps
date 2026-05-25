@@ -21,6 +21,7 @@ RUN npm install --production --network-timeout=100000
 # Copy built frontend and server
 COPY --from=builder /app/dist ./dist
 COPY server.js ./
+COPY server ./server
 
 EXPOSE 80
 

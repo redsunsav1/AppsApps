@@ -778,7 +778,27 @@ function findTag(item, ...names) {
   return null;
 }
 
-async function syncProjectWithXml(projectId, url) {
+const projectSyncLocks = new Map();
+
+async function syncProjectWithXml(projectId, url, options = {}) {
+  const key = String(projectId);
+  const existing = projectSyncLocks.get(key);
+  if (existing) {
+    if (options.skipIfRunning) {
+      console.log(`⏭️ Sync ${key} skipped: already running`);
+      return { skipped: true, reason: 'already_running', savedCount: 0 };
+    }
+    console.log(`⏳ Sync ${key} already running; waiting (${options.reason || 'manual'})`);
+    return existing;
+  }
+
+  const task = syncProjectWithXmlUnsafe(projectId, url)
+    .finally(() => projectSyncLocks.delete(key));
+  projectSyncLocks.set(key, task);
+  return task;
+}
+
+async function syncProjectWithXmlUnsafe(projectId, url) {
   console.log(`🔄 Syncing ${projectId} from ${url}`);
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Feed HTTP ${response.status}`);
@@ -1015,11 +1035,31 @@ async function syncProjectWithXml(projectId, url) {
   return diag;
 }
 
-cron.schedule('0 */2 * * *', async () => {
+async function refreshProjectFeed(projectId, options = {}) {
+  const project = (await pool.query('SELECT id, feed_url FROM projects WHERE id = $1', [projectId])).rows[0];
+  if (!project) return { ok: false, status: 404, msg: 'Project not found' };
+  if (!project.feed_url) return { ok: true, skipped: true, reason: 'no_feed_url' };
+  try {
+    const diag = await syncProjectWithXml(project.id, project.feed_url, options);
+    return { ok: true, diag };
+  } catch (e) {
+    console.error(`Feed refresh failed for ${project.id}:`, e.message);
+    return { ok: false, status: 503, msg: 'Не удалось обновить данные по фиду. Попробуйте через минуту.' };
+  }
+}
+
+async function refreshFeedBeforeBooking(unitId, fallbackProjectId) {
+  const unitRes = await pool.query('SELECT project_id FROM units WHERE id = $1', [unitId]);
+  const projectId = unitRes.rows[0]?.project_id || fallbackProjectId;
+  if (!projectId) return { ok: false, status: 404, msg: 'Квартира не найдена' };
+  return refreshProjectFeed(projectId, { reason: 'pre-booking' });
+}
+
+cron.schedule('*/5 * * * *', async () => {
   try {
     const res = await pool.query('SELECT id, feed_url FROM projects WHERE feed_url IS NOT NULL');
     for (const project of res.rows) {
-      if (project.feed_url) await syncProjectWithXml(project.id, project.feed_url);
+      if (project.feed_url) await syncProjectWithXml(project.id, project.feed_url, { reason: 'cron', skipIfRunning: true });
     }
   } catch (e) { console.error('Cron Error:', e); }
 });
@@ -2287,6 +2327,9 @@ app.post('/api/bookings', async (req, res) => {
     const user = await resolveDbUser(initData);
     if (!user) return res.status(401).json({ error: 'Invalid signature' });
     if (!user.is_registered) return res.status(400).json({ error: 'Сначала зарегистрируйтесь' });
+
+    const freshFeed = await refreshFeedBeforeBooking(unitId, projectId);
+    if (!freshFeed.ok) return res.status(freshFeed.status || 503).json({ error: freshFeed.msg || 'Не удалось обновить фид' });
 
     const result = await withTransaction(async (client) => {
       // Блокируем строку квартиры

@@ -131,6 +131,14 @@ function getMaxMiniAppLink() {
   return `https://max.ru/${botName}?startapp`;
 }
 
+function getAppUrl() {
+  return process.env.APP_URL || process.env.WEBAPP_URL || process.env.WEBHOOK_URL || 'https://partnerbuild.ru';
+}
+
+function getAppOpenKeyboard() {
+  return [[{ text: 'Открыть приложение', url: getAppUrl() }]];
+}
+
 function buildMaxStartKeyboard() {
   return [{
     type: 'inline_keyboard',
@@ -566,6 +574,7 @@ const initDb = async () => {
     await pool.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS checklist JSONB;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;');
+    await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS image_url TEXT;');
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS feed_url TEXT;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS xp_points INT DEFAULT 0;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS deals_closed INT DEFAULT 0;');
@@ -1427,7 +1436,7 @@ app.post('/api/news', async (req, res) => {
       const usersRes = await pool.query('SELECT telegram_id, max_id, platform FROM users WHERE is_registered = TRUE');
       const projectLabel = project_name ? ` (${project_name})` : '';
       const newsText = `📰 <b>Новая новость${projectLabel}</b>\n\n${title}\n\n${(text || '').slice(0, 150)}${(text || '').length > 150 ? '...' : ''}`;
-      for (const u of usersRes.rows) { notifyUser(u, newsText); }
+      for (const u of usersRes.rows) { notifyUser(u, newsText, getAppOpenKeyboard()); }
       res.json({ success: true });
     } else res.status(403).json({ error: 'Forbidden' });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
@@ -1567,11 +1576,12 @@ app.get('/api/projects', async (req, res) => {
 app.put('/api/projects/:id', async (req, res) => {
   try {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
-    const { name, floors, unitsPerFloor } = req.body;
+    const { name, floors, unitsPerFloor, imageUrl } = req.body;
     const sets = []; const vals = []; let idx = 1;
     if (name) { sets.push(`name = $${idx++}`); vals.push(name); }
     if (floors) { sets.push(`floors = $${idx++}`); vals.push(parseInt(floors)); }
     if (unitsPerFloor) { sets.push(`units_per_floor = $${idx++}`); vals.push(parseInt(unitsPerFloor)); }
+    if (imageUrl !== undefined) { sets.push(`image_url = $${idx++}`); vals.push(String(imageUrl || '').trim() || null); }
     if (sets.length === 0) return res.status(400).json({ error: 'Nothing to update' });
     vals.push(req.params.id);
     await pool.query(`UPDATE projects SET ${sets.join(', ')} WHERE id = $${idx}`, vals);
@@ -2107,6 +2117,21 @@ app.post('/api/events', async (req, res) => {
       for (const uid of invited_user_ids) {
         await pool.query('INSERT INTO event_invitations (event_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [eventId, uid]);
       }
+    }
+    const recipientsRes = is_private
+      ? await pool.query(
+          `SELECT telegram_id, max_id, platform FROM users
+           WHERE id = ANY($1::int[]) AND is_registered = TRUE AND approval_status = 'approved'`,
+          [Array.isArray(invited_user_ids) ? invited_user_ids : []]
+        )
+      : await pool.query(
+          `SELECT telegram_id, max_id, platform FROM users
+           WHERE is_registered = TRUE AND approval_status = 'approved'`
+        );
+    const eventDate = new Date(date).toLocaleDateString('ru-RU');
+    const eventText = `📅 <b>Новое событие</b>\n\n<b>${title}</b>\n${description ? `${description}\n` : ''}📍 ${eventDate}${time ? ` в ${time}` : ''}\n👥 Мест: ${spots_total || 30}`;
+    for (const u of recipientsRes.rows) {
+      notifyUser(u, eventText, getAppOpenKeyboard());
     }
     res.json({ success: true, eventId });
   } catch (e) { console.error('Create event error:', e); res.status(500).json({ error: 'Server error' }); }

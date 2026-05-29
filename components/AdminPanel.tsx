@@ -127,6 +127,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [editProjectName, setEditProjectName] = useState('');
   const [editProjectFloors, setEditProjectFloors] = useState('');
   const [editProjectUPF, setEditProjectUPF] = useState('');
+  const [editProjectImage, setEditProjectImage] = useState('');
 
   const [loading, setLoading] = useState(false);
 
@@ -211,9 +212,10 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     const body: any = { initData: getAuthData(), name: editProjectName };
     if (editProjectFloors) body.floors = editProjectFloors;
     if (editProjectUPF) body.unitsPerFloor = editProjectUPF;
+    body.imageUrl = editProjectImage;
     try {
       await fetch(`/api/projects/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      showToast('Сохранено', 'success'); setEditingProjectId(null); fetchProjects();
+      showToast('Сохранено', 'success'); setEditingProjectId(null); setEditProjectImage(''); fetchProjects();
     } catch { showToast('Ошибка', 'error'); }
   };
 
@@ -1162,6 +1164,13 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                     <div className="space-y-2">
                                         <input value={editProjectName} onChange={e => setEditProjectName(e.target.value)}
                                             className="w-full p-2 border rounded-lg text-black bg-white text-sm" placeholder="Название ЖК" />
+                                        <input value={editProjectImage} onChange={e => setEditProjectImage(e.target.value)}
+                                            className="w-full p-2 border rounded-lg text-black bg-white text-sm" placeholder="URL миниатюры ЖК" />
+                                        {editProjectImage && (
+                                            <div className="h-24 rounded-lg overflow-hidden bg-gray-100 border">
+                                                <img src={editProjectImage} alt="" className="w-full h-full object-cover" />
+                                            </div>
+                                        )}
                                         <div className="flex gap-2">
                                             <div className="flex-1">
                                                 <label className="text-[10px] text-gray-400 block mb-0.5">Этажей</label>
@@ -1176,7 +1185,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                         </div>
                                         <div className="flex gap-2">
                                             <button onClick={() => handleSaveProject(p.id)} className="flex-1 bg-blue-600 text-white px-3 py-2 rounded-lg text-xs font-bold">Сохранить</button>
-                                            <button onClick={() => setEditingProjectId(null)} className="bg-gray-200 px-3 py-2 rounded-lg text-xs">Отмена</button>
+                                            <button onClick={() => { setEditingProjectId(null); setEditProjectImage(''); }} className="bg-gray-200 px-3 py-2 rounded-lg text-xs">Отмена</button>
                                         </div>
                                     </div>
                                 ) : (
@@ -1187,12 +1196,17 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                                 <span className="text-xs text-gray-400 ml-2 font-mono">({p.id})</span>
                                             </div>
                                         </div>
+                                        {p.image_url && (
+                                            <div className="h-28 rounded-xl overflow-hidden bg-gray-100 border mb-3">
+                                                <img src={p.image_url} alt={p.name} className="w-full h-full object-cover" />
+                                            </div>
+                                        )}
                                         <div className="text-xs text-gray-500 mb-3 space-y-1">
                                             <div>Этажей: <b className="text-black">{p.floors}</b> • Кв/этаж: <b className="text-black">{p.units_per_floor}</b></div>
                                             {p.feed_url && <div className="truncate">Фид: {p.feed_url.slice(0, 50)}...</div>}
                                         </div>
                                         <div className="flex gap-2 flex-wrap">
-                                            <button onClick={() => { setEditingProjectId(p.id); setEditProjectName(p.name); setEditProjectFloors(''); setEditProjectUPF(''); }}
+                                            <button onClick={() => { setEditingProjectId(p.id); setEditProjectName(p.name); setEditProjectFloors(''); setEditProjectUPF(''); setEditProjectImage(p.image_url || ''); }}
                                                 className="bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg text-xs font-bold">Настроить</button>
                                             {p.feed_url && (
                                                 <button onClick={() => handleResyncProject(p.id)} disabled={loading}

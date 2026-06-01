@@ -229,6 +229,10 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const { Pool } = pg;
 
+// Доверяем reverse proxy Amvera — req.ip берётся из X-Forwarded-For,
+// иначе все клиенты за прокси выглядят как один IP и попадают в общий rate-limit
+app.set('trust proxy', true);
+
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
 // CORS
@@ -1098,7 +1102,7 @@ app.get('/api/test-notify', async (req, res) => {
 // =============================================
 // API: АВТОРИЗАЦИЯ
 // =============================================
-app.post('/api/auth', rateLimit(900000, 10), async (req, res) => {
+app.post('/api/auth', rateLimit(900000, 30), async (req, res) => {
   const { initData } = req.body;
   if (!initData) return res.status(400).json({ error: 'No data' });
   try {
@@ -1137,7 +1141,7 @@ app.post('/api/auth', rateLimit(900000, 10), async (req, res) => {
 // =============================================
 // API: АВТОРИЗАЦИЯ ПО PWA-ТОКЕНУ
 // =============================================
-app.post('/api/auth/token', rateLimit(900000, 10), async (req, res) => {
+app.post('/api/auth/token', rateLimit(900000, 30), async (req, res) => {
   const { token } = req.body;
   if (!token) return res.status(400).json({ error: 'No token' });
   try {
@@ -1166,7 +1170,7 @@ app.post('/api/auth/token', rateLimit(900000, 10), async (req, res) => {
 // =============================================
 // Зеркало /api/auth, но валидирует MAX initData и работает с колонкой max_id.
 // Endpoint возвращает 503 если MAX_ENABLED != 'true' — это безопасный no-op.
-app.post('/api/auth/max', rateLimit(900000, 10), async (req, res) => {
+app.post('/api/auth/max', rateLimit(900000, 30), async (req, res) => {
   if (!isMaxEnabled()) {
     return res.status(503).json({ error: 'MAX platform отключена. Установите MAX_ENABLED=true.' });
   }

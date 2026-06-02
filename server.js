@@ -1912,6 +1912,157 @@ app.get('/api/statistics', async (req, res) => {
 // Кэш воронок и кастомных полей AmoCRM (заполняется при старте)
 let amocrmPipelineCache = { pipelineId: null, statusId: null };
 let amocrmFieldsCache = {}; // { 'метраж': fieldId, 'этаж': fieldId, ... }
+let amocrmDriveUrlCache = null;
+
+const AMOCRM_FILE_UPLOAD_TIMEOUT_MS = parseInt(process.env.AMOCRM_FILE_UPLOAD_TIMEOUT_MS || '20000', 10);
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = AMOCRM_FILE_UPLOAD_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readJsonResponse(response) {
+  const text = await response.text();
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return { raw: text };
+  }
+}
+
+function safeAmoFileName(file, fallbackPrefix = 'file') {
+  const rawName = String(file?.originalname || `${fallbackPrefix}-${Date.now()}`).trim();
+  return rawName.replace(/[^\wа-яА-ЯёЁ.\- ()]/g, '_').slice(0, 180) || `${fallbackPrefix}-${Date.now()}`;
+}
+
+function isAmoCRMFileUploadEnabled() {
+  return process.env.AMOCRM_ATTACH_FILES !== 'false';
+}
+
+function resolveAmoUrl(url, baseUrl) {
+  if (!url) return url;
+  return /^https?:\/\//i.test(url) ? url : new URL(url, baseUrl).toString();
+}
+
+async function getAmoCRMDriveUrl() {
+  if (process.env.AMOCRM_DRIVE_URL) return process.env.AMOCRM_DRIVE_URL.replace(/\/$/, '');
+  if (amocrmDriveUrlCache) return amocrmDriveUrlCache;
+
+  const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
+  const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
+  if (!AMOCRM_SUBDOMAIN || !AMOCRM_TOKEN) return null;
+
+  try {
+    const response = await fetchWithTimeout(`https://${AMOCRM_SUBDOMAIN}.amocrm.ru/api/v4/account?with=drive_url`, {
+      headers: { 'Authorization': `Bearer ${AMOCRM_TOKEN}` },
+    });
+    const data = await readJsonResponse(response);
+    if (response.ok && data.drive_url) {
+      amocrmDriveUrlCache = String(data.drive_url).replace(/\/$/, '');
+      return amocrmDriveUrlCache;
+    }
+    console.warn('⚠️ AmoCRM drive_url не получен, используем домен аккаунта:', data);
+  } catch (e) {
+    console.warn('⚠️ AmoCRM drive_url lookup error:', e.message);
+  }
+
+  amocrmDriveUrlCache = `https://${AMOCRM_SUBDOMAIN}.amocrm.ru`;
+  return amocrmDriveUrlCache;
+}
+
+async function uploadFileToAmoCRM(file, fallbackPrefix = 'file') {
+  const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
+  if (!AMOCRM_TOKEN || !file?.buffer?.length || !isAmoCRMFileUploadEnabled()) return null;
+
+  const driveUrl = await getAmoCRMDriveUrl();
+  if (!driveUrl) return null;
+
+  const fileName = safeAmoFileName(file, fallbackPrefix);
+  const contentType = file.mimetype || 'application/octet-stream';
+  const sessionResponse = await fetchWithTimeout(`${driveUrl}/v1.0/sessions`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${AMOCRM_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      file_name: fileName,
+      file_size: file.buffer.length,
+      content_type: contentType,
+      with_preview: contentType.startsWith('image/'),
+    }),
+  });
+  const sessionData = await readJsonResponse(sessionResponse);
+  if (!sessionResponse.ok || !sessionData.upload_url) {
+    throw new Error(`AmoCRM file session failed: ${sessionResponse.status} ${JSON.stringify(sessionData)}`);
+  }
+
+  let uploadUrl = resolveAmoUrl(sessionData.upload_url, driveUrl);
+  const maxPartSize = Number(sessionData.max_part_size) > 0 ? Number(sessionData.max_part_size) : 512 * 1024;
+  let uploadedFile = null;
+
+  for (let offset = 0; offset < file.buffer.length; offset += maxPartSize) {
+    const chunk = file.buffer.subarray(offset, Math.min(offset + maxPartSize, file.buffer.length));
+    const partResponse = await fetchWithTimeout(uploadUrl, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${AMOCRM_TOKEN}`, 'Content-Type': 'application/octet-stream' },
+      body: chunk,
+    });
+    const partData = await readJsonResponse(partResponse);
+    if (!partResponse.ok) {
+      throw new Error(`AmoCRM file upload failed: ${partResponse.status} ${JSON.stringify(partData)}`);
+    }
+    if (partData.next_url) {
+      uploadUrl = resolveAmoUrl(partData.next_url, driveUrl);
+    }
+    if (partData.uuid) {
+      uploadedFile = { ...partData, original_name: fileName };
+    }
+  }
+
+  if (!uploadedFile?.uuid) {
+    throw new Error(`AmoCRM file upload did not return uuid for ${fileName}`);
+  }
+  return uploadedFile;
+}
+
+async function addAmoCRMLeadNote(leadId, note) {
+  const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
+  const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
+  if (!AMOCRM_SUBDOMAIN || !AMOCRM_TOKEN || !leadId) return null;
+
+  const response = await fetchWithTimeout(`https://${AMOCRM_SUBDOMAIN}.amocrm.ru/api/v4/leads/${leadId}/notes`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${AMOCRM_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify([note]),
+  });
+  const data = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(`AmoCRM note failed: ${response.status} ${JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+async function bindFilesToAmoCRMLead(leadId, files) {
+  const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
+  const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
+  const payload = files.filter(f => f?.uuid).map(f => ({ file_uuid: f.uuid }));
+  if (!AMOCRM_SUBDOMAIN || !AMOCRM_TOKEN || !leadId || payload.length === 0) return null;
+
+  const response = await fetchWithTimeout(`https://${AMOCRM_SUBDOMAIN}.amocrm.ru/api/v4/leads/${leadId}/files`, {
+    method: 'PUT',
+    headers: { 'Authorization': `Bearer ${AMOCRM_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (response.status === 202) return { ok: true };
+  const data = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(`AmoCRM file bind failed: ${response.status} ${JSON.stringify(data)}`);
+  }
+  return data;
+}
 
 async function fetchAmoCRMPipelines() {
   const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
@@ -2055,19 +2206,52 @@ async function syncToAmoCRM(booking, userData, unitData) {
   } catch (e) { console.error('❌ AmoCRM sync error:', e.message); return null; }
 }
 
-// Прикрепить примечание с текстом и файлом к лиду в AmoCRM
-async function attachNoteToAmoCRM(leadId, text, file) {
+// Прикрепить примечание и файлы к лиду в AmoCRM.
+// Ошибки по файлам не блокируют бронь: почта остаётся резервным каналом.
+async function attachNoteToAmoCRM(leadId, text, files = [], fallbackPrefix = 'document') {
   const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
   const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
   if (!AMOCRM_SUBDOMAIN || !AMOCRM_TOKEN || !leadId) return;
+  const fileList = Array.isArray(files) ? files.filter(Boolean) : (files ? [files] : []);
   try {
-    // Текстовое примечание с данными бронирования
-    await fetch(`https://${AMOCRM_SUBDOMAIN}.amocrm.ru/api/v4/leads/${leadId}/notes`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${AMOCRM_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify([{ note_type: 'common', params: { text } }])
-    });
+    await addAmoCRMLeadNote(leadId, { note_type: 'common', params: { text } });
     console.log(`📎 AmoCRM: примечание добавлено к лиду ${leadId}`);
+
+    if (!fileList.length || !isAmoCRMFileUploadEnabled()) return;
+
+    const uploadedFiles = [];
+    for (const file of fileList) {
+      try {
+        const uploaded = await uploadFileToAmoCRM(file, fallbackPrefix);
+        if (uploaded?.uuid) uploadedFiles.push(uploaded);
+      } catch (e) {
+        console.error(`AmoCRM file upload error (${file?.originalname || 'file'}):`, e.message);
+      }
+    }
+
+    if (!uploadedFiles.length) return;
+
+    try {
+      await bindFilesToAmoCRMLead(leadId, uploadedFiles);
+    } catch (e) {
+      console.error('AmoCRM file bind error:', e.message);
+    }
+
+    for (const file of uploadedFiles) {
+      try {
+        await addAmoCRMLeadNote(leadId, {
+          note_type: 'attachment',
+          params: {
+            file_uuid: file.uuid,
+            ...(file.version_uuid && { version_uuid: file.version_uuid }),
+            file_name: file.original_name || file.name || fallbackPrefix,
+          },
+        });
+        console.log(`📎 AmoCRM: файл прикреплён к лиду ${leadId}: ${file.original_name || file.name || file.uuid}`);
+      } catch (e) {
+        console.error(`AmoCRM attachment note error (${file.uuid}):`, e.message);
+      }
+    }
   } catch (e) { console.error('AmoCRM note error:', e.message); }
 }
 
@@ -2438,7 +2622,7 @@ app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, re
           `👤 Покупатель: ${buyerName || '—'}\n📞 Телефон покупателя: ${buyerPhone || '—'}\n\n` +
           `🤝 Риелтор: ${booking.agent_name} (${booking.agent_company})\n📞 Телефон риелтора: ${booking.agent_phone}\n\n` +
           `📎 Паспорт: ${passportFile ? passportFile.originalname : 'отправлен на email'}`;
-        await attachNoteToAmoCRM(leadId, noteText, passportFile);
+        await attachNoteToAmoCRM(leadId, noteText, passportFile ? [passportFile] : [], 'passport');
       }
     }).catch(e => console.error('AmoCRM error:', e));
 
@@ -2476,6 +2660,24 @@ app.post('/api/bookings/:id/documents', upload.array('documents', 10), async (re
     );
 
     await pool.query(`UPDATE bookings SET docs_sent = TRUE, docs_sent_at = NOW(), stage = 'DOCS_SENT' WHERE id = $1`, [req.params.id]);
+
+    const userFull = await pool.query('SELECT * FROM users WHERE id = $1', [booking.user_id]);
+    const freshBooking = await pool.query('SELECT * FROM bookings WHERE id = $1', [booking.id]);
+    const bookingForCRM = { ...booking, amocrm_lead_id: freshBooking.rows[0]?.amocrm_lead_id || booking.amocrm_lead_id };
+    syncToAmoCRM(bookingForCRM, userFull.rows[0], unit).then(async (leadId) => {
+      if (leadId) {
+        await pool.query('UPDATE bookings SET amocrm_lead_id = $1, amocrm_synced = TRUE WHERE id = $2', [String(leadId), booking.id]);
+        const noteText = `📋 Документы для ипотеки\n\n` +
+          `🏠 Квартира: №${unit.number}, этаж ${unit.floor}, ${unit.rooms}-к, ${unit.area} м²\n` +
+          `💰 Цена: ${Number(unit.price).toLocaleString('ru-RU')} ₽\n` +
+          `📁 Проект: ${booking.project_id}\n\n` +
+          `👤 Покупатель: ${booking.buyer_name || '—'}\n📞 Телефон покупателя: ${booking.buyer_phone || '—'}\n\n` +
+          `🤝 Риелтор: ${booking.agent_name} (${booking.agent_company})\n📞 Телефон риелтора: ${booking.agent_phone}\n\n` +
+          `📎 Файлы: ${files.length ? files.map(f => f.originalname).join(', ') : 'нет файлов'}`;
+        await attachNoteToAmoCRM(leadId, noteText, files, 'mortgage-documents');
+      }
+    }).catch(e => console.error('AmoCRM documents error:', e));
+
     // Квартира остаётся BOOKED, deals_closed НЕ увеличивается
     // Сделка подтверждается админом через /api/bookings/:id/complete
     res.json({ success: true, emailSent, stage: 'DOCS_SENT' });

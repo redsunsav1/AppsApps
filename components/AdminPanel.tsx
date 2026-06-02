@@ -523,16 +523,16 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   };
 
   return (
-    <div className="fixed inset-0 bg-black/80 z-[200] flex justify-center items-center p-4 animate-fade-in">
-      <div className="bg-white rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-5 flex flex-col gap-3">
+    <div className="fixed inset-0 bg-black/80 z-[200] flex justify-center items-stretch sm:items-center p-0 sm:p-4 animate-fade-in">
+      <div className="bg-white w-full max-w-lg h-full sm:h-auto sm:max-h-[90vh] overflow-hidden rounded-none sm:rounded-xl flex flex-col">
 
-        <div className="flex justify-between items-center mb-2 border-b pb-3">
+        <div className="shrink-0 flex justify-between items-center border-b px-5 pb-3 bg-white" style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 1rem)' }}>
             <h3 className="text-xl font-bold text-black">Админка</h3>
             <button onClick={onClose} className="text-gray-400 hover:text-black text-sm font-bold">Закрыть</button>
         </div>
 
         {/* Tabs */}
-        <div className="flex bg-gray-100 rounded-lg p-1 overflow-x-auto">
+        <div className="shrink-0 flex bg-gray-100 rounded-lg p-1 overflow-x-auto mx-5 mt-3">
             <button onClick={() => setActiveTab('news')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'news' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Newspaper size={14}/> Новости</button>
             <button onClick={() => setActiveTab('import')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'import' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Building2 size={14}/> Импорт</button>
             <button onClick={() => setActiveTab('shop')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'shop' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><ShoppingBag size={14}/> Товары</button>
@@ -545,6 +545,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
             <button onClick={() => setActiveTab('база')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'база' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Database size={14}/> База</button>
         </div>
 
+        <div className="flex-1 overflow-y-auto custom-scrollbar px-5 pt-3 pb-5" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 1rem)' }}>
         {activeTab === 'news' && (
             <div className="flex flex-col gap-3 animate-fade-in">
                 <input placeholder="Заголовок" value={title} onChange={e => setTitle(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
@@ -1223,6 +1224,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                 )}
             </div>
         )}
+        </div>
       </div>
     </div>
   );

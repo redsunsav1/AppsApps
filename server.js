@@ -599,6 +599,7 @@ const initDb = async () => {
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;');
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS image_url TEXT;');
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS feed_url TEXT;');
+    await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS feed_synced_at TIMESTAMP;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS xp_points INT DEFAULT 0;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS deals_closed INT DEFAULT 0;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT;');
@@ -854,6 +855,8 @@ function findTag(item, ...names) {
 
 const projectSyncLocks = new Map();
 const FEED_DEBUG_LOGS = process.env.FEED_DEBUG_LOGS === 'true';
+const FEED_PREBOOKING_TTL_SECONDS_RAW = parseInt(process.env.FEED_PREBOOKING_TTL_SECONDS || '120', 10);
+const FEED_PREBOOKING_TTL_MS = Math.max(0, Number.isFinite(FEED_PREBOOKING_TTL_SECONDS_RAW) ? FEED_PREBOOKING_TTL_SECONDS_RAW : 120) * 1000;
 
 function feedDebugLog(...args) {
   if (FEED_DEBUG_LOGS) console.log(...args);
@@ -1102,7 +1105,7 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
   }
 
   const maxUnitsOnFloor = Math.max(...Object.values(floorCounts).map(Number), 1);
-  await pool.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3 WHERE id = $4', [maxFloor, maxUnitsOnFloor, url, projectId]);
+  await pool.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3, feed_synced_at = NOW() WHERE id = $4', [maxFloor, maxUnitsOnFloor, url, projectId]);
 
   // Секции
   const sections = [...new Set(units.map(u => u.section).filter(Boolean))];
@@ -1140,6 +1143,20 @@ async function refreshFeedBeforeBooking(unitId, fallbackProjectId) {
   const unitRes = await pool.query('SELECT project_id FROM units WHERE id = $1', [unitId]);
   const projectId = unitRes.rows[0]?.project_id || fallbackProjectId;
   if (!projectId) return { ok: false, status: 404, msg: 'Квартира не найдена' };
+
+  if (FEED_PREBOOKING_TTL_MS > 0) {
+    const projectRes = await pool.query(
+      'SELECT EXTRACT(EPOCH FROM (NOW() - feed_synced_at)) * 1000 AS feed_age_ms FROM projects WHERE id = $1',
+      [projectId]
+    );
+    const ageMs = projectRes.rows[0]?.feed_age_ms === null || projectRes.rows[0]?.feed_age_ms === undefined
+      ? Number.POSITIVE_INFINITY
+      : Number(projectRes.rows[0].feed_age_ms);
+    if (ageMs >= 0 && ageMs < FEED_PREBOOKING_TTL_MS) {
+      return { ok: true, skipped: true, reason: 'fresh_feed', ageMs };
+    }
+  }
+
   return refreshProjectFeed(projectId, { reason: 'pre-booking' });
 }
 

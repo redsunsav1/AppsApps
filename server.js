@@ -770,6 +770,23 @@ const initDb = async () => {
         ('login_streak_30',  'Месяц верности',        'Заходите в приложение 30 дней подряд',          3,    'GOLD',   30, 'loyalty',  'fire',      9)
       ON CONFLICT (code) DO NOTHING`);
     }
+    const demoTelegramIds = [999000001, 999000002];
+    if (process.env.SEED_DEMO_DATA !== 'true') {
+      await withTransaction(async (client) => {
+        const demoUsersRes = await client.query('SELECT id FROM users WHERE telegram_id = ANY($1::bigint[])', [demoTelegramIds]);
+        const demoUserIds = demoUsersRes.rows.map(r => r.id);
+        await client.query("DELETE FROM bookings WHERE unit_id LIKE 'test-%' OR user_id = ANY($1::int[])", [demoUserIds]);
+        if (demoUserIds.length > 0) {
+          await client.query('DELETE FROM user_missions WHERE user_id = ANY($1::int[])', [demoUserIds]);
+          await client.query('DELETE FROM quest_completions WHERE user_id = ANY($1::int[])', [demoUserIds]);
+          await client.query('DELETE FROM orders WHERE user_id = ANY($1::int[])', [demoUserIds]);
+          await client.query('DELETE FROM event_registrations WHERE user_id = ANY($1::int[])', [demoUserIds]);
+          await client.query('DELETE FROM users WHERE id = ANY($1::int[])', [demoUserIds]);
+        }
+        if (demoUserIds.length > 0) console.log(`🧹 Removed ${demoUserIds.length} demo users`);
+      });
+    }
+
     // Тестовые риелторы для презентации
     if (process.env.SEED_DEMO_DATA === 'true') {
       const testRealtors = [

@@ -415,6 +415,11 @@ async function isAdmin(initData) {
   } catch (e) { return false; }
 }
 
+async function isAdminRequest(req) {
+  const initData = req.body?.initData || req.get('x-init-data') || req.query?.initData || '';
+  return isAdmin(typeof initData === 'string' ? initData : '');
+}
+
 // =============================================
 // EMAIL-СЕРВИС
 // =============================================
@@ -1657,27 +1662,33 @@ app.post('/api/projects/:id/resync', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Resync failed: ' + e.message }); }
 });
 
-app.get('/api/units/:projectId', async (req, res) => {
+async function handleProjectUnits(req, res) {
   try {
-    const result = await pool.query(`
-      SELECT u.*,
-             b.buyer_name AS booking_buyer_name,
-             b.buyer_phone AS booking_buyer_phone,
-             agent.first_name AS booking_agent_name,
-             agent.last_name AS booking_agent_last_name,
-             agent.phone AS booking_agent_phone,
-             agent.company AS booking_agent_company,
-             agent.company_type AS booking_agent_company_type
-      FROM units u
-      LEFT JOIN LATERAL (
-        SELECT * FROM bookings WHERE unit_id = u.id AND COALESCE(stage, 'INIT') != 'CANCELLED' ORDER BY created_at DESC LIMIT 1
-      ) b ON TRUE
-      LEFT JOIN users agent ON b.user_id = agent.id
-      WHERE u.project_id = $1
-    `, [req.params.projectId]);
+    const adminView = await isAdminRequest(req);
+    const result = adminView
+      ? await pool.query(`
+        SELECT u.*,
+               b.buyer_name AS booking_buyer_name,
+               b.buyer_phone AS booking_buyer_phone,
+               agent.first_name AS booking_agent_name,
+               agent.last_name AS booking_agent_last_name,
+               agent.phone AS booking_agent_phone,
+               agent.company AS booking_agent_company,
+               agent.company_type AS booking_agent_company_type
+        FROM units u
+        LEFT JOIN LATERAL (
+          SELECT * FROM bookings WHERE unit_id = u.id AND COALESCE(stage, 'INIT') != 'CANCELLED' ORDER BY created_at DESC LIMIT 1
+        ) b ON TRUE
+        LEFT JOIN users agent ON b.user_id = agent.id
+        WHERE u.project_id = $1
+      `, [req.params.projectId])
+      : await pool.query('SELECT * FROM units WHERE project_id = $1', [req.params.projectId]);
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
-});
+}
+
+app.get('/api/units/:projectId', handleProjectUnits);
+app.post('/api/units/:projectId', handleProjectUnits);
 
 app.post('/api/sync-xml-url', async (req, res) => {
   try {

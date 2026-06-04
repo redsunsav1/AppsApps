@@ -267,10 +267,11 @@ function rateLimit(windowMs, maxReq) {
 setInterval(() => { const now = Date.now(); for (const [k, v] of rlMap) { if (now - v.s > 900000) rlMap.delete(k); } }, 900000);
 
 // PostgreSQL Pool
+const PG_POOL_MAX = Math.max(2, parseInt(process.env.PG_POOL_MAX || '15', 10) || 15);
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 80,
+  max: PG_POOL_MAX,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
 });
@@ -769,31 +770,33 @@ const initDb = async () => {
       ON CONFLICT (code) DO NOTHING`);
     }
     // Тестовые риелторы для презентации
-    const testRealtors = [
-      { tgId: 999000001, firstName: 'Арман', lastName: 'Бисенов', company: 'АН Лидер', deals: 14, bookings: [
-        { project: 'mnh', count: 10 }, { project: 'bbk', count: 4 }
-      ]},
-      { tgId: 999000002, firstName: 'Вагон', lastName: 'Продажев', company: 'АН Триумф', deals: 14, bookings: [
-        { project: 'bbk', count: 5 }, { project: 'mnh', count: 9 }
-      ]},
-    ];
-    for (const r of testRealtors) {
-      const exists = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [r.tgId]);
-      if (exists.rows.length === 0) {
-        const uRes = await pool.query(
-          `INSERT INTO users (telegram_id, first_name, last_name, company, company_type, phone, is_registered, approval_status, balance, gold_balance, xp_points, deals_closed)
-           VALUES ($1, $2, $3, $4, 'agency', '+70000000000', TRUE, 'approved', 500, $5, $6, $5)
-           RETURNING id`,
-          [r.tgId, r.firstName, r.lastName, r.company, r.deals, r.deals * 100]
-        );
-        const userId = uRes.rows[0].id;
-        for (const b of r.bookings) {
-          for (let i = 0; i < b.count; i++) {
-            await pool.query(
-              `INSERT INTO bookings (user_id, unit_id, project_id, stage, user_name, user_company, created_at)
-               VALUES ($1, $2, $3, 'COMPLETE', $4, $5, NOW() - interval '1 day' * $6)`,
-              [userId, `test-${r.tgId}-${b.project}-${i}`, b.project, `${r.firstName} ${r.lastName}`, r.company, Math.floor(Math.random() * 90)]
-            );
+    if (process.env.SEED_DEMO_DATA === 'true') {
+      const testRealtors = [
+        { tgId: 999000001, firstName: 'Арман', lastName: 'Бисенов', company: 'АН Лидер', deals: 14, bookings: [
+          { project: 'mnh', count: 10 }, { project: 'bbk', count: 4 }
+        ]},
+        { tgId: 999000002, firstName: 'Вагон', lastName: 'Продажев', company: 'АН Триумф', deals: 14, bookings: [
+          { project: 'bbk', count: 5 }, { project: 'mnh', count: 9 }
+        ]},
+      ];
+      for (const r of testRealtors) {
+        const exists = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [r.tgId]);
+        if (exists.rows.length === 0) {
+          const uRes = await pool.query(
+            `INSERT INTO users (telegram_id, first_name, last_name, company, company_type, phone, is_registered, approval_status, balance, gold_balance, xp_points, deals_closed)
+             VALUES ($1, $2, $3, $4, 'agency', '+70000000000', TRUE, 'approved', 500, $5, $6, $5)
+             RETURNING id`,
+            [r.tgId, r.firstName, r.lastName, r.company, r.deals, r.deals * 100]
+          );
+          const userId = uRes.rows[0].id;
+          for (const b of r.bookings) {
+            for (let i = 0; i < b.count; i++) {
+              await pool.query(
+                `INSERT INTO bookings (user_id, unit_id, project_id, stage, user_name, user_company, created_at)
+                 VALUES ($1, $2, $3, 'COMPLETE', $4, $5, NOW() - interval '1 day' * $6)`,
+                [userId, `test-${r.tgId}-${b.project}-${i}`, b.project, `${r.firstName} ${r.lastName}`, r.company, Math.floor(Math.random() * 90)]
+              );
+            }
           }
         }
       }
@@ -850,6 +853,20 @@ function findTag(item, ...names) {
 }
 
 const projectSyncLocks = new Map();
+const FEED_DEBUG_LOGS = process.env.FEED_DEBUG_LOGS === 'true';
+
+function feedDebugLog(...args) {
+  if (FEED_DEBUG_LOGS) console.log(...args);
+}
+
+function safeFeedLabel(url) {
+  try {
+    const u = new URL(url);
+    return `${u.hostname}${u.pathname.split('/').slice(0, 3).join('/')}`;
+  } catch {
+    return 'feed';
+  }
+}
 
 async function syncProjectWithXml(projectId, url, options = {}) {
   const key = String(projectId);
@@ -870,7 +887,7 @@ async function syncProjectWithXml(projectId, url, options = {}) {
 }
 
 async function syncProjectWithXmlUnsafe(projectId, url) {
-  console.log(`🔄 Syncing ${projectId} from ${url}`);
+  console.log(`🔄 Syncing ${projectId} from ${safeFeedLabel(url)}`);
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Feed HTTP ${response.status}`);
   const xmlText = await response.text();
@@ -926,8 +943,8 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
 
   const firstItem = rawItems[0];
   diag.firstItemKeys = Object.keys(firstItem);
-  console.log(`📋 Format: ${diag.format}, items: ${rawItems.length}, keys: ${diag.firstItemKeys.join(', ')}`);
-  console.log(`🔍 Sample: ${JSON.stringify(firstItem).slice(0, 1000)}`);
+  feedDebugLog(`📋 Format: ${diag.format}, items: ${rawItems.length}, keys: ${diag.firstItemKeys.join(', ')}`);
+  feedDebugLog(`🔍 Sample: ${JSON.stringify(firstItem).slice(0, 1000)}`);
 
   // Извлечь этаж здания из Avito <Floors>
   let buildingFloors = 0;
@@ -1010,7 +1027,7 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
   });
 
   // Логируем первые 5 юнитов с полной статус-информацией
-  units.slice(0, 5).forEach((u, i) => console.log(`🏠 [${i}]: fl=${u.floor} sec=${u.section} num=${u.number} rm=${u.rooms} area=${u.area} price=${u.price} statusId="${u.statusId}" statusRaw="${u.statusRaw}" img=${u.planUrl ? '✅' : '❌'}`));
+  units.slice(0, 5).forEach((u, i) => feedDebugLog(`🏠 [${i}]: fl=${u.floor} sec=${u.section} num=${u.number} rm=${u.rooms} area=${u.area} price=${u.price} statusId="${u.statusId}" statusRaw="${u.statusRaw}" img=${u.planUrl ? '✅' : '❌'}`));
 
   // Статистика по status_id из фида
   const feedStatusMap = {};
@@ -1018,7 +1035,7 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
     const key = `sid=${u.statusId}|raw=${u.statusRaw.slice(0, 40)}`;
     feedStatusMap[key] = (feedStatusMap[key] || 0) + 1;
   }
-  console.log('📊 Feed status distribution:', JSON.stringify(feedStatusMap));
+  feedDebugLog('📊 Feed status distribution:', JSON.stringify(feedStatusMap));
 
   // Сохраняем unit_id с активными бронями ДО удаления
   const bookedRes = await pool.query(
@@ -2451,19 +2468,33 @@ app.post('/api/events/:id/register', async (req, res) => {
   try {
     const dbUser = await resolveDbUser(req.body.initData);
     if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
-    const eventRes = await pool.query('SELECT * FROM events WHERE id = $1', [req.params.id]);
-    if (eventRes.rows.length === 0) return res.status(404).json({ error: 'Event not found' });
-    const event = eventRes.rows[0];
-    // Проверка дедлайна RSVP
-    if (event.rsvp_deadline && new Date() > new Date(event.rsvp_deadline)) {
-      return res.status(400).json({ error: 'Время регистрации истекло' });
+    const result = await withTransaction(async (client) => {
+      const eventRes = await client.query('SELECT * FROM events WHERE id = $1 FOR UPDATE', [req.params.id]);
+      if (eventRes.rows.length === 0) throw { status: 404, msg: 'Event not found' };
+      const event = eventRes.rows[0];
+      if (event.rsvp_deadline && new Date() > new Date(event.rsvp_deadline)) {
+        throw { status: 400, msg: 'Время регистрации истекло' };
+      }
+      if (event.is_private) {
+        const inviteRes = await client.query('SELECT 1 FROM event_invitations WHERE event_id = $1 AND user_id = $2', [event.id, dbUser.id]);
+        if (inviteRes.rows.length === 0) throw { status: 403, msg: 'Это закрытое событие' };
+      }
+      const existingRes = await client.query('SELECT 1 FROM event_registrations WHERE event_id = $1 AND user_id = $2', [event.id, dbUser.id]);
+      if (existingRes.rows.length > 0) return { event, created: false };
+      const countRes = await client.query('SELECT COUNT(*) FROM event_registrations WHERE event_id = $1', [event.id]);
+      if (parseInt(countRes.rows[0].count) >= event.spots_total) throw { status: 400, msg: 'Мест нет' };
+      await client.query('INSERT INTO event_registrations (event_id, user_id) VALUES ($1, $2)', [event.id, dbUser.id]);
+      return { event, created: true };
+    });
+    if (result.created) {
+      notifyUser(dbUser, `✅ Вы записаны на <b>${result.event.title}</b>!\n📅 ${result.event.date} в ${result.event.time || ''}`);
     }
-    const countRes = await pool.query('SELECT COUNT(*) FROM event_registrations WHERE event_id = $1', [req.params.id]);
-    if (parseInt(countRes.rows[0].count) >= event.spots_total) return res.status(400).json({ error: 'Мест нет' });
-    await pool.query('INSERT INTO event_registrations (event_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.params.id, dbUser.id]);
-    notifyUser(dbUser, `✅ Вы записаны на <b>${event.title}</b>!\n📅 ${event.date} в ${event.time || ''}`);
-    res.json({ success: true });
-  } catch (e) { console.error('Event register error:', e); res.status(500).json({ error: 'Server error' }); }
+    res.json({ success: true, alreadyRegistered: !result.created });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.msg });
+    console.error('Event register error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // Отменить участие в событии

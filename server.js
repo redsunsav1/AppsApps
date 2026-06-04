@@ -235,9 +235,27 @@ app.set('trust proxy', true);
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
-// CORS
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').filter(Boolean);
-app.use(ALLOWED_ORIGINS.length > 0 ? cors({ origin: ALLOWED_ORIGINS }) : cors());
+// CORS: по умолчанию разрешаем только собственные домены приложения и локальную разработку.
+const DEFAULT_ALLOWED_ORIGINS = [
+  'https://partnerbuild.ru',
+  'https://web.telegram.org',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+];
+for (const envUrl of [process.env.APP_URL, process.env.WEBAPP_URL, process.env.WEBHOOK_URL, process.env.MAX_WEBHOOK_URL]) {
+  if (envUrl) DEFAULT_ALLOWED_ORIGINS.push(envUrl.replace(/\/$/, ''));
+}
+const ALLOWED_ORIGINS = [
+  ...DEFAULT_ALLOWED_ORIGINS,
+  ...(process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean),
+];
+const allowedOriginsSet = new Set(ALLOWED_ORIGINS);
+app.use(cors({
+  origin(origin, cb) {
+    if (!origin || allowedOriginsSet.has(origin)) return cb(null, true);
+    return cb(null, false);
+  },
+}));
 
 app.use(compression({ level: 6 }));
 app.use(express.json({ limit: '5mb' }));

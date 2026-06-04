@@ -226,6 +226,7 @@ const App: React.FC = () => {
       phone: sUser.phone,
       company: sUser.company,
       is_admin: sUser.is_admin,
+      can_manage_bookings: sUser.can_manage_bookings,
       platform: sUser.platform || (sUser.max_id ? 'max' : sUser.telegram_id ? 'telegram' : 'pwa'),
       approval_status: sUser.approval_status || 'none',
       last_name: sUser.last_name || '',
@@ -704,7 +705,7 @@ const App: React.FC = () => {
         <ChessboardModal
           projects={projects}
           onClose={() => setIsChessboardOpen(false)}
-          isAdmin={user.is_admin}
+          isAdmin={user.is_admin || user.can_manage_bookings}
           mortgagePrograms={mortgagePrograms}
         />
       )}

@@ -297,6 +297,23 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     } catch (e) { showToast('Ошибка удаления', 'error'); }
   };
 
+  const handleToggleUserRole = async (userId: number, role: 'is_admin' | 'can_manage_bookings', value: boolean) => {
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/roles`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: getAuthData(), [role]: value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Ошибка');
+      showToast('Права обновлены', 'success');
+      fetchUsers();
+      fetchBazaUsers();
+    } catch (e: any) {
+      showToast(e.message || 'Ошибка прав', 'error');
+    }
+  };
+
   const handleSubmitNews = async () => {
     if (!title || !text) return showToast('Заполни поля', 'error');
     setLoading(true);
@@ -688,6 +705,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                     <div className="font-bold text-black text-sm truncate">
                                         {u.first_name || ''} {u.last_name || ''}
                                         {u.is_admin && <span className="ml-1 text-[10px] bg-yellow-200 text-yellow-800 px-1.5 py-0.5 rounded font-bold">ADMIN</span>}
+                                        {u.can_manage_bookings && <span className="ml-1 text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-bold">БРОНИ</span>}
                                     </div>
                                     <div className="text-[10px] text-gray-500 mt-0.5">
                                         {u.company_type === 'ip' ? 'ИП' : 'АН'}: {u.company || '—'} · {u.phone || '—'}
@@ -698,8 +716,22 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                     <div className="text-[10px] text-gray-400">
                                         Серебро: {u.balance || 0} · Золото: {u.gold_balance || 0} · XP: {u.xp_points || 0} · Сделки: {u.deals_closed || 0}
                                     </div>
+                                    <div className="flex gap-1.5 mt-2 flex-wrap">
+                                        <button
+                                            onClick={() => handleToggleUserRole(u.id, 'can_manage_bookings', !u.can_manage_bookings)}
+                                            className={`px-2 py-1 rounded-md text-[10px] font-bold ${u.can_manage_bookings ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700'}`}
+                                        >
+                                            {u.can_manage_bookings ? 'Убрать брони' : 'Дать брони'}
+                                        </button>
+                                        <button
+                                            onClick={() => handleToggleUserRole(u.id, 'is_admin', !u.is_admin)}
+                                            className={`px-2 py-1 rounded-md text-[10px] font-bold ${u.is_admin ? 'bg-yellow-500 text-white' : 'bg-yellow-50 text-yellow-700'}`}
+                                        >
+                                            {u.is_admin ? 'Снять админа' : 'Дать админа'}
+                                        </button>
+                                    </div>
                                 </div>
-                                {!u.is_admin && (
+                                {!u.is_admin && !u.can_manage_bookings && (
                                     <button onClick={() => handleDeleteUser(u.id)} className="ml-2 p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors flex-shrink-0">
                                         <Trash2 size={16} />
                                     </button>

@@ -20,6 +20,7 @@ export interface UserProfile {
   telegram: string;
   whatsapp: string;
   is_admin?: boolean;
+  can_manage_bookings?: boolean;
   is_registered?: boolean;
   approval_status?: 'none' | 'pending' | 'approved' | 'rejected';
   last_name?: string;

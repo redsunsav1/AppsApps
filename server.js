@@ -415,9 +415,22 @@ async function isAdmin(initData) {
   } catch (e) { return false; }
 }
 
+async function canManageBookings(initData) {
+  if (!initData) return false;
+  try {
+    const user = await resolveDbUser(initData);
+    return !!(user?.is_admin || user?.can_manage_bookings);
+  } catch (e) { return false; }
+}
+
 async function isAdminRequest(req) {
   const initData = req.body?.initData || req.get('x-init-data') || req.query?.initData || '';
   return isAdmin(typeof initData === 'string' ? initData : '');
+}
+
+async function canManageBookingsRequest(req) {
+  const initData = req.body?.initData || req.get('x-init-data') || req.query?.initData || '';
+  return canManageBookings(typeof initData === 'string' ? initData : '');
 }
 
 // =============================================
@@ -592,6 +605,7 @@ const initDb = async () => {
     await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS approval_status TEXT DEFAULT 'none';");
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_news_at TIMESTAMP;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS can_manage_bookings BOOLEAN DEFAULT FALSE;');
     await pool.query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS stage TEXT DEFAULT 'INIT';");
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS passport_sent BOOLEAN DEFAULT FALSE;');
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS passport_sent_at TIMESTAMP;');
@@ -1664,7 +1678,7 @@ app.post('/api/projects/:id/resync', async (req, res) => {
 
 async function handleProjectUnits(req, res) {
   try {
-    const adminView = await isAdminRequest(req);
+    const adminView = await canManageBookingsRequest(req);
     const result = adminView
       ? await pool.query(`
         SELECT u.*,
@@ -1773,11 +1787,41 @@ app.post('/api/admin/users', async (req, res) => {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
     const result = await pool.query(
       `SELECT id, telegram_id, max_id, platform, username, first_name, last_name, company, company_type, phone,
-              is_registered, is_admin, approval_status, balance, gold_balance, xp_points, deals_closed, avatar_url, created_at
+              is_registered, is_admin, can_manage_bookings, approval_status, balance, gold_balance, xp_points, deals_closed, avatar_url, created_at
        FROM users ORDER BY created_at DESC`
     );
     res.json(result.rows);
   } catch (e) { console.error('Admin users error:', e); res.status(500).json({ error: 'Server error' }); }
+});
+
+app.patch('/api/admin/users/:id/roles', async (req, res) => {
+  try {
+    const adminUser = await resolveDbUser(req.body.initData);
+    if (!adminUser?.is_admin) return res.status(403).json({ error: 'Forbidden' });
+    if (String(req.params.id) === String(adminUser.id) && req.body.is_admin === false) {
+      return res.status(400).json({ error: 'Нельзя снять полный админ-доступ у самого себя' });
+    }
+
+    const sets = [];
+    const vals = [];
+    let idx = 1;
+    if (typeof req.body.is_admin === 'boolean') {
+      sets.push(`is_admin = $${idx++}`);
+      vals.push(req.body.is_admin);
+    }
+    if (typeof req.body.can_manage_bookings === 'boolean') {
+      sets.push(`can_manage_bookings = $${idx++}`);
+      vals.push(req.body.can_manage_bookings);
+    }
+    if (!sets.length) return res.status(400).json({ error: 'No roles to update' });
+
+    vals.push(req.params.id);
+    await pool.query(`UPDATE users SET ${sets.join(', ')} WHERE id = $${idx}`, vals);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Update roles error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 app.delete('/api/admin/users/:id', async (req, res) => {
@@ -2828,8 +2872,8 @@ app.post('/api/bookings/cancel', async (req, res) => {
     if (!user) return res.status(401).json({ error: 'Invalid signature' });
 
     // Только админ может снимать бронь
-    if (!user.is_admin) {
-      return res.status(403).json({ error: 'Только администратор может снять бронь' });
+    if (!user.is_admin && !user.can_manage_bookings) {
+      return res.status(403).json({ error: 'Недостаточно прав для снятия брони' });
     }
 
     await withTransaction(async (client) => {

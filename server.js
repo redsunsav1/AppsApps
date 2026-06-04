@@ -654,6 +654,45 @@ const initDb = async () => {
     await pool.query('CREATE INDEX IF NOT EXISTS idx_units_proj ON units(project_id);');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_book_unit ON bookings(unit_id);');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_book_user ON bookings(user_id);');
+    // Жёсткая защита от двойной брони: PostgreSQL физически не даст
+    // создать две активные брони на одну квартиру даже при параллельных запросах.
+    await pool.query(`
+      WITH ranked AS (
+        SELECT id, unit_id, ROW_NUMBER() OVER (
+          PARTITION BY unit_id
+          ORDER BY
+            CASE COALESCE(stage, 'INIT')
+              WHEN 'COMPLETE' THEN 4
+              WHEN 'DOCS_SENT' THEN 3
+              WHEN 'PASSPORT_SENT' THEN 2
+              WHEN 'INIT' THEN 1
+              ELSE 0
+            END DESC,
+            created_at DESC,
+            id DESC
+        ) AS rn
+        FROM bookings
+        WHERE COALESCE(stage, 'INIT') != 'CANCELLED'
+      )
+      UPDATE bookings b
+      SET stage = 'CANCELLED'
+      FROM ranked r
+      WHERE b.id = r.id AND r.rn > 1
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_one_active_per_unit
+      ON bookings(unit_id)
+      WHERE COALESCE(stage, 'INIT') != 'CANCELLED'
+    `);
+    await pool.query(`
+      UPDATE units u
+      SET status = 'BOOKED'
+      WHERE status = 'FREE'
+        AND EXISTS (
+          SELECT 1 FROM bookings b
+          WHERE b.unit_id = u.id AND COALESCE(b.stage, 'INIT') != 'CANCELLED'
+        )
+    `);
     await pool.query('CREATE INDEX IF NOT EXISTS idx_news_date ON news(created_at);');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_ev_date ON events(date);');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_evreg ON event_registrations(event_id, user_id);');
@@ -964,7 +1003,7 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
 
   // Сохраняем unit_id с активными бронями ДО удаления
   const bookedRes = await pool.query(
-    "SELECT DISTINCT unit_id FROM bookings WHERE project_id = $1 AND stage != 'CANCELLED'",
+    "SELECT DISTINCT unit_id FROM bookings WHERE project_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'",
     [projectId]
   );
   const bookedUnitIds = new Set(bookedRes.rows.map(r => r.unit_id));
@@ -1631,8 +1670,8 @@ app.get('/api/units/:projectId', async (req, res) => {
              agent.company_type AS booking_agent_company_type
       FROM units u
       LEFT JOIN LATERAL (
-        SELECT * FROM bookings WHERE unit_id = u.id AND stage != 'CANCELLED' ORDER BY created_at DESC LIMIT 1
-      ) b ON u.status = 'BOOKED'
+        SELECT * FROM bookings WHERE unit_id = u.id AND COALESCE(stage, 'INIT') != 'CANCELLED' ORDER BY created_at DESC LIMIT 1
+      ) b ON TRUE
       LEFT JOIN users agent ON b.user_id = agent.id
       WHERE u.project_id = $1
     `, [req.params.projectId]);
@@ -1740,7 +1779,7 @@ app.delete('/api/admin/users/:id', async (req, res) => {
     const userId = req.params.id;
     await withTransaction(async (client) => {
       // Освобождаем квартиры из активных бронирований этого пользователя
-      const activeBookings = await client.query("SELECT unit_id FROM bookings WHERE user_id = $1 AND stage != 'CANCELLED'", [userId]);
+      const activeBookings = await client.query("SELECT unit_id FROM bookings WHERE user_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'", [userId]);
       for (const b of activeBookings.rows) {
         await client.query("UPDATE units SET status = 'FREE' WHERE id = $1 AND status = 'BOOKED'", [b.unit_id]);
       }
@@ -2458,12 +2497,12 @@ async function checkMissions(userId, trigger) {
 
       // --- Вычисляем прогресс для каждого типа миссии ---
       if (['first_booking', 'bookings_5', 'bookings_10', 'bookings_25'].includes(m.code) && (trigger === 'booking' || trigger === 'init')) {
-        const countRes = await pool.query("SELECT count(*) FROM bookings WHERE user_id = $1 AND stage != 'CANCELLED'", [userId]);
+        const countRes = await pool.query("SELECT count(*) FROM bookings WHERE user_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'", [userId]);
         newProgress = parseInt(countRes.rows[0].count);
       }
 
       if (['multi_project', 'all_projects'].includes(m.code) && (trigger === 'booking' || trigger === 'init')) {
-        const projRes = await pool.query("SELECT count(DISTINCT project_id) FROM bookings WHERE user_id = $1 AND stage != 'CANCELLED'", [userId]);
+        const projRes = await pool.query("SELECT count(DISTINCT project_id) FROM bookings WHERE user_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'", [userId]);
         newProgress = parseInt(projRes.rows[0].count);
       }
 
@@ -2551,13 +2590,14 @@ app.post('/api/bookings', async (req, res) => {
       const unit = unitRes.rows[0];
       if (unit.status !== 'FREE') throw { status: 400, msg: 'Квартира уже забронирована или продана' };
       // Проверка: нет ли активного бронирования
-      const existing = await client.query("SELECT id FROM bookings WHERE unit_id = $1 AND stage != 'CANCELLED'", [unitId]);
+      const existing = await client.query("SELECT id FROM bookings WHERE unit_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'", [unitId]);
       if (existing.rows.length > 0) throw { status: 400, msg: 'На эту квартиру уже есть активное бронирование' };
       const bookingRes = await client.query(
         `INSERT INTO bookings (user_id, unit_id, project_id, user_phone, user_name, user_company, stage)
          VALUES ($1, $2, $3, $4, $5, $6, 'INIT') RETURNING *`,
         [user.id, unitId, unit.project_id || projectId, user.phone, user.first_name, user.company]
       );
+      await client.query("UPDATE units SET status = 'BOOKED' WHERE id = $1", [unitId]);
       return { success: true, bookingId: bookingRes.rows[0].id };
     });
     // Автопроверка миссий (асинхронно, не блокирует ответ)
@@ -2567,6 +2607,9 @@ app.post('/api/bookings', async (req, res) => {
     res.json(result);
   } catch (e) {
     if (e.status) return res.status(e.status).json({ error: e.msg });
+    if (e.code === '23505' && e.constraint === 'idx_bookings_one_active_per_unit') {
+      return res.status(409).json({ error: 'На эту квартиру уже есть активное бронирование' });
+    }
     console.error('Booking error:', e);
     res.status(500).json({ error: 'Booking error' });
   }
@@ -2745,7 +2788,7 @@ app.post('/api/bookings/my', async (req, res) => {
       SELECT b.*, un.number as unit_number, un.floor as unit_floor, un.area as unit_area,
              un.price as unit_price, un.rooms as unit_rooms, un.status as unit_status, p.name as project_name
       FROM bookings b LEFT JOIN units un ON b.unit_id = un.id LEFT JOIN projects p ON b.project_id = p.id
-      WHERE b.user_id = $1 AND b.stage != 'CANCELLED' ORDER BY b.created_at DESC
+      WHERE b.user_id = $1 AND COALESCE(b.stage, 'INIT') != 'CANCELLED' ORDER BY b.created_at DESC
     `, [dbUser.id]);
     res.json(result.rows);
   } catch (e) { console.error('My bookings error:', e); res.status(500).json({ error: 'Server error' }); }
@@ -2779,7 +2822,7 @@ app.post('/api/bookings/cancel', async (req, res) => {
     }
 
     await withTransaction(async (client) => {
-      await client.query("UPDATE bookings SET stage = 'CANCELLED' WHERE unit_id = $1 AND stage != 'CANCELLED'", [unitId]);
+      await client.query("UPDATE bookings SET stage = 'CANCELLED' WHERE unit_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'", [unitId]);
       await client.query("UPDATE units SET status = 'FREE' WHERE id = $1", [unitId]);
     });
 

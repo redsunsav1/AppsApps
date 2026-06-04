@@ -54,7 +54,11 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
             setMyBookedUnitIds(new Set());
 
             // Load units
-            const unitsPromise = fetch(`/api/units/${selectedProject.id}`)
+            const unitsPromise = fetch(`/api/units/${selectedProject.id}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ initData: getAuthData() })
+            })
                 .then(res => res.json());
 
             // Load my bookings to know which units I booked

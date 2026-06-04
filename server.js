@@ -871,6 +871,35 @@ function safeFeedLabel(url) {
   }
 }
 
+async function insertUnitRows(client, rows) {
+  const chunkSize = 200;
+  for (let start = 0; start < rows.length; start += chunkSize) {
+    const chunk = rows.slice(start, start + chunkSize);
+    const values = [];
+    const placeholders = chunk.map((row, rowIndex) => {
+      const base = rowIndex * 10;
+      values.push(row.id, row.projectId, row.floor, row.number, row.rooms, row.area, row.price, row.status, row.planUrl, row.section);
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10})`;
+    });
+
+    await client.query(
+      `INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url, section)
+       VALUES ${placeholders.join(',')}
+       ON CONFLICT (id) DO UPDATE SET
+         floor = EXCLUDED.floor,
+         number = EXCLUDED.number,
+         rooms = EXCLUDED.rooms,
+         area = EXCLUDED.area,
+         price = EXCLUDED.price,
+         status = EXCLUDED.status,
+         plan_image_url = EXCLUDED.plan_image_url,
+         section = EXCLUDED.section,
+         updated_at = NOW()`,
+      values
+    );
+  }
+}
+
 async function syncProjectWithXml(projectId, url, options = {}) {
   const key = String(projectId);
   const existing = projectSyncLocks.get(key);
@@ -1040,6 +1069,11 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
   }
   feedDebugLog('📊 Feed status distribution:', JSON.stringify(feedStatusMap));
 
+  let maxFloor = buildingFloors || 1;
+  const floorCounts = {};
+  const floorCounters = {};
+  const unitRowsById = new Map();
+
   // Сохраняем unit_id с активными бронями ДО удаления
   const bookedRes = await pool.query(
     "SELECT DISTINCT unit_id FROM bookings WHERE project_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'",
@@ -1049,13 +1083,6 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
   if (bookedUnitIds.size > 0) {
     console.log(`🔒 Preserving ${bookedUnitIds.size} booked units during sync`);
   }
-
-  await pool.query('DELETE FROM units WHERE project_id = $1', [projectId]);
-
-  let maxFloor = buildingFloors || 1;
-  const floorCounts = {};
-  const floorCounters = {};
-  let count = 0;
 
   for (const u of units) {
     // Если этаж не определён — ставим 1, НЕ пропускаем
@@ -1096,26 +1123,48 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
       status = 'BOOKED';
     }
 
-    await pool.query(
-      `INSERT INTO units (id, project_id, floor, number, rooms, area, price, status, plan_image_url, section) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       ON CONFLICT (id) DO UPDATE SET floor=$3, number=$4, rooms=$5, area=$6, price=$7, status=$8, plan_image_url=$9, section=$10, updated_at=NOW()`,
-      [u.id, projectId, floor, unitNumber, u.rooms, u.area, u.price, status, u.planUrl, u.section]
-    );
-    count++;
+    unitRowsById.set(u.id, {
+      id: u.id,
+      projectId,
+      floor,
+      number: unitNumber,
+      rooms: u.rooms,
+      area: u.area,
+      price: u.price,
+      status,
+      planUrl: u.planUrl,
+      section: u.section,
+    });
   }
 
+  const unitRows = [...unitRowsById.values()];
   const maxUnitsOnFloor = Math.max(...Object.values(floorCounts).map(Number), 1);
-  await pool.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3, feed_synced_at = NOW() WHERE id = $4', [maxFloor, maxUnitsOnFloor, url, projectId]);
+  let savedStatuses = {};
+
+  await withTransaction(async (client) => {
+    await client.query('DELETE FROM units WHERE project_id = $1', [projectId]);
+    if (unitRows.length > 0) await insertUnitRows(client, unitRows);
+    await client.query(
+      `UPDATE units SET status = 'BOOKED', updated_at = NOW()
+       WHERE project_id = $1
+         AND id IN (
+           SELECT DISTINCT unit_id FROM bookings
+           WHERE project_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'
+         )`,
+      [projectId]
+    );
+    await client.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3, feed_synced_at = NOW() WHERE id = $4', [maxFloor, maxUnitsOnFloor, url, projectId]);
+
+    // Подсчёт сохранённых статусов из БД (после парсинга)
+    const savedRes = await client.query('SELECT status, count(*) as c FROM units WHERE project_id = $1 GROUP BY status', [projectId]);
+    savedStatuses = {};
+    for (const r of savedRes.rows) savedStatuses[r.status] = parseInt(r.c);
+  });
 
   // Секции
   const sections = [...new Set(units.map(u => u.section).filter(Boolean))];
 
-  // Подсчёт сохранённых статусов из БД (после парсинга)
-  const savedRes = await pool.query('SELECT status, count(*) as c FROM units WHERE project_id = $1 GROUP BY status', [projectId]);
-  const savedStatuses = {};
-  for (const r of savedRes.rows) savedStatuses[r.status] = parseInt(r.c);
-
-  diag.savedCount = count;
+  diag.savedCount = unitRows.length;
   diag.sampleUnit = units[0] || null;
   diag.floors = maxFloor;
   diag.maxPerFloor = maxUnitsOnFloor;

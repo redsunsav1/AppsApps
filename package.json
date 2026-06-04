@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "start": "node server/index.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "@twa-dev/sdk": "^8.0.2",

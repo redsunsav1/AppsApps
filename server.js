@@ -1188,7 +1188,7 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
   diag.sections = sections;
   diag.feedStatusMap = feedStatusMap;
   diag.savedStatuses = savedStatuses;
-  console.log(`✅ Synced ${count}/${rawItems.length} for ${projectId} (${diag.format}, ${maxFloor} fl, ${maxUnitsOnFloor}/fl, sections=${sections.join(',')}, statuses=${JSON.stringify(savedStatuses)}, noFloor=${diag.noFloorCount})`);
+  console.log(`✅ Synced ${unitRows.length}/${rawItems.length} for ${projectId} (${diag.format}, ${maxFloor} fl, ${maxUnitsOnFloor}/fl, sections=${sections.join(',')}, statuses=${JSON.stringify(savedStatuses)}, noFloor=${diag.noFloorCount})`);
   return diag;
 }
 
@@ -1249,6 +1249,7 @@ app.get('/api/ping', async (req, res) => {
 
 app.get('/api/test-notify', async (req, res) => {
   try {
+    if (process.env.ENABLE_TEST_NOTIFY !== 'true') return res.status(404).json({ error: 'Not found' });
     const usersRes = await pool.query('SELECT telegram_id, first_name FROM users WHERE is_admin = TRUE LIMIT 1');
     if (usersRes.rows.length === 0) return res.json({ error: 'No admin found' });
     const admin = usersRes.rows[0];
@@ -1954,6 +1955,8 @@ app.delete('/api/admin/users/:id', async (req, res) => {
 
 app.post('/api/admin/clear-users', async (req, res) => {
   try {
+    if (process.env.ALLOW_CLEAR_USERS !== 'true') return res.status(404).json({ error: 'Not found' });
+    if (req.body.confirmation !== 'DELETE_ALL_USERS') return res.status(400).json({ error: 'Confirmation required' });
     const adminUser = await resolveDbUser(req.body.initData);
     if (!adminUser?.is_admin) return res.status(403).json({ error: 'Forbidden' });
     const result = await pool.query('DELETE FROM users WHERE id != $1', [adminUser.id]);

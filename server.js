@@ -1584,15 +1584,71 @@ async function applyApplicationDecision(userId, action) {
     return { ok: false, status: 'bad_request', message: 'Некорректное действие' };
   }
 
-  const userRes = await pool.query('SELECT id, telegram_id, max_id, platform, first_name FROM users WHERE id = $1', [id]);
+  const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
   if (userRes.rows.length === 0) {
     return { ok: false, status: 'not_found', message: 'Заявка не найдена' };
   }
 
   const user = userRes.rows[0];
   if (action === 'approve') {
-    await pool.query(`UPDATE users SET is_registered = TRUE, approval_status = 'approved' WHERE id = $1`, [id]);
-    notifyUser(user, `🎉 <b>Добро пожаловать в Клуб Партнёров!</b>\n\nПривет, ${user.first_name || 'партнёр'}! Ваша заявка одобрена.`);
+    const result = await withTransaction(async (client) => {
+      const sourceRes = await client.query('SELECT * FROM users WHERE id = $1 FOR UPDATE', [id]);
+      if (sourceRes.rows.length === 0) throw { status: 'not_found', message: 'Заявка не найдена' };
+      const source = sourceRes.rows[0];
+
+      if (source.phone_normalized) {
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`phone:${source.phone_normalized}`]);
+        const targetRes = await client.query(`
+          SELECT * FROM users
+          WHERE id != $1
+            AND phone_normalized = $2
+            AND approval_status = 'approved'
+            AND is_registered = TRUE
+          ORDER BY created_at ASC, id ASC
+          FOR UPDATE
+        `, [source.id, source.phone_normalized]);
+        const target = targetRes.rows.find(row => getIdentityMergeConflict(row, source) === null);
+        if (target) {
+          const linkedUser = await mergeUserIdentity(client, target, source);
+          const updated = await client.query(`
+            UPDATE users
+            SET is_registered = TRUE,
+                approval_status = 'approved',
+                platform = COALESCE($1, platform),
+                consent_pd = COALESCE(consent_pd, $2),
+                consent_pd_at = COALESCE(consent_pd_at, $3)
+            WHERE id = $4
+            RETURNING *
+          `, [source.platform || null, source.consent_pd || false, source.consent_pd_at || null, linkedUser.id]);
+          return { user: updated.rows[0] || linkedUser, linked: true };
+        }
+        if (targetRes.rows.length > 0) {
+          return {
+            user: source,
+            linked: false,
+            conflict: true,
+            message: 'Телефон уже привязан к другому аккаунту этого же мессенджера',
+          };
+        }
+      }
+
+      const updated = await client.query(
+        `UPDATE users SET is_registered = TRUE, approval_status = 'approved' WHERE id = $1 RETURNING *`,
+        [source.id]
+      );
+      return { user: updated.rows[0], linked: false };
+    });
+
+    if (result.conflict) {
+      return { ok: false, status: 'bad_request', message: result.message };
+    }
+
+    if (result.linked) {
+      notifyUser(result.user, `🔗 <b>Готово!</b>\n\nВаш второй мессенджер привязан к существующему аккаунту Клуба Партнёров.`);
+      return { ok: true, label: 'ПРИВЯЗАНО', notification: '🔗 Привязано!' };
+    }
+
+    notifyUser(result.user, `🎉 <b>Добро пожаловать в Клуб Партнёров!</b>\n\nПривет, ${result.user.first_name || 'партнёр'}! Ваша заявка одобрена.`);
     return { ok: true, label: 'ОДОБРЕНО', notification: '✅ Одобрено!' };
   }
 
@@ -1665,16 +1721,6 @@ async function mergeUserIdentity(client, target, source) {
 
   await client.query('DELETE FROM users WHERE id = $1', [source.id]);
   return updated.rows[0] || target;
-}
-
-function pickIdentityTarget(users, currentUserId) {
-  const approved = users.find(u => Number(u.id) !== Number(currentUserId) && u.approval_status === 'approved');
-  if (approved) return approved;
-  const registered = users.find(u => Number(u.id) !== Number(currentUserId) && u.is_registered);
-  if (registered) return registered;
-  const pending = users.find(u => Number(u.id) !== Number(currentUserId) && u.approval_status === 'pending');
-  if (pending) return pending;
-  return users.find(u => Number(u.id) === Number(currentUserId)) || users[0];
 }
 
 // =============================================
@@ -1769,30 +1815,17 @@ app.post('/api/register', async (req, res) => {
 
       const samePhoneRes = await client.query(`
         SELECT * FROM users
-        WHERE phone_normalized = $1 OR id = $2
+        WHERE phone_normalized = $1 AND id != $2
         ORDER BY
-          CASE WHEN id = $2 THEN 0 ELSE 1 END,
           CASE WHEN approval_status = 'approved' THEN 0 WHEN is_registered THEN 1 ELSE 2 END,
           created_at ASC,
           id ASC
         FOR UPDATE
       `, [phoneNormalized, current.id]);
 
-      const usersById = new Map();
-      for (const row of [current, ...samePhoneRes.rows]) usersById.set(Number(row.id), row);
-      const candidates = [...usersById.values()];
-      let target = pickIdentityTarget(candidates, current.id);
-      let linked = false;
-
-      for (const candidate of candidates) {
-        if (Number(candidate.id) === Number(target.id)) continue;
-        if (Number(candidate.id) === Number(current.id) || getIdentityMergeConflict(target, candidate) === null) {
-          target = await mergeUserIdentity(client, target, candidate);
-          linked = true;
-        }
-      }
-
-      const alreadyApproved = target.approval_status === 'approved' || (target.is_registered === true && target.approval_status !== 'rejected');
+      const approvedMatch = samePhoneRes.rows.find(row => row.approval_status === 'approved' && row.is_registered);
+      const pendingMatch = samePhoneRes.rows.find(row => row.approval_status === 'pending');
+      const alreadyApproved = current.approval_status === 'approved' || (current.is_registered === true && current.approval_status !== 'rejected');
       const updated = await client.query(`
         UPDATE users
         SET first_name = $1,
@@ -1809,18 +1842,24 @@ app.post('/api/register', async (req, res) => {
         WHERE id = $9
         RETURNING *
       `, [
-        alreadyApproved ? (target.first_name || firstName) : firstName,
-        alreadyApproved ? (target.last_name || lastName) : lastName,
-        alreadyApproved ? (target.company_type || companyType || 'agency') : (companyType || 'agency'),
-        alreadyApproved ? (target.company || company) : company,
+        alreadyApproved ? (current.first_name || firstName) : firstName,
+        alreadyApproved ? (current.last_name || lastName) : lastName,
+        alreadyApproved ? (current.company_type || companyType || 'agency') : (companyType || 'agency'),
+        alreadyApproved ? (current.company || company) : company,
         phone,
         phoneNormalized,
         alreadyApproved,
-        authUser._platform || target.platform || 'telegram',
-        target.id,
+        authUser._platform || current.platform || 'telegram',
+        current.id,
       ]);
 
-      return { user: updated.rows[0], linked, alreadyApproved };
+      return {
+        user: updated.rows[0],
+        linked: false,
+        alreadyApproved,
+        needsAdminLinkApproval: !alreadyApproved && !!approvedMatch,
+        duplicatePending: !alreadyApproved && !!pendingMatch,
+      };
     });
 
     const userId = registrationResult.user.id;
@@ -1829,10 +1868,15 @@ app.post('/api/register', async (req, res) => {
     const platformLabel = platform === 'max' ? '🟣 MAX' : '✈️ Telegram';
     if (registrationResult.alreadyApproved) {
       notifyAdmin(
-        `🔗 <b>Пользователь связал второй мессенджер</b>\n\n👤 ${registrationResult.user.first_name || firstName} ${registrationResult.user.last_name || lastName || ''}\n🏢 ${registrationResult.user.company || company}\n📞 ${phone}\n📲 Новый вход: ${platformLabel}`
+        `ℹ️ <b>Пользователь обновил профиль</b>\n\n👤 ${registrationResult.user.first_name || firstName} ${registrationResult.user.last_name || lastName || ''}\n🏢 ${registrationResult.user.company || company}\n📞 ${phone}\n📲 Вход: ${platformLabel}`
       );
     } else {
-      const text = `📋 <b>Новая заявка на вход!</b>\n\n👤 ${firstName} ${lastName}\n🏢 ${typeLabel}: ${company}\n📞 ${phone}\n📲 ${platformLabel}`;
+      const requestLabel = registrationResult.needsAdminLinkApproval
+        ? '🔐 <b>Заявка на привязку второго мессенджера</b>'
+        : registrationResult.duplicatePending
+          ? '⚠️ <b>Повторная заявка с тем же телефоном</b>'
+          : '📋 <b>Новая заявка на вход!</b>';
+      const text = `${requestLabel}\n\n👤 ${firstName} ${lastName}\n🏢 ${typeLabel}: ${company}\n📞 ${phone}\n📲 ${platformLabel}`;
       const keyboard = [[
         { text: '✅ Одобрить', callback_data: `approve_${userId}` },
         { text: '❌ Отклонить', callback_data: `reject_${userId}` }

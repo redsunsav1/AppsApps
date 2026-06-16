@@ -299,6 +299,9 @@ const pool = new Pool({
 });
 pool.on('error', (err) => console.error('⚠️ Pool error:', err.message));
 
+const BOOKING_HOLD_HOURS = Math.max(1, parseInt(process.env.BOOKING_HOLD_HOURS || '72', 10) || 72);
+const BOOKING_EXPIRY_CRON = process.env.BOOKING_EXPIRY_CRON || '*/15 * * * *';
+
 // Transaction helper
 async function withTransaction(fn) {
   const client = await pool.connect();
@@ -637,6 +640,11 @@ const initDb = async () => {
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS docs_sent_at TIMESTAMP;');
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS buyer_name TEXT;');
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS buyer_phone TEXT;');
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;');
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS reminder_12h_sent BOOLEAN DEFAULT FALSE;');
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS reminder_6h_sent BOOLEAN DEFAULT FALSE;');
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS expired_at TIMESTAMP;');
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancel_reason TEXT;');
     await pool.query('ALTER TABLE units ADD COLUMN IF NOT EXISTS section TEXT;');
     // 152-ФЗ: согласия на обработку ПДн
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_pd BOOLEAN DEFAULT FALSE;');
@@ -697,6 +705,17 @@ const initDb = async () => {
     await pool.query('CREATE INDEX IF NOT EXISTS idx_units_proj ON units(project_id);');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_book_unit ON bookings(unit_id);');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_book_user ON bookings(user_id);');
+    await pool.query(`
+      UPDATE bookings
+      SET expires_at = created_at + ($1::int * INTERVAL '1 hour')
+      WHERE expires_at IS NULL
+        AND COALESCE(stage, 'INIT') NOT IN ('CANCELLED', 'COMPLETE')
+    `, [BOOKING_HOLD_HOURS]);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_bookings_expires_at
+      ON bookings(expires_at)
+      WHERE COALESCE(stage, 'INIT') NOT IN ('CANCELLED', 'COMPLETE')
+    `);
     // Жёсткая защита от двойной брони: PostgreSQL физически не даст
     // создать две активные брони на одну квартиру даже при параллельных запросах.
     await pool.query(`
@@ -1248,6 +1267,128 @@ async function refreshFeedBeforeBooking(unitId, fallbackProjectId) {
   return refreshProjectFeed(projectId, { reason: 'pre-booking' });
 }
 
+function formatBookingDeadline(expiresAt) {
+  try {
+    return new Date(expiresAt).toLocaleString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      year: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: 'Europe/Samara',
+    });
+  } catch {
+    return String(expiresAt || '');
+  }
+}
+
+function bookingLabel(row) {
+  const project = row.project_name || row.project_id || 'проект';
+  const number = row.unit_number ? `кв. ${row.unit_number}` : `unit ${row.unit_id}`;
+  return `${number}, ${project}`;
+}
+
+async function processBookingReminderWindow(label, flagColumn, minHours, maxHours) {
+  const allowedFlags = new Set(['reminder_12h_sent', 'reminder_6h_sent']);
+  if (!allowedFlags.has(flagColumn)) return [];
+
+  const due = await withTransaction(async (client) => {
+    const result = await client.query(`
+      SELECT b.id, b.unit_id, b.project_id, b.expires_at, b.user_id,
+             u.telegram_id, u.max_id, u.platform, u.first_name,
+             un.number AS unit_number, p.name AS project_name
+      FROM bookings b
+      JOIN users u ON u.id = b.user_id
+      LEFT JOIN units un ON un.id = b.unit_id
+      LEFT JOIN projects p ON p.id = b.project_id
+      WHERE b.expires_at IS NOT NULL
+        AND b.${flagColumn} IS NOT TRUE
+        AND COALESCE(b.stage, 'INIT') NOT IN ('CANCELLED', 'COMPLETE')
+        AND b.expires_at > NOW() + ($1::int * INTERVAL '1 hour')
+        AND b.expires_at <= NOW() + ($2::int * INTERVAL '1 hour')
+      ORDER BY b.expires_at ASC
+      FOR UPDATE OF b SKIP LOCKED
+    `, [minHours, maxHours]);
+
+    if (result.rows.length > 0) {
+      await client.query(
+        `UPDATE bookings SET ${flagColumn} = TRUE WHERE id = ANY($1::int[])`,
+        [result.rows.map(r => r.id)]
+      );
+    }
+    return result.rows;
+  });
+
+  for (const row of due) {
+    const text = `⏳ <b>Бронь скоро истечёт</b>\n\n${bookingLabel(row)}\nОсталось примерно ${label}.\nСрок до: ${formatBookingDeadline(row.expires_at)}.\n\nЕсли сделка актуальна, успейте отправить документы и довести её до подтверждения.`;
+    notifyUser(row, text, getAppOpenKeyboard()).catch(e => console.error('Booking reminder notify user error:', e.message));
+    notifyAdmin(`⏳ Бронь скоро истечёт (${label})\n\n${bookingLabel(row)}\nРиелтор: ${row.first_name || row.user_id}\nСрок до: ${formatBookingDeadline(row.expires_at)}`, getAppOpenKeyboard())
+      .catch(e => console.error('Booking reminder notify admin error:', e.message));
+  }
+  return due;
+}
+
+async function expireOverdueBookings() {
+  const expired = await withTransaction(async (client) => {
+    const result = await client.query(`
+      SELECT b.id, b.unit_id, b.project_id, b.expires_at, b.user_id,
+             u.telegram_id, u.max_id, u.platform, u.first_name,
+             un.number AS unit_number, p.name AS project_name
+      FROM bookings b
+      JOIN users u ON u.id = b.user_id
+      LEFT JOIN units un ON un.id = b.unit_id
+      LEFT JOIN projects p ON p.id = b.project_id
+      WHERE b.expires_at IS NOT NULL
+        AND b.expires_at <= NOW()
+        AND COALESCE(b.stage, 'INIT') NOT IN ('CANCELLED', 'COMPLETE')
+      ORDER BY b.expires_at ASC
+      FOR UPDATE OF b SKIP LOCKED
+    `);
+    if (result.rows.length === 0) return [];
+
+    const bookingIds = result.rows.map(r => r.id);
+    const unitIds = [...new Set(result.rows.map(r => r.unit_id).filter(Boolean))];
+    await client.query(
+      `UPDATE bookings
+       SET stage = 'CANCELLED', expired_at = NOW(), cancel_reason = 'expired_3_days'
+       WHERE id = ANY($1::int[])`,
+      [bookingIds]
+    );
+    if (unitIds.length > 0) {
+      await client.query(
+        `UPDATE units u
+         SET status = 'FREE', updated_at = NOW()
+         WHERE u.id = ANY($1::text[])
+           AND NOT EXISTS (
+             SELECT 1 FROM bookings b
+             WHERE b.unit_id = u.id AND COALESCE(b.stage, 'INIT') NOT IN ('CANCELLED')
+           )`,
+        [unitIds]
+      );
+    }
+    return result.rows;
+  });
+
+  for (const row of expired) {
+    const text = `⌛ <b>Бронь истекла</b>\n\n${bookingLabel(row)} освобождена, потому что прошло ${BOOKING_HOLD_HOURS} часов с момента бронирования.`;
+    notifyUser(row, text, getAppOpenKeyboard()).catch(e => console.error('Booking expired notify user error:', e.message));
+    notifyAdmin(`⌛ Бронь истекла и квартира освобождена\n\n${bookingLabel(row)}\nРиелтор: ${row.first_name || row.user_id}`, getAppOpenKeyboard())
+      .catch(e => console.error('Booking expired notify admin error:', e.message));
+  }
+  if (expired.length > 0) console.log(`⌛ Expired ${expired.length} overdue bookings`);
+  return expired;
+}
+
+async function processBookingDeadlines() {
+  try {
+    await expireOverdueBookings();
+    await processBookingReminderWindow('12 часов', 'reminder_12h_sent', 6, 12);
+    await processBookingReminderWindow('6 часов', 'reminder_6h_sent', 0, 6);
+  } catch (e) {
+    console.error('Booking deadlines cron error:', e);
+  }
+}
+
 cron.schedule('*/5 * * * *', async () => {
   try {
     const res = await pool.query('SELECT id, feed_url FROM projects WHERE feed_url IS NOT NULL');
@@ -1256,6 +1397,8 @@ cron.schedule('*/5 * * * *', async () => {
     }
   } catch (e) { console.error('Cron Error:', e); }
 });
+
+cron.schedule(BOOKING_EXPIRY_CRON, processBookingDeadlines);
 
 // =============================================
 // HEALTH CHECK
@@ -1807,6 +1950,9 @@ async function handleProjectUnits(req, res) {
         SELECT u.*,
                b.buyer_name AS booking_buyer_name,
                b.buyer_phone AS booking_buyer_phone,
+               b.created_at AS booking_created_at,
+               b.expires_at AS booking_expires_at,
+               b.stage AS booking_stage,
                agent.first_name AS booking_agent_name,
                agent.last_name AS booking_agent_last_name,
                agent.phone AS booking_agent_phone,
@@ -2787,12 +2933,12 @@ app.post('/api/bookings', async (req, res) => {
       const existing = await client.query("SELECT id FROM bookings WHERE unit_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'", [unitId]);
       if (existing.rows.length > 0) throw { status: 400, msg: 'На эту квартиру уже есть активное бронирование' };
       const bookingRes = await client.query(
-        `INSERT INTO bookings (user_id, unit_id, project_id, user_phone, user_name, user_company, stage)
-         VALUES ($1, $2, $3, $4, $5, $6, 'INIT') RETURNING *`,
-        [user.id, unitId, unit.project_id || projectId, user.phone, user.first_name, user.company]
+        `INSERT INTO bookings (user_id, unit_id, project_id, user_phone, user_name, user_company, stage, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'INIT', NOW() + ($7::int * INTERVAL '1 hour')) RETURNING *`,
+        [user.id, unitId, unit.project_id || projectId, user.phone, user.first_name, user.company, BOOKING_HOLD_HOURS]
       );
       await client.query("UPDATE units SET status = 'BOOKED' WHERE id = $1", [unitId]);
-      return { success: true, bookingId: bookingRes.rows[0].id };
+      return { success: true, bookingId: bookingRes.rows[0].id, expiresAt: bookingRes.rows[0].expires_at };
     });
     // Автопроверка миссий (асинхронно, не блокирует ответ)
     checkMissions(user.id, 'booking').then(rewards => {

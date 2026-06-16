@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { getAuthData } from '../utils/auth';
-import { CheckCircle2, Circle, Upload, Loader2, X, FileText, ChevronDown, ChevronUp } from 'lucide-react';
+import { CheckCircle2, Circle, Upload, Loader2, X, FileText, ChevronDown, ChevronUp, Clock } from 'lucide-react';
 import { BookingRecord } from '../types';
 
 const BookingChecklist: React.FC = () => {
@@ -11,9 +11,15 @@ const BookingChecklist: React.FC = () => {
   const [uploadResult, setUploadResult] = useState<{ id: number; ok: boolean; msg: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activeUploadBookingId, setActiveUploadBookingId] = useState<number | null>(null);
+  const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     fetchBookings();
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const fetchBookings = () => {
@@ -71,6 +77,20 @@ const BookingChecklist: React.FC = () => {
     }
   };
 
+  const formatTimeLeft = (expiresAt?: string) => {
+    if (!expiresAt) return null;
+    const diff = new Date(expiresAt).getTime() - now;
+    if (!Number.isFinite(diff)) return null;
+    if (diff <= 0) return 'истекло';
+    const hours = Math.floor(diff / 3600000);
+    const minutes = Math.max(0, Math.floor((diff % 3600000) / 60000));
+    const days = Math.floor(hours / 24);
+    const remHours = hours % 24;
+    if (days > 0) return `${days} д ${remHours} ч`;
+    if (hours > 0) return `${hours} ч ${minutes} мин`;
+    return `${minutes} мин`;
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-32">
@@ -93,6 +113,8 @@ const BookingChecklist: React.FC = () => {
       {bookings.map(booking => {
         const stageIdx = getStageIndex(booking.stage);
         const isExpanded = expandedId === booking.id;
+        const timeLeft = formatTimeLeft(booking.expires_at);
+        const isFinalStage = booking.stage === 'COMPLETE' || booking.stage === 'CANCELLED';
 
         const stages = [
           { label: 'Бронирование создано', done: stageIdx >= 0 },
@@ -115,6 +137,11 @@ const BookingChecklist: React.FC = () => {
                 <p className="text-xs text-gray-400 mt-0.5">{booking.project_name}</p>
                 {booking.buyer_name && (
                   <p className="text-xs text-gray-500 mt-0.5">Покупатель: {booking.buyer_name}</p>
+                )}
+                {timeLeft && !isFinalStage && (
+                  <p className={`text-xs mt-1 flex items-center gap-1 font-bold ${timeLeft === 'истекло' ? 'text-red-600' : 'text-amber-600'}`}>
+                    <Clock size={12} /> Осталось: {timeLeft}
+                  </p>
                 )}
               </div>
               <div className="flex items-center gap-2">
@@ -184,6 +211,9 @@ const BookingChecklist: React.FC = () => {
 
                 {/* Unit details */}
                 <div className="bg-gray-50 rounded-xl p-3 space-y-1 text-xs">
+                  {timeLeft && !isFinalStage && (
+                    <div className="flex justify-between"><span className="text-gray-400">Срок брони</span><span className={`font-bold ${timeLeft === 'истекло' ? 'text-red-600' : 'text-amber-600'}`}>{timeLeft}</span></div>
+                  )}
                   <div className="flex justify-between"><span className="text-gray-400">Площадь</span><span className="font-bold text-brand-black">{booking.unit_area} м²</span></div>
                   <div className="flex justify-between"><span className="text-gray-400">Комнат</span><span className="font-bold text-brand-black">{booking.unit_rooms}</span></div>
                   {booking.buyer_phone && (

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { getAuthData } from '../utils/auth';
-import { Newspaper, Building2, Link, ShoppingBag, Zap, Trash2, UserCheck, Users, Calendar, Calculator, Edit3, X, Phone, Send, ChevronRight, Database, ArrowLeft } from 'lucide-react';
+import { Newspaper, Building2, Link, ShoppingBag, Zap, Trash2, UserCheck, Users, Calendar, Calculator, Edit3, X, Phone, Send, ChevronRight, Database, ArrowLeft, Clock } from 'lucide-react';
 import { showToast } from '../utils/toast';
 import { getRank } from '../types';
 
@@ -61,6 +61,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [selectedProfile, setSelectedProfile] = useState<any | null>(null);
   const [profileBookings, setProfileBookings] = useState<any[]>([]);
   const [profilePrizes, setProfilePrizes] = useState<any[]>([]);
+  const [now, setNow] = useState(Date.now());
 
   // News
   const [title, setTitle] = useState('');
@@ -156,6 +157,25 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     if (activeTab === 'база') fetchBazaUsers();
     if (activeTab === 'shop') fetchShopProducts();
   }, [activeTab]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const formatTimeLeft = (expiresAt?: string) => {
+    if (!expiresAt) return null;
+    const diff = new Date(expiresAt).getTime() - now;
+    if (!Number.isFinite(diff)) return null;
+    if (diff <= 0) return 'истекло';
+    const hours = Math.floor(diff / 3600000);
+    const minutes = Math.max(0, Math.floor((diff % 3600000) / 60000));
+    const days = Math.floor(hours / 24);
+    const remHours = hours % 24;
+    if (days > 0) return `${days} д ${remHours} ч`;
+    if (hours > 0) return `${hours} ч ${minutes} мин`;
+    return `${minutes} мин`;
+  };
 
   const fetchBazaUsers = () => {
     fetch('/api/admin/users', {
@@ -1086,6 +1106,11 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                     </div>
                                     {b.buyer_name && (
                                         <div className="text-gray-500 mt-0.5">Покупатель: {b.buyer_name} {b.buyer_phone ? `· ${b.buyer_phone}` : ''}</div>
+                                    )}
+                                    {b.expires_at && b.stage !== 'COMPLETE' && b.stage !== 'CANCELLED' && (
+                                        <div className={`mt-1 flex items-center gap-1 font-bold ${formatTimeLeft(b.expires_at) === 'истекло' ? 'text-red-600' : 'text-amber-600'}`}>
+                                            <Clock size={12} /> Срок брони: {formatTimeLeft(b.expires_at)}
+                                        </div>
                                     )}
                                     {/* Admin actions */}
                                     {b.stage === 'DOCS_SENT' && (

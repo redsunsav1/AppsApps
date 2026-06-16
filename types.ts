@@ -106,6 +106,9 @@ export interface ChessUnit {
   bookingAgentCompanyType?: string;
   bookingBuyerName?: string;
   bookingBuyerPhone?: string;
+  bookingCreatedAt?: string;
+  bookingExpiresAt?: string;
+  bookingStage?: string;
 }
 
 export interface ProjectData {
@@ -151,6 +154,9 @@ export interface BookingRecord {
   buyer_name?: string;
   buyer_phone?: string;
   created_at: string;
+  expires_at?: string;
+  expired_at?: string;
+  cancel_reason?: string;
 }
 
 export interface Mission {

@@ -731,7 +731,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                         {u.company_type === 'ip' ? 'ИП' : 'АН'}: {u.company || '—'} · {u.phone || '—'}
                                     </div>
                                     <div className="text-[10px] text-gray-400">
-                                        {(u.platform === 'max' || u.max_id) ? `MAX: ${u.max_id || '—'}` : `TG: ${u.telegram_id || '—'}`} · {u.approval_status || 'none'} · {u.is_registered ? 'Активен' : 'Не зарег.'}
+                                        TG: {u.telegram_id || '—'} · MAX: {u.max_id || '—'} · {u.approval_status || 'none'} · {u.is_registered ? 'Активен' : 'Не зарег.'}
                                     </div>
                                     <div className="text-[10px] text-gray-400">
                                         Серебро: {u.balance || 0} · Золото: {u.gold_balance || 0} · XP: {u.xp_points || 0} · Сделки: {u.deals_closed || 0}

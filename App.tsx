@@ -398,9 +398,15 @@ const App: React.FC = () => {
     .then(res => res.json())
     .then(data => {
       if (data.success) {
-        setApprovalStatus('pending');
+        if (data.user) {
+          applyAuthUser(data.user);
+          if (data.linked) showToast('Аккаунты Telegram и MAX связаны', 'success');
+          return;
+        }
+        const nextStatus = data.status || 'pending';
+        setApprovalStatus(nextStatus);
         if (user) {
-          setUser({ ...user, approval_status: 'pending' });
+          setUser({ ...user, approval_status: nextStatus });
         }
       }
     })

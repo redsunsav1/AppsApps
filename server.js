@@ -572,6 +572,14 @@ async function notifyAdmin(text, inlineKeyboard) {
   return results;
 }
 
+function normalizePhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.length === 10) return `7${digits}`;
+  if (digits.length === 11 && digits.startsWith('8')) return `7${digits.slice(1)}`;
+  return digits;
+}
+
 // =============================================
 // WEBHOOK REGISTRATION
 // =============================================
@@ -633,6 +641,7 @@ const initDb = async () => {
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_news_at TIMESTAMP;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS can_manage_bookings BOOLEAN DEFAULT FALSE;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_normalized TEXT;');
     await pool.query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS stage TEXT DEFAULT 'INIT';");
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS passport_sent BOOLEAN DEFAULT FALSE;');
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS passport_sent_at TIMESTAMP;');
@@ -702,6 +711,21 @@ const initDb = async () => {
 
     // --- Индексы ---
     await pool.query('CREATE INDEX IF NOT EXISTS idx_users_tg ON users(telegram_id);');
+    await pool.query(`
+      UPDATE users
+      SET phone_normalized = CASE
+        WHEN length(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g')) = 10
+          THEN '7' || regexp_replace(COALESCE(phone, ''), '\\D', '', 'g')
+        WHEN length(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g')) = 11
+          AND left(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g'), 1) = '8'
+          THEN '7' || substring(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') from 2)
+        WHEN regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') != ''
+          THEN regexp_replace(COALESCE(phone, ''), '\\D', '', 'g')
+        ELSE NULL
+      END
+      WHERE phone_normalized IS NULL AND phone IS NOT NULL
+    `);
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_users_phone_normalized ON users(phone_normalized) WHERE phone_normalized IS NOT NULL;');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_units_proj ON units(project_id);');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_book_unit ON bookings(unit_id);');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_book_user ON bookings(user_id);');
@@ -1438,6 +1462,10 @@ app.post('/api/auth', rateLimit(900000, 30), async (req, res) => {
     }
     // Обновить серию входов
     const user = dbUser.rows[0];
+    if (user.platform !== 'telegram') {
+      await pool.query("UPDATE users SET platform = 'telegram' WHERE id = $1", [user.id]);
+      user.platform = 'telegram';
+    }
     // Генерировать PWA-токен если его нет
     if (!user.pwa_token) {
       const token = crypto.randomBytes(32).toString('hex');
@@ -1520,6 +1548,10 @@ app.post('/api/auth/max', rateLimit(900000, 30), async (req, res) => {
       dbUser.rows[0].is_registered = true;
     }
     const user = dbUser.rows[0];
+    if (user.platform !== 'max') {
+      await pool.query("UPDATE users SET platform = 'max' WHERE id = $1", [user.id]);
+      user.platform = 'max';
+    }
 
     // Генерировать PWA-токен если нет (универсальный, единая логика с Telegram)
     if (!user.pwa_token) {
@@ -1567,6 +1599,80 @@ async function applyApplicationDecision(userId, action) {
   await pool.query(`UPDATE users SET approval_status = 'rejected' WHERE id = $1`, [id]);
   notifyUser(user, `❌ <b>Заявка отклонена</b>\n\nЕсли это ошибка, свяжитесь с отделом продаж.`);
   return { ok: true, label: 'ОТКЛОНЕНО', notification: '❌ Отклонено' };
+}
+
+function getIdentityMergeConflict(target, source) {
+  if (source.telegram_id && target.telegram_id && String(source.telegram_id) !== String(target.telegram_id)) {
+    return 'telegram';
+  }
+  if (source.max_id && target.max_id && String(source.max_id) !== String(target.max_id)) {
+    return 'max';
+  }
+  return null;
+}
+
+async function mergeUserIdentity(client, target, source) {
+  if (!target || !source || Number(target.id) === Number(source.id)) return target;
+  const conflict = getIdentityMergeConflict(target, source);
+  if (conflict) {
+    throw {
+      status: 409,
+      msg: conflict === 'telegram'
+        ? 'Этот телефон уже привязан к другому Telegram-аккаунту'
+        : 'Этот телефон уже привязан к другому MAX-аккаунту',
+    };
+  }
+
+  // Сначала освобождаем уникальные внешние ID у временной записи,
+  // потом переносим их на основного пользователя.
+  await client.query(
+    'UPDATE users SET telegram_id = NULL, max_id = NULL, pwa_token = NULL, phone_normalized = NULL WHERE id = $1',
+    [source.id]
+  );
+
+  await client.query('UPDATE bookings SET user_id = $1 WHERE user_id = $2', [target.id, source.id]);
+  await client.query('UPDATE orders SET user_id = $1 WHERE user_id = $2', [target.id, source.id]);
+
+  await client.query(`
+    DELETE FROM event_registrations src
+    USING event_registrations dst
+    WHERE src.user_id = $1 AND dst.user_id = $2 AND src.event_id = dst.event_id
+  `, [source.id, target.id]);
+  await client.query('UPDATE event_registrations SET user_id = $1 WHERE user_id = $2', [target.id, source.id]);
+
+  await client.query(`
+    DELETE FROM quest_completions src
+    USING quest_completions dst
+    WHERE src.user_id = $1 AND dst.user_id = $2 AND src.quest_id = dst.quest_id
+  `, [source.id, target.id]);
+  await client.query('UPDATE quest_completions SET user_id = $1 WHERE user_id = $2', [target.id, source.id]);
+
+  await client.query(`
+    DELETE FROM user_missions src
+    USING user_missions dst
+    WHERE src.user_id = $1 AND dst.user_id = $2 AND src.mission_id = dst.mission_id
+  `, [source.id, target.id]);
+  await client.query('UPDATE user_missions SET user_id = $1 WHERE user_id = $2', [target.id, source.id]);
+
+  const updated = await client.query(`
+    UPDATE users
+    SET telegram_id = COALESCE(telegram_id, $1),
+        max_id = COALESCE(max_id, $2),
+        pwa_token = COALESCE(pwa_token, $3)
+    WHERE id = $4
+    RETURNING *
+  `, [source.telegram_id || null, source.max_id || null, source.pwa_token || null, target.id]);
+
+  await client.query('DELETE FROM users WHERE id = $1', [source.id]);
+  return updated.rows[0] || target;
+}
+
+function pickIdentityTarget(users, currentUserId) {
+  const approved = users.find(u => Number(u.id) !== Number(currentUserId) && u.approval_status === 'approved');
+  if (approved) return approved;
+  const registered = users.find(u => Number(u.id) !== Number(currentUserId) && u.is_registered);
+  if (registered) return registered;
+  return users.find(u => Number(u.id) === Number(currentUserId)) || users[0];
 }
 
 // =============================================
@@ -1647,27 +1753,103 @@ app.post('/api/register', async (req, res) => {
     const authUser = await resolveDbUser(initData);
     if (!authUser) return res.status(401).json({ error: 'Invalid signature' });
     if (!consentPd) return res.status(400).json({ error: 'Необходимо согласие на обработку персональных данных' });
+    const phoneNormalized = normalizePhone(phone);
+    if (!phoneNormalized || phoneNormalized.length < 10) {
+      return res.status(400).json({ error: 'Некорректный телефон' });
+    }
 
-    await pool.query(
-      `UPDATE users SET first_name = $1, last_name = $2, company_type = $3, company = $4, phone = $5, approval_status = 'pending', consent_pd = TRUE, consent_pd_at = NOW() WHERE id = $6`,
-      [firstName, lastName, companyType || 'agency', company, phone, authUser.id]
-    );
-    const userId = authUser.id;
+    const registrationResult = await withTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`phone:${phoneNormalized}`]);
+
+      const currentRes = await client.query('SELECT * FROM users WHERE id = $1 FOR UPDATE', [authUser.id]);
+      if (currentRes.rows.length === 0) throw { status: 401, msg: 'Invalid signature' };
+      const current = currentRes.rows[0];
+
+      const samePhoneRes = await client.query(`
+        SELECT * FROM users
+        WHERE phone_normalized = $1 OR id = $2
+        ORDER BY
+          CASE WHEN id = $2 THEN 0 ELSE 1 END,
+          CASE WHEN approval_status = 'approved' THEN 0 WHEN is_registered THEN 1 ELSE 2 END,
+          created_at ASC,
+          id ASC
+        FOR UPDATE
+      `, [phoneNormalized, current.id]);
+
+      const usersById = new Map();
+      for (const row of [current, ...samePhoneRes.rows]) usersById.set(Number(row.id), row);
+      const candidates = [...usersById.values()];
+      let target = pickIdentityTarget(candidates, current.id);
+      let linked = false;
+
+      for (const candidate of candidates) {
+        if (Number(candidate.id) === Number(target.id)) continue;
+        if (Number(candidate.id) === Number(current.id) || getIdentityMergeConflict(target, candidate) === null) {
+          target = await mergeUserIdentity(client, target, candidate);
+          linked = true;
+        }
+      }
+
+      const alreadyApproved = target.approval_status === 'approved' || (target.is_registered === true && target.approval_status !== 'rejected');
+      const updated = await client.query(`
+        UPDATE users
+        SET first_name = $1,
+            last_name = $2,
+            company_type = $3,
+            company = $4,
+            phone = $5,
+            phone_normalized = $6,
+            approval_status = CASE WHEN $7::boolean THEN 'approved' ELSE 'pending' END,
+            is_registered = CASE WHEN $7::boolean THEN TRUE ELSE is_registered END,
+            consent_pd = TRUE,
+            consent_pd_at = NOW(),
+            platform = $8
+        WHERE id = $9
+        RETURNING *
+      `, [
+        alreadyApproved ? (target.first_name || firstName) : firstName,
+        alreadyApproved ? (target.last_name || lastName) : lastName,
+        alreadyApproved ? (target.company_type || companyType || 'agency') : (companyType || 'agency'),
+        alreadyApproved ? (target.company || company) : company,
+        phone,
+        phoneNormalized,
+        alreadyApproved,
+        authUser._platform || target.platform || 'telegram',
+        target.id,
+      ]);
+
+      return { user: updated.rows[0], linked, alreadyApproved };
+    });
+
+    const userId = registrationResult.user.id;
     const platform = authUser._platform || 'telegram';
     const typeLabel = companyType === 'ip' ? 'ИП' : 'Агентство';
     const platformLabel = platform === 'max' ? '🟣 MAX' : '✈️ Telegram';
-    const text = `📋 <b>Новая заявка на вход!</b>\n\n👤 ${firstName} ${lastName}\n🏢 ${typeLabel}: ${company}\n📞 ${phone}\n📲 ${platformLabel}`;
-    const keyboard = [[
-      { text: '✅ Одобрить', callback_data: `approve_${userId}` },
-      { text: '❌ Отклонить', callback_data: `reject_${userId}` }
-    ]];
-    // Дублируем уведомление админу в оба мессенджера (TG обязательно, MAX если включён)
-    notifyAdmin(text, keyboard);
+    if (registrationResult.alreadyApproved) {
+      notifyAdmin(
+        `🔗 <b>Пользователь связал второй мессенджер</b>\n\n👤 ${registrationResult.user.first_name || firstName} ${registrationResult.user.last_name || lastName || ''}\n🏢 ${registrationResult.user.company || company}\n📞 ${phone}\n📲 Новый вход: ${platformLabel}`
+      );
+    } else {
+      const text = `📋 <b>Новая заявка на вход!</b>\n\n👤 ${firstName} ${lastName}\n🏢 ${typeLabel}: ${company}\n📞 ${phone}\n📲 ${platformLabel}`;
+      const keyboard = [[
+        { text: '✅ Одобрить', callback_data: `approve_${userId}` },
+        { text: '❌ Отклонить', callback_data: `reject_${userId}` }
+      ]];
+      // Дублируем уведомление админу в оба мессенджера (TG обязательно, MAX если включён)
+      notifyAdmin(text, keyboard);
+    }
     // Проверить миссию «профиль заполнен» (асинхронно)
     if (userId) checkMissions(userId, 'register').catch(() => {});
-    res.json({ success: true, status: 'pending' });
+    res.json({
+      success: true,
+      status: registrationResult.user.approval_status || 'pending',
+      linked: registrationResult.linked,
+      alreadyApproved: registrationResult.alreadyApproved,
+      user: registrationResult.user,
+    });
   } catch (e) {
     console.error('Register error:', e);
+    if (e.status) return res.status(e.status).json({ error: e.msg });
     res.status(500).json({ error: 'Error' });
   }
 });

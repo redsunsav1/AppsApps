@@ -1672,6 +1672,8 @@ function pickIdentityTarget(users, currentUserId) {
   if (approved) return approved;
   const registered = users.find(u => Number(u.id) !== Number(currentUserId) && u.is_registered);
   if (registered) return registered;
+  const pending = users.find(u => Number(u.id) !== Number(currentUserId) && u.approval_status === 'pending');
+  if (pending) return pending;
   return users.find(u => Number(u.id) === Number(currentUserId)) || users[0];
 }
 

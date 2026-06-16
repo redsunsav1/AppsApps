@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { getAuthData } from '../utils/auth';
-import { X, ArrowLeft, Loader2, Camera, Building2, Download, Calculator, Lock, Unlock } from 'lucide-react';
+import { X, ArrowLeft, Loader2, Camera, Building2, Download, Calculator, Lock, Unlock, Clock } from 'lucide-react';
 import { ProjectData, ChessUnit, MortgageProgram } from '../types';
 import MortgageCalc from './tools/MortgageCalc';
 import { showToast } from '../utils/toast';
@@ -19,6 +19,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
     const [bookingUnit, setBookingUnit] = useState<ChessUnit | null>(null);
     const [bookingLoading, setBookingLoading] = useState(false);
     const [bookingResult, setBookingResult] = useState<{ ok: boolean; msg: string } | null>(null);
+    const [now, setNow] = useState(Date.now());
 
     // Booking form fields
     const [buyerName, setBuyerName] = useState('');
@@ -70,6 +71,11 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
 
             Promise.all([unitsPromise, myBookingsPromise])
                 .then(([data, myBookings]) => {
+                    const myBookingByUnit = new Map<string, any>(
+                        (Array.isArray(myBookings) ? myBookings : [])
+                            .filter((b: any) => b.stage !== 'CANCELLED')
+                            .map((b: any) => [b.unit_id, b])
+                    );
                     const mapped = data.map((u: any) => ({
                         id: u.id,
                         number: u.number,
@@ -86,6 +92,9 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                         bookingAgentCompanyType: u.booking_agent_company_type || undefined,
                         bookingBuyerName: u.booking_buyer_name || undefined,
                         bookingBuyerPhone: u.booking_buyer_phone || undefined,
+                        bookingCreatedAt: u.booking_created_at || myBookingByUnit.get(u.id)?.created_at || undefined,
+                        bookingExpiresAt: u.booking_expires_at || myBookingByUnit.get(u.id)?.expires_at || undefined,
+                        bookingStage: u.booking_stage || myBookingByUnit.get(u.id)?.stage || undefined,
                     }));
                     setUnits(mapped);
                     // Extract unique sections
@@ -105,6 +114,11 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                 .finally(() => setLoading(false));
         }
     }, [selectedProject]);
+
+    useEffect(() => {
+        const timer = window.setInterval(() => setNow(Date.now()), 60000);
+        return () => window.clearInterval(timer);
+    }, []);
 
     const handleProjectSelect = (p: ProjectData) => {
         setSelectedProject(p);
@@ -158,9 +172,9 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
             if (data2.success) {
                 setBookingResult({ ok: true, msg: 'Паспорт отправлен! Квартира забронирована.' });
                 setUnits(prev => prev.map(u =>
-                    u.id === bookingUnit.id ? { ...u, status: 'BOOKED' } : u
+                    u.id === bookingUnit.id ? { ...u, status: 'BOOKED', bookingExpiresAt: data1.expiresAt } : u
                 ));
-                setBookingUnit({ ...bookingUnit, status: 'BOOKED' });
+                setBookingUnit({ ...bookingUnit, status: 'BOOKED', bookingExpiresAt: data1.expiresAt });
                 setShowBookingForm(false);
                 // Добавляем в список моих бронирований
                 setMyBookedUnitIds(prev => new Set(prev).add(bookingUnit.id));
@@ -229,6 +243,20 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
     const getRoomLabel = (rooms: number) => {
         if (rooms === 0) return 'Студия';
         return `${rooms}-комн`;
+    };
+
+    const formatTimeLeft = (expiresAt?: string) => {
+        if (!expiresAt) return null;
+        const diff = new Date(expiresAt).getTime() - now;
+        if (!Number.isFinite(diff)) return null;
+        if (diff <= 0) return 'истекло';
+        const hours = Math.floor(diff / 3600000);
+        const minutes = Math.max(0, Math.floor((diff % 3600000) / 60000));
+        const days = Math.floor(hours / 24);
+        const remHours = hours % 24;
+        if (days > 0) return `${days} д ${remHours} ч`;
+        if (hours > 0) return `${hours} ч ${minutes} мин`;
+        return `${minutes} мин`;
     };
 
     return (
@@ -441,6 +469,15 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                             {bookingUnit.bookingBuyerPhone ? ` · ${bookingUnit.bookingBuyerPhone}` : ''}
                                         </div>
                                     )}
+                                </div>
+                            )}
+
+                            {bookingUnit.status === 'BOOKED' && bookingUnit.bookingExpiresAt && (isAdmin || myBookedUnitIds.has(bookingUnit.id)) && (
+                                <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs flex items-center justify-between gap-3">
+                                    <span className="flex items-center gap-1.5 font-bold text-amber-700"><Clock size={14} /> Срок брони</span>
+                                    <span className={`font-black ${formatTimeLeft(bookingUnit.bookingExpiresAt) === 'истекло' ? 'text-red-600' : 'text-amber-700'}`}>
+                                        {formatTimeLeft(bookingUnit.bookingExpiresAt)}
+                                    </span>
                                 </div>
                             )}
                         </div>

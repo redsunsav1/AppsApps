@@ -495,13 +495,26 @@ async function attachIdentity(executor, userId, provider, providerUserId) {
 }
 
 // Поиск аккаунта по внешнему ID: сначала таблица идентичностей, затем legacy-колонка.
+// Ошибка обращения к user_identities (например, миграция не дошла до создания
+// таблицы) НЕ должна закрывать вход: авторизация обязана работать по старым
+// колонкам, как работала до появления идентичностей.
+async function queryIdentity(provider, providerUserId) {
+  try {
+    const res = await pool.query(`
+      SELECT u.* FROM user_identities i
+      JOIN users u ON u.id = i.user_id
+      WHERE i.provider = $1 AND i.provider_user_id = $2
+    `, [provider, String(providerUserId)]);
+    return res.rows[0] || null;
+  } catch (e) {
+    console.error('[identities] таблица недоступна, вход по legacy-колонкам:', e.message);
+    return null;
+  }
+}
+
 async function findUserByIdentity(provider, providerUserId) {
-  const viaIdentity = await pool.query(`
-    SELECT u.* FROM user_identities i
-    JOIN users u ON u.id = i.user_id
-    WHERE i.provider = $1 AND i.provider_user_id = $2
-  `, [provider, String(providerUserId)]);
-  if (viaIdentity.rows.length > 0) return viaIdentity.rows[0];
+  const viaIdentity = await queryIdentity(provider, providerUserId);
+  if (viaIdentity) return viaIdentity;
 
   const legacy = provider === 'max'
     ? await pool.query('SELECT * FROM users WHERE max_id = $1', [providerUserId])
@@ -523,12 +536,10 @@ async function resolveDbUser(initData, platformHint) {
       // способы входа. Legacy-колонки остаются запасным путём: если бэкфилл почему-то
       // не дошёл до этой строки, пользователь всё равно войдёт.
       const provider = auth._platform === 'max' ? 'max' : 'telegram';
-      r = await pool.query(`
-        SELECT u.* FROM user_identities i
-        JOIN users u ON u.id = i.user_id
-        WHERE i.provider = $1 AND i.provider_user_id = $2
-      `, [provider, String(auth.id)]);
-      if (r.rows.length === 0) {
+      const viaIdentity = await queryIdentity(provider, auth.id);
+      if (viaIdentity) {
+        r = { rows: [viaIdentity] };
+      } else {
         r = provider === 'max'
           ? await pool.query('SELECT * FROM users WHERE max_id = $1', [auth.id])
           : await pool.query('SELECT * FROM users WHERE telegram_id = $1', [auth.id]);
@@ -4003,8 +4014,32 @@ const PORT = process.env.PORT || 8080;
 // Graceful shutdown
 process.on('SIGTERM', () => { pool.end().then(() => process.exit(0)); });
 
+// Проверка после миграций: initDb прерывается на первой же ошибке, а сервер
+// стартует всё равно. Без этой проверки недостающая таблица проявлялась бы
+// только как «приложение не открывается», без внятной причины в логах.
+async function reportSchemaHealth() {
+  const required = ['users', 'bookings', 'units', 'user_identities', 'account_link_codes'];
+  try {
+    const res = await pool.query(
+      `SELECT table_name FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_name = ANY($1::text[])`,
+      [required]
+    );
+    const present = new Set(res.rows.map(r => r.table_name));
+    const missing = required.filter(t => !present.has(t));
+    if (missing.length === 0) {
+      console.log('✅ Схема БД: все обязательные таблицы на месте');
+    } else {
+      console.error(`❌ СХЕМА НЕПОЛНАЯ. Нет таблиц: ${missing.join(', ')}. Миграции прервались — ищите выше строку с ошибкой.`);
+    }
+  } catch (e) {
+    console.error('❌ Не удалось проверить схему БД:', e.message);
+  }
+}
+
 // Старт: подключаемся к БД + регистрируем webhook
 initDb().then(() => {
+  reportSchemaHealth();
   registerWebhook();
   // Регистрируем MAX webhook (no-op если MAX_ENABLED != 'true')
   if (isMaxEnabled()) {
@@ -4017,5 +4052,6 @@ initDb().then(() => {
   app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT} | v2025-02-20-dedup`));
 }).catch(err => {
   console.error('❌ Fatal: could not init DB, starting anyway...', err);
+  reportSchemaHealth();
   app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT} (DB may be unavailable)`));
 });

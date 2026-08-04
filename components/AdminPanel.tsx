@@ -841,7 +841,19 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                         {u.company_type === 'ip' ? 'ИП' : 'АН'}: {u.company || '—'} · {u.phone || '—'}
                                     </div>
                                     <div className="text-[10px] text-gray-400">
-                                        TG: {u.telegram_id || '—'} · MAX: {u.max_id || '—'} · {u.approval_status || 'none'} · {u.is_registered ? 'Активен' : 'Не зарег.'}
+                                        TG: {u.telegram_id || '—'} · MAX: {u.max_id || '—'}
+                                        {(() => {
+                                            // Человекочитаемый статус доступа вместо сырых pending/approved/none
+                                            const status = u.approval_status || 'none';
+                                            if (status === 'pending') return <span className="ml-1.5 bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-bold">⏳ ждёт одобрения</span>;
+                                            if (status === 'rejected') return <span className="ml-1.5 bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-bold">отклонён</span>;
+                                            if (u.is_registered) {
+                                                return status === 'approved'
+                                                    ? <span className="ml-1.5 bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold">✓ внутри</span>
+                                                    : <span className="ml-1.5 bg-lime-100 text-lime-700 px-1.5 py-0.5 rounded font-bold">✓ внутри (до модерации)</span>;
+                                            }
+                                            return <span className="ml-1.5 bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded font-bold">не подал заявку</span>;
+                                        })()}
                                     </div>
                                     <div className="text-[10px] text-gray-400">
                                         Серебро: {u.balance || 0} · Золото: {u.gold_balance || 0} · XP: {u.xp_points || 0} · Сделки: {u.deals_closed || 0}

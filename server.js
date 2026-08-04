@@ -258,7 +258,17 @@ const { Pool } = pg;
 // иначе все клиенты за прокси выглядят как один IP и попадают в общий rate-limit
 app.set('trust proxy', true);
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+// Принимаем только то, что реально бывает в документах сделки: фото, PDF, Word.
+// Всё остальное (архивы, экзешники, скрипты) отсекается до попадания в память.
+const ALLOWED_UPLOAD_MIME = /^(image\/|application\/pdf$|application\/msword$|application\/vnd\.openxmlformats-officedocument\.)/;
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter(req, file, cb) {
+    if (ALLOWED_UPLOAD_MIME.test(file.mimetype || '')) return cb(null, true);
+    cb(new Error('Недопустимый тип файла. Разрешены: фото, PDF, Word.'));
+  },
+});
 
 // CORS: по умолчанию разрешаем только собственные домены приложения и локальную разработку.
 const DEFAULT_ALLOWED_ORIGINS = [
@@ -275,13 +285,25 @@ const ALLOWED_ORIGINS = [
   ...(process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean),
 ];
 const allowedOriginsSet = new Set(ALLOWED_ORIGINS);
+
+// Базовые security-заголовки. X-Frame-Options не ставим: приложение живёт
+// внутри iframe Telegram/MAX — вместо него точечный frame-ancestors в CSP.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org https://max.ru https://*.max.ru");
+  next();
+});
+
 app.use((req, res, next) => {
   const origin = req.get('Origin');
   if (origin && allowedOriginsSet.has(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-Init-Data');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-Init-Data,X-Admin-Pin');
   }
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   return next();
@@ -313,6 +335,25 @@ function rateLimit(windowMs, maxReq) {
   };
 }
 setInterval(() => { const now = Date.now(); for (const [k, v] of rlMap) { if (now - v.s > 900000) rlMap.delete(k); } }, 900000);
+
+// Rate limit по пользователю, а не по IP: в Telegram WebApp множество клиентов
+// приходит с одних и тех же адресов, и IP-лимит либо бесполезен (слишком щедрый),
+// либо бьёт по невиновным. Ключ — хэш initData/токена; без него откат на IP.
+function rateLimitByUser(windowMs, maxReq) {
+  return (req, res, next) => {
+    const initData = req.body?.initData || req.get('x-init-data') || '';
+    const who = initData
+      ? crypto.createHash('sha256').update(String(initData)).digest('hex').slice(0, 16)
+      : (req.ip || '0');
+    const key = 'u:' + who + req.path;
+    const now = Date.now();
+    let e = rlMap.get(key);
+    if (!e || now - e.s > windowMs) { e = { s: now, c: 0 }; rlMap.set(key, e); }
+    e.c++;
+    if (e.c > maxReq) return res.status(429).json({ error: 'Слишком много запросов. Попробуйте позже.' });
+    next();
+  };
+}
 
 // PostgreSQL Pool
 const PG_POOL_MAX = Math.max(2, parseInt(process.env.PG_POOL_MAX || '15', 10) || 15);
@@ -573,12 +614,28 @@ async function canManageBookings(initData) {
   } catch (e) { return false; }
 }
 
+// Второй фактор для админки: PIN из переменной окружения ADMIN_PIN.
+// Не задан — поведение прежнее (только Telegram-аутентификация).
+// Задан — каждый админский запрос обязан нести заголовок x-admin-pin.
+// Сравнение через хэши, чтобы длина PIN не утекала по таймингу.
+function adminPinOk(req) {
+  const pin = process.env.ADMIN_PIN;
+  if (!pin) return true;
+  const supplied = req?.get?.('x-admin-pin') || '';
+  if (!supplied) return false;
+  const a = crypto.createHash('sha256').update(String(supplied)).digest();
+  const b = crypto.createHash('sha256').update(String(pin)).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
 async function isAdminRequest(req) {
+  if (!adminPinOk(req)) return false;
   const initData = req.body?.initData || req.get('x-init-data') || req.query?.initData || '';
   return isAdmin(typeof initData === 'string' ? initData : '');
 }
 
 async function canManageBookingsRequest(req) {
+  if (!adminPinOk(req)) return false;
   const initData = req.body?.initData || req.get('x-init-data') || req.query?.initData || '';
   return canManageBookings(typeof initData === 'string' ? initData : '');
 }
@@ -595,11 +652,16 @@ function createMailTransport() {
   return nodemailer.createTransport({ host, port, secure: port === 465, auth: { user, pass } });
 }
 
+let emailFailureAlerted = false;
 async function sendDocumentEmail(subject, files, bookingInfo) {
   const transport = createMailTransport();
   const emailTo = process.env.EMAIL_SALES;
   if (!transport || !emailTo) {
     console.warn('⚠️ Email не настроен (SMTP_HOST/EMAIL_SALES). Документы не отправлены.');
+    if (!emailFailureAlerted) {
+      emailFailureAlerted = true;
+      notifyAdmin(`⚠️ <b>Email отдела продаж не настроен</b>\n\nДокументы по брони «${subject}» НЕ ушли на почту (нет SMTP_HOST/EMAIL_SALES).\nПроверьте настройки окружения.`).catch(() => {});
+    }
     return false;
   }
   try {
@@ -617,9 +679,11 @@ async function sendDocumentEmail(subject, files, bookingInfo) {
       attachments
     });
     console.log('✅ Email sent to', emailTo);
+    emailFailureAlerted = false;
     return true;
   } catch (e) {
     console.error('Email send error:', e.message);
+    notifyAdmin(`🚨 <b>Письмо с документами не отправилось</b>\n\n«${subject}»: ${e.message}\nФайлы не потеряны — они прикрепляются к лиду в AmoCRM; при необходимости запросите повторную загрузку у риелтора.`).catch(() => {});
     return false;
   }
 }
@@ -694,6 +758,64 @@ async function notifyAdmin(text, inlineKeyboard) {
     isMaxEnabled() ? notifyAdminMax(text, inlineKeyboard) : Promise.resolve({ ok: false, skipped: true }),
   ]);
   return results;
+}
+
+// =============================================
+// ОЧЕРЕДЬ МАССОВЫХ РАССЫЛОК
+// =============================================
+// Telegram принимает ~30 сообщений/сек; залп «всем сразу» на большой базе
+// приводит к 429 и молчаливой потере уведомлений. Шлём по одному с паузой,
+// на 429 ждём указанный Telegram'ом retry_after и повторяем один раз.
+const NOTIFY_BATCH_DELAY_MS = Math.max(20, parseInt(process.env.NOTIFY_BATCH_DELAY_MS || '40', 10) || 40);
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+async function notifyUsersQueued(users, text, inlineKeyboard, label = 'рассылка') {
+  let sent = 0, failed = 0;
+  for (const u of users) {
+    try {
+      let result = await notifyUser(u, text, inlineKeyboard);
+      const retryAfter = result?.parameters?.retry_after;
+      if (result?.ok === false && retryAfter) {
+        await sleep((Number(retryAfter) + 1) * 1000);
+        result = await notifyUser(u, text, inlineKeyboard);
+      }
+      if (result?.ok === false) failed++; else sent++;
+    } catch { failed++; }
+    await sleep(NOTIFY_BATCH_DELAY_MS);
+  }
+  console.log(`📨 Массовая ${label} завершена: доставлено ${sent}, не доставлено ${failed} (всего ${users.length})`);
+  if (failed > 0 && failed >= users.length * 0.2) {
+    notifyAdmin(`⚠️ <b>Рассылка дошла не всем</b>\n\n${label}: доставлено ${sent} из ${users.length}.\nЧасть пользователей могла заблокировать бота — это нормально; если цифра неожиданно большая, проверьте логи.`).catch(() => {});
+  }
+  return { sent, failed };
+}
+
+// =============================================
+// АУДИТ-ЛОГ
+// =============================================
+// Пишет след действия в audit_log. Никогда не бросает и не блокирует основной
+// поток: сбой записи лога не должен ломать само действие.
+function logAudit(actor, action, targetType, targetId, details) {
+  const actorId = actor?.id ?? null;
+  const actorName = actor
+    ? [actor.first_name, actor.last_name].filter(Boolean).join(' ') || actor.username || String(actor.telegram_id || actor.max_id || '')
+    : null;
+  pool.query(
+    'INSERT INTO audit_log (actor_user_id, actor_name, action, target_type, target_id, details) VALUES ($1, $2, $3, $4, $5, $6)',
+    [actorId, actorName, action, targetType || null, targetId != null ? String(targetId) : null, details ? JSON.stringify(details) : null]
+  ).catch(e => console.error('audit_log write error:', e.message));
+}
+
+// Вариант для админских эндпоинтов: резолвит действующего пользователя из запроса.
+// Если резолв не удался (например, PIN-запрос без initData) — пишет действие без актора.
+async function logAuditFromRequest(req, action, targetType, targetId, details) {
+  try {
+    const initData = req.body?.initData || req.get('x-init-data') || req.query?.initData || '';
+    const actor = initData ? await resolveDbUser(typeof initData === 'string' ? initData : '') : null;
+    logAudit(actor, action, targetType, targetId, details);
+  } catch (e) {
+    logAudit(null, action, targetType, targetId, details);
+  }
 }
 
 function normalizePhone(phone) {
@@ -1008,6 +1130,21 @@ const initDb = async () => {
     );`);
     await pool.query(`INSERT INTO app_settings (key, value) VALUES ('min_down_payment_percent', '10') ON CONFLICT DO NOTHING;`);
 
+    // --- Аудит-лог: кто, что и с чем сделал. Append-only, никогда не чистится кодом приложения ---
+    await pool.query(`CREATE TABLE IF NOT EXISTS audit_log (
+      id SERIAL PRIMARY KEY,
+      actor_user_id INT,
+      actor_name TEXT,
+      action TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      details JSONB,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );`);
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log (created_at DESC);');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log (actor_user_id);');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log (action);');
+
     // Сид-данные
     const projCheck = await pool.query('SELECT count(*) FROM projects');
     if (parseInt(projCheck.rows[0].count) === 0) {
@@ -1146,6 +1283,8 @@ const projectSyncLocks = new Map();
 // Квартиры, по которым админу уже сообщили о конфликте «продано, но забронировано».
 // Живёт в памяти: после рестарта напомнит один раз — это не страшно.
 const reportedSoldWhileBooked = new Set();
+// Проекты, по которым уже отправлен алерт об «усохшем» фиде (сброс при успешном синке)
+const reportedShrunkenFeed = new Set();
 const FEED_DEBUG_LOGS = process.env.FEED_DEBUG_LOGS === 'true';
 const FEED_PREBOOKING_TTL_SECONDS_RAW = parseInt(process.env.FEED_PREBOOKING_TTL_SECONDS || '120', 10);
 const FEED_PREBOOKING_TTL_MS = Math.max(0, Number.isFinite(FEED_PREBOOKING_TTL_SECONDS_RAW) ? FEED_PREBOOKING_TTL_SECONDS_RAW : 120) * 1000;
@@ -1453,6 +1592,27 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
   const maxUnitsOnFloor = Math.max(...Object.values(floorCounts).map(Number), 1);
   let savedStatuses = {};
 
+  // Защита от «усохшего» фида: сбой на стороне застройщика (пустой ответ,
+  // обрезанный XML) не должен стирать шахматку. Если фид вернул сильно меньше
+  // квартир, чем есть в базе, — не трогаем данные, поднимаем алерт.
+  // Отключение: FEED_SHRINK_GUARD=off (например, при реальном выводе корпуса из продажи).
+  if (process.env.FEED_SHRINK_GUARD !== 'off') {
+    const currentCountRes = await pool.query('SELECT count(*)::int AS c FROM units WHERE project_id = $1', [projectId]);
+    const currentCount = currentCountRes.rows[0]?.c || 0;
+    const guardMin = Math.max(1, parseInt(process.env.FEED_SHRINK_GUARD_MIN || '10', 10) || 10);
+    const guardRatio = Math.min(1, Math.max(0, parseFloat(process.env.FEED_SHRINK_GUARD_RATIO || '0.5') || 0.5));
+    if (currentCount >= guardMin && unitRows.length < currentCount * guardRatio) {
+      if (!reportedShrunkenFeed.has(projectId)) {
+        reportedShrunkenFeed.add(projectId);
+        notifyAdmin(
+          `🛑 <b>Фид подозрительно уменьшился</b>\n\nПроект ${projectId}: в базе ${currentCount} квартир, фид вернул ${unitRows.length}.\nСинхронизация остановлена, данные не тронуты.\n\nЕсли уменьшение реально (корпус выведен из продажи) — запустите ресинк с выключенной защитой (FEED_SHRINK_GUARD=off) или дождитесь восстановления фида.`
+        ).catch(() => {});
+      }
+      throw new Error(`Feed shrink guard: feed has ${unitRows.length} units, DB has ${currentCount} — sync aborted`);
+    }
+  }
+  reportedShrunkenFeed.delete(projectId);
+
   await withTransaction(async (client) => {
     // Квартиры с активной бронью не удаляем, даже если они пропали из фида:
     // иначе бронь осталась бы ссылаться в пустоту и риелтор увидел бы «кв. undefined».
@@ -1676,26 +1836,94 @@ async function processBookingDeadlines() {
   }
 }
 
+// Счётчик подряд идущих сбоев синка по проекту: одиночный таймаут фида — норма,
+// а вот три сбоя подряд (15+ минут без обновления) — повод разбудить админа.
+const feedFailureStreaks = new Map();
+const FEED_ALERT_AFTER_FAILURES = Math.max(1, parseInt(process.env.FEED_ALERT_AFTER_FAILURES || '3', 10) || 3);
+let lastXmlSyncAt = null;
+
 cron.schedule('*/5 * * * *', async () => {
   try {
     const res = await pool.query('SELECT id, feed_url FROM projects WHERE feed_url IS NOT NULL');
     for (const project of res.rows) {
-      if (project.feed_url) await syncProjectWithXml(project.id, project.feed_url, { reason: 'cron', skipIfRunning: true });
+      if (!project.feed_url) continue;
+      try {
+        await syncProjectWithXml(project.id, project.feed_url, { reason: 'cron', skipIfRunning: true });
+        feedFailureStreaks.delete(project.id);
+        lastXmlSyncAt = new Date().toISOString();
+      } catch (e) {
+        const streak = (feedFailureStreaks.get(project.id) || 0) + 1;
+        feedFailureStreaks.set(project.id, streak);
+        console.error(`Cron sync failed for ${project.id} (${streak} подряд):`, e.message);
+        // Алерт ровно один раз при достижении порога, не на каждый следующий сбой
+        if (streak === FEED_ALERT_AFTER_FAILURES) {
+          notifyAdmin(
+            `🚨 <b>Фид не синхронизируется</b>\n\nПроект ${project.id}: ${streak} сбоя подряд (~${streak * 5} мин без обновления).\nПоследняя ошибка: ${e.message}\n\nШахматка показывает данные на момент последнего успешного синка.`
+          ).catch(() => {});
+        }
+      }
     }
   } catch (e) { console.error('Cron Error:', e); }
 });
 
 cron.schedule(BOOKING_EXPIRY_CRON, processBookingDeadlines);
 
+// Ретрай AmoCRM: лид создаётся при отправке паспорта, и если AmoCRM в тот момент
+// лежал — раньше лид терялся навсегда. Теперь каждые 15 минут досоздаём лиды
+// для сделок, у которых паспорт отправлен, а лида нет.
+cron.schedule('*/15 * * * *', async () => {
+  if (!process.env.AMOCRM_SUBDOMAIN || !process.env.AMOCRM_TOKEN) return;
+  try {
+    const pending = await pool.query(`
+      SELECT b.* FROM bookings b
+      WHERE b.passport_sent = TRUE
+        AND b.amocrm_lead_id IS NULL
+        AND COALESCE(b.stage, 'INIT') NOT IN ('CANCELLED')
+      ORDER BY b.created_at ASC
+      LIMIT 10
+    `);
+    for (const booking of pending.rows) {
+      const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [booking.user_id]);
+      const unitRes = await pool.query('SELECT * FROM units WHERE id = $1', [booking.unit_id]);
+      const unit = unitRes.rows[0] || { project_id: booking.project_id };
+      const leadId = await syncToAmoCRM(booking, userRes.rows[0] || {}, unit);
+      if (leadId) {
+        await pool.query('UPDATE bookings SET amocrm_lead_id = $1, amocrm_synced = TRUE WHERE id = $2', [String(leadId), booking.id]);
+        const noteText = `📋 Лид создан повторной синхронизацией (первая попытка не удалась)\n\n` +
+          `🏠 Квартира: №${unit.number || '?'}, проект ${booking.project_id}\n` +
+          `👤 Покупатель: ${booking.buyer_name || '—'}\n📞 Телефон покупателя: ${booking.buyer_phone || '—'}\n\n` +
+          `📎 Паспорт и документы отправлены на email отдела продаж в момент загрузки.`;
+        await attachNoteToAmoCRM(leadId, noteText, [], 'retry');
+        console.log(`🔁 AmoCRM retry: лид ${leadId} создан для брони #${booking.id}`);
+        logAudit(null, 'booking.amocrm_retry_success', 'booking', booking.id, { lead_id: String(leadId) });
+      }
+    }
+  } catch (e) { console.error('AmoCRM retry cron error:', e.message); }
+});
+
 // =============================================
 // HEALTH CHECK
 // =============================================
 app.get('/api/ping', async (req, res) => {
+  // Внешний мониторинг (UptimeRobot и т.п.) смотрит на HTTP-код:
+  // 200 — всё живо, 503 — база недоступна. Детали — для ручной диагностики.
+  const details = {
+    time: new Date().toISOString(),
+    uptime_seconds: Math.floor(process.uptime()),
+    telegram: process.env.BOT_TOKEN ? 'configured' : 'missing',
+    max: isMaxEnabled() ? 'enabled' : 'disabled',
+    amocrm: (process.env.AMOCRM_SUBDOMAIN && process.env.AMOCRM_TOKEN) ? 'configured' : 'missing',
+    email: (process.env.SMTP_HOST && process.env.SMTP_USER) ? 'configured' : 'missing',
+    admin_pin: process.env.ADMIN_PIN ? 'enabled' : 'disabled',
+    last_xml_sync: lastXmlSyncAt,
+    feed_failure_streaks: Object.fromEntries(feedFailureStreaks),
+  };
   try {
+    const dbTime = Date.now();
     await pool.query('SELECT 1');
-    res.json({ status: 'ok', db: 'connected', time: new Date().toISOString() });
+    res.json({ status: 'ok', db: 'connected', db_latency_ms: Date.now() - dbTime, ...details });
   } catch (e) {
-    res.json({ status: 'error', db: 'disconnected', error: e.message });
+    res.status(503).json({ status: 'error', db: 'disconnected', error: e.message, ...details });
   }
 });
 
@@ -1750,6 +1978,7 @@ app.post('/api/auth', rateLimit(900000, 30), async (req, res) => {
       // Проверить миссии входов (асинхронно)
       checkMissions(user.id, 'login').catch(() => {});
     }
+    if (user) user.avatar_url = avatarPath(user);
     res.json({ user });
   } catch (e) {
     console.error('Auth error:', e);
@@ -1777,6 +2006,7 @@ app.post('/api/auth/token', rateLimit(900000, 30), async (req, res) => {
       user.login_streak = newStreak;
       checkMissions(user.id, 'login').catch(() => {});
     }
+    if (user) user.avatar_url = avatarPath(user);
     res.json({ user });
   } catch (e) {
     console.error('Token auth error:', e);
@@ -1841,6 +2071,7 @@ app.post('/api/auth/max', rateLimit(900000, 30), async (req, res) => {
       user.last_login_date = today;
       checkMissions(user.id, 'login').catch(() => {});
     }
+    if (user) user.avatar_url = avatarPath(user);
     res.json({ user });
   } catch (e) {
     console.error('[MAX] Auth error:', e);
@@ -2115,14 +2346,44 @@ app.post('/api/avatar', async (req, res) => {
     if (!avatarData) return res.status(400).json({ error: 'No avatar data' });
     if (avatarData.length > 1400000) return res.status(400).json({ error: 'Image too large' });
     await pool.query('UPDATE users SET avatar_url = $1 WHERE id = $2', [avatarData, dbUser.id]);
-    res.json({ success: true, avatar_url: avatarData });
+    res.json({ success: true, avatar_url: avatarPath({ id: dbUser.id, avatar_url: avatarData }) });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// Отдача аватарки как обычной картинки. Списки и профили теперь содержат лёгкую
+// ссылку /api/avatar/<id> вместо мегабайтного base64 — браузер грузит фото
+// отдельно и кэширует. В ответе только изображение, без имён и телефонов.
+function avatarPath(userRow) {
+  if (!userRow?.avatar_url) return null;
+  // Внешние URL (если появятся) отдаём как есть
+  if (!String(userRow.avatar_url).startsWith('data:')) return userRow.avatar_url;
+  // Версия в query — чтобы после смены фото кэш браузера не показывал старое
+  const v = crypto.createHash('sha1').update(String(userRow.avatar_url)).digest('hex').slice(0, 8);
+  return `/api/avatar/${userRow.id}?v=${v}`;
+}
+
+app.get('/api/avatar/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).end();
+    const r = await pool.query('SELECT avatar_url FROM users WHERE id = $1', [id]);
+    const data = r.rows[0]?.avatar_url;
+    if (!data) return res.status(404).end();
+    if (!String(data).startsWith('data:')) return res.redirect(data);
+    const match = String(data).match(/^data:([^;,]+)?(;base64)?,(.*)$/s);
+    if (!match) return res.status(404).end();
+    const mime = match[1] || 'image/jpeg';
+    const buf = match[2] ? Buffer.from(match[3], 'base64') : Buffer.from(decodeURIComponent(match[3]), 'utf8');
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(buf);
+  } catch (e) { res.status(500).end(); }
 });
 
 // =============================================
 // РЕГИСТРАЦИЯ С МОДЕРАЦИЕЙ
 // =============================================
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', rateLimitByUser(900000, 15), async (req, res) => {
   const { initData, firstName, lastName, companyType, company, phone, consentPd, contactResponse } = req.body;
   try {
     const authUser = await resolveDbUser(initData);
@@ -2266,7 +2527,7 @@ app.post('/api/register', async (req, res) => {
 // По ним человек попадает в мини-приложение и заполняет заявку на вступление.
 app.post('/api/invite-links', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
 
     const tgUsername = await getTelegramBotUsername();
     res.json({
@@ -2401,7 +2662,7 @@ app.post('/api/link/redeem', rateLimit(900000, 20), async (req, res) => {
 // Список заявок (админ) — ЗАЩИЩЁН
 app.post('/api/applications', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const result = await pool.query(
       `SELECT id, telegram_id, max_id, platform, first_name, last_name, company_type, company, phone,
               phone_verified_at, created_at
@@ -2417,9 +2678,10 @@ app.post('/api/applications', async (req, res) => {
 // Одобрить заявку (админ)
 app.post('/api/applications/:userId/approve', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const result = await applyApplicationDecision(req.params.userId, 'approve');
     if (!result.ok) return res.status(result.status === 'not_found' ? 404 : 400).json({ error: result.message });
+    logAuditFromRequest(req, 'application.approve', 'user', req.params.userId);
     res.json({ success: true });
   } catch (e) { console.error('Approve error:', e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -2427,9 +2689,10 @@ app.post('/api/applications/:userId/approve', async (req, res) => {
 // Отклонить заявку (админ)
 app.post('/api/applications/:userId/reject', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const result = await applyApplicationDecision(req.params.userId, 'reject');
     if (!result.ok) return res.status(result.status === 'not_found' ? 404 : 400).json({ error: result.message });
+    logAuditFromRequest(req, 'application.reject', 'user', req.params.userId);
     res.json({ success: true });
   } catch (e) { console.error('Reject error:', e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -2517,14 +2780,15 @@ app.get('/api/news', async (req, res) => {
 
 app.post('/api/news', async (req, res) => {
   try {
-    if (await isAdmin(req.body.initData)) {
+    if (await isAdminRequest(req)) {
       const { title, text, image_url, video_url, project_name, progress, checklist } = req.body;
       await pool.query('INSERT INTO news (title, text, image_url, video_url, project_name, progress, checklist) VALUES ($1, $2, $3, $4, $5, $6, $7)', [title, text, image_url, video_url, project_name, progress, JSON.stringify(checklist)]);
       const usersRes = await pool.query('SELECT telegram_id, max_id, platform FROM users WHERE is_registered = TRUE');
       const projectLabel = project_name ? ` (${project_name})` : '';
       const newsText = `📰 <b>Новая новость${projectLabel}</b>\n\n${title}\n\n${(text || '').slice(0, 150)}${(text || '').length > 150 ? '...' : ''}`;
-      for (const u of usersRes.rows) { notifyUser(u, newsText, getAppOpenKeyboard()); }
-      res.json({ success: true });
+      // Рассылка идёт в фоне с паузами — ответ админу не ждёт её завершения
+      notifyUsersQueued(usersRes.rows, newsText, getAppOpenKeyboard(), `новость «${title}»`).catch(() => {});
+      res.json({ success: true, recipients: usersRes.rows.length });
     } else res.status(403).json({ error: 'Forbidden' });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -2552,7 +2816,7 @@ app.post('/api/news/mark-seen', async (req, res) => {
 
 app.delete('/api/news/:id', async (req, res) => {
   try {
-    if (await isAdmin(req.body.initData)) {
+    if (await isAdminRequest(req)) {
       await pool.query('DELETE FROM news WHERE id = $1', [req.params.id]);
       res.json({ success: true });
     } else res.status(403).json({ error: 'Forbidden' });
@@ -2561,7 +2825,7 @@ app.delete('/api/news/:id', async (req, res) => {
 
 app.put('/api/news/:id', async (req, res) => {
   try {
-    if (await isAdmin(req.body.initData)) {
+    if (await isAdminRequest(req)) {
       const { title, text, image_url, video_url, project_name, progress, checklist } = req.body;
       await pool.query(`UPDATE news SET title=$1, text=$2, image_url=$3, video_url=$4, project_name=$5, progress=$6, checklist=$7 WHERE id=$8`, [title, text, image_url, video_url, project_name, progress, JSON.stringify(checklist), req.params.id]);
       res.json({ success: true });
@@ -2581,7 +2845,7 @@ app.get('/api/products', async (req, res) => {
 
 app.post('/api/products', async (req, res) => {
   try {
-    if (await isAdmin(req.body.initData)) {
+    if (await isAdminRequest(req)) {
       const { title, price, currency, image_url } = req.body;
       await pool.query('INSERT INTO products (title, price, currency, image_url) VALUES ($1, $2, $3, $4)', [title, price, currency || 'SILVER', image_url]);
       res.json({ success: true });
@@ -2591,7 +2855,7 @@ app.post('/api/products', async (req, res) => {
 
 app.put('/api/products/:id', async (req, res) => {
   try {
-    if (await isAdmin(req.body.initData)) {
+    if (await isAdminRequest(req)) {
       const { title, price, currency, image_url } = req.body;
       await pool.query('UPDATE products SET title = $1, price = $2, currency = $3, image_url = $4 WHERE id = $5',
         [title, price, currency || 'SILVER', image_url, req.params.id]);
@@ -2602,14 +2866,14 @@ app.put('/api/products/:id', async (req, res) => {
 
 app.delete('/api/products/:id', async (req, res) => {
   try {
-    if (await isAdmin(req.body.initData)) {
+    if (await isAdminRequest(req)) {
       await pool.query('UPDATE products SET is_active = FALSE WHERE id = $1', [req.params.id]);
       res.json({ success: true });
     } else res.status(403).json({ error: 'Forbidden' });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
-app.post('/api/buy', async (req, res) => {
+app.post('/api/buy', rateLimitByUser(900000, 30), async (req, res) => {
   const { initData, productId } = req.body;
   try {
     const tgUser = await resolveDbUser(initData);
@@ -2638,7 +2902,7 @@ app.post('/api/buy', async (req, res) => {
 
 app.post('/api/admin/user-orders', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const { userId } = req.body;
     const result = await pool.query(`
       SELECT o.id, o.price, o.currency, o.status, o.created_at, p.title as product_title
@@ -2662,7 +2926,7 @@ app.get('/api/projects', async (req, res) => {
 // Редактирование проекта (название, этажи, кв/этаж)
 app.put('/api/projects/:id', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const { name, floors, unitsPerFloor, imageUrl } = req.body;
     const sets = []; const vals = []; let idx = 1;
     if (name) { sets.push(`name = $${idx++}`); vals.push(name); }
@@ -2679,7 +2943,7 @@ app.put('/api/projects/:id', async (req, res) => {
 // Удаление проекта + его квартиры + бронирования
 app.delete('/api/projects/:id', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const pid = req.params.id;
     await pool.query('DELETE FROM bookings WHERE project_id = $1', [pid]);
     await pool.query('DELETE FROM units WHERE project_id = $1', [pid]);
@@ -2691,7 +2955,7 @@ app.delete('/api/projects/:id', async (req, res) => {
 // Пересинхронизировать проект из сохранённого feed_url
 app.post('/api/projects/:id/resync', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const project = (await pool.query('SELECT * FROM projects WHERE id = $1', [req.params.id])).rows[0];
     if (!project) return res.status(404).json({ error: 'Project not found' });
     if (!project.feed_url) return res.status(400).json({ error: 'No feed_url saved' });
@@ -2734,7 +2998,7 @@ app.post('/api/units/:projectId', handleProjectUnits);
 
 app.post('/api/sync-xml-url', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden: admin only' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden: admin only' });
     const { url, projectId, projectName } = req.body;
     if (!url || !projectId) return res.status(400).json({ error: 'No URL or ProjectID' });
     // Создаём проект если не существует (upsert)
@@ -2753,7 +3017,7 @@ app.post('/api/sync-xml-url', async (req, res) => {
 // Диагностика: показать структуру фида, не сохраняя
 app.post('/api/debug-feed', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'No URL' });
     const response = await fetch(url);
@@ -2805,6 +3069,7 @@ app.post('/api/make-admin', async (req, res) => {
     if (secret !== ADMIN_SECRET) return res.status(403).json({ error: 'Wrong secret' });
     if (!telegramId) return res.status(400).json({ error: 'No telegramId' });
     await pool.query('UPDATE users SET is_admin = TRUE WHERE telegram_id = $1', [telegramId]);
+    logAudit(null, 'admin.grant_via_secret', 'telegram_id', telegramId);
     res.json({ success: true, message: `User ${telegramId} is now admin` });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -2812,10 +3077,14 @@ app.post('/api/make-admin', async (req, res) => {
 // Список пользователей (админ) — ЗАЩИЩЁН
 app.post('/api/admin/users', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
+    // avatar_url отдаём лёгкой ссылкой, а не base64: иначе список из сотен
+    // пользователей с фото разрастается до десятков мегабайт JSON
     const result = await pool.query(
       `SELECT id, telegram_id, max_id, platform, username, first_name, last_name, company, company_type, phone,
-              is_registered, is_admin, can_manage_bookings, approval_status, balance, gold_balance, xp_points, deals_closed, avatar_url, created_at
+              is_registered, is_admin, can_manage_bookings, approval_status, balance, gold_balance, xp_points, deals_closed,
+              CASE WHEN avatar_url IS NOT NULL THEN '/api/avatar/' || id || '?v=' || substr(md5(avatar_url), 1, 8) ELSE NULL END AS avatar_url,
+              created_at
        FROM users ORDER BY created_at DESC`
     );
     res.json(result.rows);
@@ -2825,7 +3094,7 @@ app.post('/api/admin/users', async (req, res) => {
 app.patch('/api/admin/users/:id/roles', async (req, res) => {
   try {
     const adminUser = await resolveDbUser(req.body.initData);
-    if (!adminUser?.is_admin) return res.status(403).json({ error: 'Forbidden' });
+    if (!adminUser?.is_admin || !adminPinOk(req)) return res.status(403).json({ error: 'Forbidden' });
     if (String(req.params.id) === String(adminUser.id) && req.body.is_admin === false) {
       return res.status(400).json({ error: 'Нельзя снять полный админ-доступ у самого себя' });
     }
@@ -2844,7 +3113,22 @@ app.patch('/api/admin/users/:id/roles', async (req, res) => {
     if (!sets.length) return res.status(400).json({ error: 'No roles to update' });
 
     vals.push(req.params.id);
-    await pool.query(`UPDATE users SET ${sets.join(', ')} WHERE id = $${idx}`, vals);
+    const before = await pool.query('SELECT is_admin, can_manage_bookings FROM users WHERE id = $1', [req.params.id]);
+    const updated = await pool.query(`UPDATE users SET ${sets.join(', ')} WHERE id = $${idx} RETURNING *`, vals);
+    logAudit(adminUser, 'user.roles_change', 'user', req.params.id, { is_admin: req.body.is_admin, can_manage_bookings: req.body.can_manage_bookings });
+
+    // Сообщаем человеку, что ему выдали доступ — сотрудник отдела продаж узнаёт
+    // об этом сразу, а не когда случайно заметит шестерёнку в приложении.
+    const wasAdmin = !!before.rows[0]?.is_admin;
+    const wasManager = !!before.rows[0]?.can_manage_bookings;
+    const target = updated.rows[0];
+    if (target) {
+      if (req.body.is_admin === true && !wasAdmin) {
+        notifyUser(target, '🔑 <b>Вам выдан доступ администратора</b>\n\nТеперь в приложении доступна админ-панель: заявки, брони, пользователи и настройки.').catch(() => {});
+      } else if (req.body.can_manage_bookings === true && !wasManager && !target.is_admin) {
+        notifyUser(target, '🔑 <b>Вам выдан доступ к управлению бронями</b>\n\nТеперь вы можете просматривать и снимать брони в приложении.').catch(() => {});
+      }
+    }
     res.json({ success: true });
   } catch (e) {
     console.error('Update roles error:', e);
@@ -2855,7 +3139,7 @@ app.patch('/api/admin/users/:id/roles', async (req, res) => {
 app.delete('/api/admin/users/:id', async (req, res) => {
   try {
     const adminUser = await resolveDbUser(req.body.initData);
-    if (!adminUser?.is_admin) return res.status(403).json({ error: 'Forbidden' });
+    if (!adminUser?.is_admin || !adminPinOk(req)) return res.status(403).json({ error: 'Forbidden' });
     if (String(req.params.id) === String(adminUser.id)) {
       return res.status(400).json({ error: 'Нельзя удалить самого себя' });
     }
@@ -2876,6 +3160,7 @@ app.delete('/api/admin/users/:id', async (req, res) => {
       await client.query('DELETE FROM users WHERE id = $1', [userId]);
     });
     console.log(`🗑 Пользователь id=${userId} удалён (включая бронирования, миссии, заказы)`);
+    logAudit(adminUser, 'user.delete', 'user', userId);
     res.json({ success: true });
   } catch (e) { console.error('Delete user error:', e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -2885,10 +3170,53 @@ app.post('/api/admin/clear-users', async (req, res) => {
     if (process.env.ALLOW_CLEAR_USERS !== 'true') return res.status(404).json({ error: 'Not found' });
     if (req.body.confirmation !== 'DELETE_ALL_USERS') return res.status(400).json({ error: 'Confirmation required' });
     const adminUser = await resolveDbUser(req.body.initData);
-    if (!adminUser?.is_admin) return res.status(403).json({ error: 'Forbidden' });
+    if (!adminUser?.is_admin || !adminPinOk(req)) return res.status(403).json({ error: 'Forbidden' });
     const result = await pool.query('DELETE FROM users WHERE id != $1', [adminUser.id]);
+    logAudit(adminUser, 'user.clear_all', 'users', null, { deleted: result.rowCount });
     res.json({ success: true, deleted: result.rowCount });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// Проверка PIN админки. Отвечает, нужен ли PIN вообще и подошёл ли присланный.
+// Ограничен по частоте: перебор четырёхзначного PIN за 15 минут невозможен.
+app.post('/api/admin/verify-pin', rateLimitByUser(900000, 10), async (req, res) => {
+  try {
+    const initData = req.body?.initData || req.get('x-init-data') || '';
+    const user = await resolveDbUser(typeof initData === 'string' ? initData : '');
+    const isPrivileged = !!(user?.is_admin || user?.can_manage_bookings);
+    if (!isPrivileged) return res.status(403).json({ error: 'Forbidden' });
+    const pinRequired = !!process.env.ADMIN_PIN;
+    const ok = adminPinOk(req);
+    if (pinRequired && !ok && req.get('x-admin-pin')) {
+      logAudit(user, 'admin.pin_failed', 'user', user.id);
+    }
+    res.json({ pinRequired, ok });
+  } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// Просмотр аудит-лога (админ). Фильтры: action (префикс), actorId, from/to (ISO-дата)
+app.post('/api/admin/audit', async (req, res) => {
+  try {
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
+    const { action, actorId, from, to } = req.body;
+    const limit = Math.min(500, Math.max(1, parseInt(req.body.limit, 10) || 100));
+    const offset = Math.max(0, parseInt(req.body.offset, 10) || 0);
+
+    const where = [];
+    const vals = [];
+    let idx = 1;
+    if (action) { where.push(`action LIKE $${idx++}`); vals.push(String(action) + '%'); }
+    if (actorId) { where.push(`actor_user_id = $${idx++}`); vals.push(parseInt(actorId, 10)); }
+    if (from) { where.push(`created_at >= $${idx++}`); vals.push(new Date(from)); }
+    if (to) { where.push(`created_at <= $${idx++}`); vals.push(new Date(to)); }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    const result = await pool.query(
+      `SELECT * FROM audit_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT $${idx++} OFFSET $${idx}`,
+      [...vals, limit, offset]
+    );
+    res.json(result.rows);
+  } catch (e) { console.error('Audit log read error:', e); res.status(500).json({ error: 'Server error' }); }
 });
 
 // =============================================
@@ -2972,7 +3300,7 @@ app.post('/api/quests/claim', async (req, res) => {
 
 app.post('/api/quests', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const { type, title, reward_xp, reward_amount, reward_currency } = req.body;
     if (!type || !title) return res.status(400).json({ error: 'type and title required' });
     await pool.query('INSERT INTO quests (type, title, reward_xp, reward_amount, reward_currency) VALUES ($1, $2, $3, $4, $5)', [type, title, reward_xp || 0, reward_amount || 0, reward_currency || 'SILVER']);
@@ -2982,7 +3310,7 @@ app.post('/api/quests', async (req, res) => {
 
 app.delete('/api/quests/:id', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     await pool.query('UPDATE quests SET is_active = FALSE WHERE id = $1', [req.params.id]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
@@ -3002,7 +3330,7 @@ app.get('/api/settings', async (req, res) => {
 
 app.post('/api/settings', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const { key, value } = req.body;
     if (!key || value === undefined) return res.status(400).json({ error: 'key and value required' });
     await pool.query(
@@ -3010,6 +3338,7 @@ app.post('/api/settings', async (req, res) => {
        ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
       [key, String(value)]
     );
+    logAuditFromRequest(req, 'settings.change', 'setting', key, { value: String(value) });
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -3277,6 +3606,16 @@ function buildAmoCRMCustomFields(unitData, projectName) {
   return fields.length > 0 ? fields : undefined;
 }
 
+// Алерт о сбое AmoCRM — не чаще раза в час: при лежащей CRM ретрай-крон
+// иначе присылал бы одно и то же сообщение каждые 15 минут по каждой сделке.
+let lastAmoCRMAlertAt = 0;
+function alertAmoCRMFailure(text) {
+  const now = Date.now();
+  if (now - lastAmoCRMAlertAt < 3600000) return;
+  lastAmoCRMAlertAt = now;
+  notifyAdmin(text).catch(() => {});
+}
+
 async function syncToAmoCRM(booking, userData, unitData) {
   const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
   const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
@@ -3321,13 +3660,18 @@ async function syncToAmoCRM(booking, userData, unitData) {
     const responseText = await response.text();
     if (!response.ok) {
       console.error(`❌ AmoCRM error ${response.status}: ${responseText}`);
+      alertAmoCRMFailure(`🚨 <b>AmoCRM не принял лид</b>\n\nБронь #${booking.id} (кв.${unitData.number || '?'}, ${unitData.project_id || '?'}).\nОтвет: HTTP ${response.status}.\nСделка сохранена в приложении, лид будет повторён автоматически.`);
       return null;
     }
     const result = JSON.parse(responseText);
     const leadId = result?.[0]?.id || null;
     console.log(`✅ AmoCRM лид создан: ID=${leadId}`);
     return leadId;
-  } catch (e) { console.error('❌ AmoCRM sync error:', e.message); return null; }
+  } catch (e) {
+    console.error('❌ AmoCRM sync error:', e.message);
+    alertAmoCRMFailure(`🚨 <b>Сбой отправки лида в AmoCRM</b>\n\nБронь #${booking.id}: ${e.message}\nСделка сохранена в приложении, лид будет повторён автоматически.`);
+    return null;
+  }
 }
 
 // Прикрепить примечание и файлы к лиду в AmoCRM.
@@ -3417,7 +3761,7 @@ app.post('/api/events/list', async (req, res) => {
 // Создать событие (админ)
 app.post('/api/events', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const { title, description, date, time, type, spots_total, is_private, rsvp_deadline, invited_user_ids } = req.body;
     if (!title || !date) return res.status(400).json({ error: 'title and date required' });
     const eventRes = await pool.query(
@@ -3442,17 +3786,16 @@ app.post('/api/events', async (req, res) => {
         );
     const eventDate = new Date(date).toLocaleDateString('ru-RU');
     const eventText = `📅 <b>Новое событие</b>\n\n<b>${title}</b>\n${description ? `${description}\n` : ''}📍 ${eventDate}${time ? ` в ${time}` : ''}\n👥 Мест: ${spots_total || 30}`;
-    for (const u of recipientsRes.rows) {
-      notifyUser(u, eventText, getAppOpenKeyboard());
-    }
-    res.json({ success: true, eventId });
+    // Рассылка идёт в фоне с паузами — ответ админу не ждёт её завершения
+    notifyUsersQueued(recipientsRes.rows, eventText, getAppOpenKeyboard(), `событие «${title}»`).catch(() => {});
+    res.json({ success: true, eventId, recipients: recipientsRes.rows.length });
   } catch (e) { console.error('Create event error:', e); res.status(500).json({ error: 'Server error' }); }
 });
 
 // Редактировать событие (админ)
 app.put('/api/events/:id', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const { title, description, date, time, type, spots_total, is_private, rsvp_deadline, invited_user_ids } = req.body;
     await pool.query('UPDATE events SET title=$1, description=$2, date=$3, time=$4, type=$5, spots_total=$6, is_private=$7, rsvp_deadline=$8 WHERE id=$9',
       [title, description, date, time, type, spots_total, is_private || false, rsvp_deadline || null, req.params.id]);
@@ -3470,7 +3813,7 @@ app.put('/api/events/:id', async (req, res) => {
 // Удалить событие (админ)
 app.delete('/api/events/:id', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     await pool.query('DELETE FROM events WHERE id = $1', [req.params.id]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
@@ -3535,7 +3878,7 @@ app.get('/api/mortgage-programs', async (req, res) => {
 // Создать программу (админ)
 app.post('/api/mortgage-programs', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const { name, rate, min_payment, max_term, description } = req.body;
     if (!name || !rate) return res.status(400).json({ error: 'name and rate required' });
     await pool.query('INSERT INTO mortgage_programs (name, rate, min_payment, max_term, description) VALUES ($1,$2,$3,$4,$5)',
@@ -3547,7 +3890,7 @@ app.post('/api/mortgage-programs', async (req, res) => {
 // Редактировать программу (админ)
 app.put('/api/mortgage-programs/:id', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const { name, rate, min_payment, max_term, description } = req.body;
     await pool.query('UPDATE mortgage_programs SET name=$1, rate=$2, min_payment=$3, max_term=$4, description=$5 WHERE id=$6',
       [name, rate, min_payment, max_term, description, req.params.id]);
@@ -3558,7 +3901,7 @@ app.put('/api/mortgage-programs/:id', async (req, res) => {
 // Удалить программу (админ)
 app.delete('/api/mortgage-programs/:id', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     await pool.query('UPDATE mortgage_programs SET is_active = FALSE WHERE id = $1', [req.params.id]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
@@ -3672,7 +4015,7 @@ app.post('/api/missions', async (req, res) => {
 // =============================================
 
 // Шаг 0: Создать бронь (с FOR UPDATE + проверка уникальности)
-app.post('/api/bookings', async (req, res) => {
+app.post('/api/bookings', rateLimitByUser(900000, 20), async (req, res) => {
   const { initData, unitId, projectId } = req.body;
   try {
     const user = await resolveDbUser(initData);
@@ -3713,6 +4056,7 @@ app.post('/api/bookings', async (req, res) => {
     checkMissions(user.id, 'booking').then(rewards => {
       if (rewards.length > 0) console.log(`🎯 Миссии после бронирования user=${user.id}:`, rewards.map(r => r.title).join(', '));
     });
+    logAudit(user, 'booking.create', 'booking', result.bookingId, { unit_id: unitId, project_id: projectId });
     res.json(result);
   } catch (e) {
     if (e.status) return res.status(e.status).json({ error: e.msg });
@@ -3792,6 +4136,7 @@ app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, re
       }
     }).catch(e => console.error('AmoCRM error:', e));
 
+    logAudit(dbUser, 'booking.passport_upload', 'booking', booking.id, { unit_id: booking.unit_id, email_sent: emailSent, file: req.file?.originalname || null });
     res.json({ success: true, emailSent, stage: 'PASSPORT_SENT', expiresAt: renewedExpiresAt });
   } catch (e) {
     console.error('Passport upload error:', e);
@@ -3854,6 +4199,7 @@ app.post('/api/bookings/:id/documents', upload.array('documents', 10), async (re
 
     // Квартира остаётся BOOKED, deals_closed НЕ увеличивается
     // Сделка подтверждается админом через /api/bookings/:id/complete
+    logAudit(dbUser, 'booking.documents_upload', 'booking', booking.id, { unit_id: booking.unit_id, email_sent: emailSent, files: files.map(f => f.originalname) });
     res.json({ success: true, emailSent, stage: 'DOCS_SENT' });
   } catch (e) {
     console.error('Documents upload error:', e);
@@ -3864,7 +4210,7 @@ app.post('/api/bookings/:id/documents', upload.array('documents', 10), async (re
 // Подтверждение сделки (только админ) — присуждает золотую монету
 app.post('/api/bookings/:id/complete', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const bookingRes = await pool.query('SELECT * FROM bookings WHERE id = $1', [req.params.id]);
     if (bookingRes.rows.length === 0) return res.status(404).json({ error: 'Booking not found' });
     const booking = bookingRes.rows[0];
@@ -3885,6 +4231,7 @@ app.post('/api/bookings/:id/complete', async (req, res) => {
     }
     checkMissions(booking.user_id, 'booking').catch(() => {});
     console.log(`✅ Сделка подтверждена: booking=${booking.id}, user=${booking.user_id}, +1 gold`);
+    logAuditFromRequest(req, 'booking.complete', 'booking', booking.id, { unit_id: booking.unit_id, realtor_user_id: booking.user_id });
     res.json({ success: true, stage: 'COMPLETE' });
   } catch (e) { console.error('Complete booking error:', e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -3892,7 +4239,7 @@ app.post('/api/bookings/:id/complete', async (req, res) => {
 // Отмена подтверждения сделки (только админ) — отзыв золотой монеты
 app.post('/api/bookings/:id/revoke', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const bookingRes = await pool.query('SELECT * FROM bookings WHERE id = $1', [req.params.id]);
     if (bookingRes.rows.length === 0) return res.status(404).json({ error: 'Booking not found' });
     const booking = bookingRes.rows[0];
@@ -3905,6 +4252,7 @@ app.post('/api/bookings/:id/revoke', async (req, res) => {
     });
 
     console.log(`🔄 Сделка отозвана: booking=${booking.id}, user=${booking.user_id}, -1 gold`);
+    logAuditFromRequest(req, 'booking.revoke', 'booking', booking.id, { unit_id: booking.unit_id, realtor_user_id: booking.user_id });
     res.json({ success: true, stage: 'DOCS_SENT' });
   } catch (e) { console.error('Revoke booking error:', e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -3928,7 +4276,7 @@ app.post('/api/bookings/my', async (req, res) => {
 // Все бронирования (админ) — ЗАЩИЩЁН
 app.post('/api/bookings/all', async (req, res) => {
   try {
-    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const result = await pool.query(`
       SELECT b.*, u.first_name, u.last_name, u.phone, u.company, un.number as unit_number, un.project_id
       FROM bookings b LEFT JOIN users u ON b.user_id = u.id LEFT JOIN units un ON b.unit_id = un.id
@@ -3951,7 +4299,8 @@ app.post('/api/bookings/cancel', async (req, res) => {
     const user = await resolveDbUser(initData);
     if (!user) return res.status(401).json({ error: 'Invalid signature' });
 
-    const isManager = !!(user.is_admin || user.can_manage_bookings);
+    // Без PIN админ действует в правах обычного риелтора (может снять только свою бронь)
+    const isManager = !!(user.is_admin || user.can_manage_bookings) && adminPinOk(req);
 
     const outcome = await withTransaction(async (client) => {
       const activeRes = await client.query(
@@ -3990,6 +4339,7 @@ app.post('/api/bookings/cancel', async (req, res) => {
     });
 
     console.log(`🔓 Бронь снята: unit=${unitId}, bookings=${outcome.ids.join(',')}, by user=${user.id} (${isManager ? 'admin' : 'owner'})`);
+    logAudit(user, isManager ? 'booking.cancel_by_admin' : 'booking.cancel_by_agent', 'unit', unitId, { booking_ids: outcome.ids });
     if (outcome.byAgent) {
       notifyAdmin(`🔓 Риелтор сам снял свою бронь до отправки паспорта\n\nКвартира: ${unitId}\nРиелтор: ${user.first_name || user.id}`)
         .catch(() => {});
@@ -4007,6 +4357,21 @@ app.post('/api/bookings/cancel', async (req, res) => {
 // =============================================
 app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
+// Централизованный error handler: ошибки multer (тип/размер файла) и любые
+// необработанные исключения отдаём как JSON, без HTML-страницы и stack trace.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err instanceof multer.MulterError) {
+    const msg = err.code === 'LIMIT_FILE_SIZE' ? 'Файл слишком большой (макс. 15 МБ)' : `Ошибка загрузки файла: ${err.code}`;
+    return res.status(400).json({ error: msg });
+  }
+  if (err && /Недопустимый тип файла/.test(err.message || '')) {
+    return res.status(400).json({ error: err.message });
+  }
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Server error' });
 });
 
 const PORT = process.env.PORT || 8080;

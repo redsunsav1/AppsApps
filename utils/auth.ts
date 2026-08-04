@@ -170,3 +170,44 @@ export function getPwaToken(): string | null {
 export function isTelegramEnv(): boolean {
   try { return !!WebApp.initData; } catch { return false; }
 }
+
+// --- PIN админки (второй фактор) ---
+// PIN живёт в sessionStorage: переживает переходы внутри сессии,
+// но не остаётся на устройстве после закрытия приложения.
+const ADMIN_PIN_KEY = 'kp_admin_pin';
+
+export function getAdminPin(): string {
+  try { return sessionStorage.getItem(ADMIN_PIN_KEY) || ''; } catch { return ''; }
+}
+
+export function saveAdminPin(pin: string) {
+  try { sessionStorage.setItem(ADMIN_PIN_KEY, pin); } catch {}
+}
+
+export function clearAdminPin() {
+  try { sessionStorage.removeItem(ADMIN_PIN_KEY); } catch {}
+}
+
+// Глобальный перехватчик fetch: когда PIN введён, добавляет x-admin-pin ко всем
+// запросам к нашему API. Так админские вызовы по всему приложению получают
+// второй фактор без правки каждого места с fetch.
+(function patchFetchForAdminPin() {
+  if (typeof window === 'undefined') return;
+  const w = window as any;
+  if (w.__kpAdminPinFetchPatched) return;
+  w.__kpAdminPinFetchPatched = true;
+  const origFetch = window.fetch.bind(window);
+  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    try {
+      const pin = getAdminPin();
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+      const isOwnApi = !!url && (url.startsWith('/api/') || url.startsWith(`${window.location.origin}/api/`));
+      if (pin && isOwnApi) {
+        const headers = new Headers(init?.headers || (input instanceof Request ? (input as Request).headers : undefined));
+        headers.set('x-admin-pin', pin);
+        init = { ...init, headers };
+      }
+    } catch {}
+    return origFetch(input as any, init);
+  };
+})();

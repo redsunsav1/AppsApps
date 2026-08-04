@@ -79,28 +79,50 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
   const [avatarUrl, setAvatarUrl] = useState(user.avatar || '');
   const [showMissions, setShowMissions] = useState(false);
 
+  // Фото с телефона весит мегабайты, а аватарка в интерфейсе — кружок ~100px.
+  // Сжимаем на клиенте до 256px JPEG (~15–30 КБ): база не пухнет, загрузка мгновенная.
+  const compressAvatar = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const size = 256;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject(new Error('no canvas'));
+        // Обрезаем по центру до квадрата, затем масштабируем
+        const side = Math.min(img.width, img.height);
+        const sx = (img.width - side) / 2;
+        const sy = (img.height - side) / 2;
+        ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('bad image')); };
+      img.src = url;
+    });
+
   const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 1024 * 1024) {
-      alert('Фото слишком большое (макс. 1MB)');
+    if (file.size > 15 * 1024 * 1024) {
+      alert('Фото слишком большое (макс. 15MB)');
       return;
     }
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      const base64 = ev.target?.result as string;
+    try {
+      const base64 = await compressAvatar(file);
       setAvatarUrl(base64);
-      try {
-        await fetch('/api/avatar', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData: getAuthData(), avatarData: base64 }),
-        });
-      } catch (e) {
-        console.error('Avatar upload error:', e);
-      }
-    };
-    reader.readAsDataURL(file);
+      await fetch('/api/avatar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: getAuthData(), avatarData: base64 }),
+      });
+    } catch (err) {
+      console.error('Avatar upload error:', err);
+      alert('Не удалось обработать фото. Попробуйте другое изображение.');
+    }
   };
 
   return (

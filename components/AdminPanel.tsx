@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getAuthData } from '../utils/auth';
+import { getAuthData, getAdminPin, saveAdminPin, clearAdminPin } from '../utils/auth';
 import { Newspaper, Building2, Link, ShoppingBag, Zap, Trash2, UserCheck, Users, Calendar, Calculator, Edit3, X, Phone, Send, ChevronRight, Database, ArrowLeft, Clock } from 'lucide-react';
 import { showToast } from '../utils/toast';
 import { getRank } from '../types';
@@ -55,6 +55,37 @@ interface MortgageProgramItem {
 
 export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) => {
   const [activeTab, setActiveTab] = useState<'news' | 'import' | 'shop' | 'quests' | 'applications' | 'users' | 'events' | 'mortgage' | 'projects' | 'база'>('news');
+
+  // PIN-гейт: если на сервере задан ADMIN_PIN, админка открывается только после
+  // ввода PIN. Сам PIN уходит в заголовке x-admin-pin (перехватчик в utils/auth).
+  const [pinState, setPinState] = useState<'checking' | 'need' | 'ok'>('checking');
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState('');
+
+  const verifyPin = async () => {
+    try {
+      const res = await fetch('/api/admin/verify-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: getAuthData() }),
+      });
+      if (res.status === 429) { setPinError('Слишком много попыток. Подождите 15 минут.'); setPinState('need'); return; }
+      const data = await res.json();
+      if (!data.pinRequired || data.ok) { setPinState('ok'); setPinError(''); return; }
+      if (getAdminPin()) { clearAdminPin(); setPinError('Неверный PIN'); }
+      setPinState('need');
+    } catch { setPinState('need'); setPinError('Нет связи с сервером'); }
+  };
+
+  useEffect(() => { verifyPin(); }, []);
+
+  const submitPin = () => {
+    if (!pinInput.trim()) return;
+    saveAdminPin(pinInput.trim());
+    setPinInput('');
+    setPinState('checking');
+    verifyPin();
+  };
 
   // База — mini profile
   const [bazaUsers, setBazaUsers] = useState<any[]>([]);
@@ -112,6 +143,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
 
   // Users
   const [usersList, setUsersList] = useState<any[]>([]);
+  const [userSearch, setUserSearch] = useState('');
 
   // Events
   const [eventsList, setEventsList] = useState<EventItem[]>([]);
@@ -161,6 +193,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   }, [editData]);
 
   useEffect(() => {
+    if (pinState !== 'ok') return;
     if (activeTab === 'quests') fetchQuests();
     if (activeTab === 'applications') { fetchApplications(); fetchInviteLinks(); }
     if (activeTab === 'users') fetchUsers();
@@ -169,7 +202,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     if (activeTab === 'projects') fetchProjects();
     if (activeTab === 'база') fetchBazaUsers();
     if (activeTab === 'shop') fetchShopProducts();
-  }, [activeTab]);
+  }, [activeTab, pinState]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60000);
@@ -591,6 +624,38 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     setMpName(''); setMpRate(6); setMpDescription('');
   };
 
+  if (pinState !== 'ok') {
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[200] flex justify-center items-center p-4 animate-fade-in">
+        <div className="bg-white w-full max-w-xs rounded-xl p-6 flex flex-col gap-3">
+          <div className="flex justify-between items-center">
+            <h3 className="text-lg font-bold text-black">Админка</h3>
+            <button onClick={onClose} className="text-gray-400 hover:text-black text-sm font-bold">Закрыть</button>
+          </div>
+          {pinState === 'checking' ? (
+            <p className="text-sm text-gray-500">Проверка доступа…</p>
+          ) : (
+            <>
+              <p className="text-sm text-gray-600">Введите PIN-код администратора</p>
+              <input
+                type="password"
+                inputMode="numeric"
+                autoFocus
+                value={pinInput}
+                onChange={e => { setPinInput(e.target.value); setPinError(''); }}
+                onKeyDown={e => { if (e.key === 'Enter') submitPin(); }}
+                className="w-full border rounded-lg px-3 py-2 text-center text-xl tracking-widest"
+                placeholder="••••"
+              />
+              {pinError && <p className="text-xs text-red-500">{pinError}</p>}
+              <button onClick={submitPin} disabled={!pinInput.trim()} className="w-full py-2.5 bg-brand-black text-white rounded-lg font-bold disabled:opacity-50">Войти</button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="fixed inset-0 bg-black/80 z-[200] flex justify-center items-stretch sm:items-center p-0 sm:p-4 animate-fade-in">
       <div className="bg-white w-full max-w-lg h-full sm:h-auto sm:max-h-[90vh] overflow-hidden rounded-none sm:rounded-xl flex flex-col">
@@ -747,11 +812,23 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
         {activeTab === 'users' && (
             <div className="flex flex-col gap-3 animate-fade-in">
                 <h4 className="font-bold text-black text-sm">Все пользователи ({usersList.length})</h4>
+                <input
+                    type="text"
+                    value={userSearch}
+                    onChange={e => setUserSearch(e.target.value)}
+                    placeholder="Поиск: имя, компания, телефон, TG ID…"
+                    className="w-full border rounded-lg px-3 py-2 text-sm"
+                />
                 {usersList.length === 0 ? (
                     <p className="text-gray-400 text-sm text-center py-8">Пользователей пока нет</p>
                 ) : (
                     <div className="space-y-2">
-                        {usersList.map(u => (
+                        {usersList.filter(u => {
+                            const q = userSearch.trim().toLowerCase();
+                            if (!q) return true;
+                            return [u.first_name, u.last_name, u.username, u.company, u.phone, u.telegram_id, u.max_id]
+                                .some(v => v != null && String(v).toLowerCase().includes(q));
+                        }).map(u => (
                             <div key={u.id} className="bg-gray-50 p-3 rounded-lg flex items-center justify-between">
                                 <div className="flex-1 min-w-0">
                                     <div className="font-bold text-black text-sm truncate">

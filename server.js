@@ -301,6 +301,10 @@ pool.on('error', (err) => console.error('⚠️ Pool error:', err.message));
 
 const BOOKING_HOLD_HOURS = Math.max(1, parseInt(process.env.BOOKING_HOLD_HOURS || '72', 10) || 72);
 const BOOKING_EXPIRY_CRON = process.env.BOOKING_EXPIRY_CRON || '*/15 * * * *';
+// Таймаут загрузки XML-фида застройщика
+const FEED_FETCH_TIMEOUT_MS = Math.max(1000, parseInt(process.env.FEED_FETCH_TIMEOUT_MS || '8000', 10) || 8000);
+// Максимальный возраст подписанного контакта из requestContact (защита от повтора)
+const CONTACT_MAX_AGE_SECONDS = Math.max(60, parseInt(process.env.CONTACT_MAX_AGE_SECONDS || '900', 10) || 900);
 
 // Transaction helper
 async function withTransaction(fn) {
@@ -343,6 +347,43 @@ function validateTelegramData(initData) {
     return JSON.parse(userStr);
   } catch (e) {
     console.error('HMAC validation error:', e.message);
+    return null;
+  }
+}
+
+// Проверка контакта, полученного через WebApp.requestContact().
+// Telegram отдаёт query-string той же структуры, что и initData (contact, auth_date, hash),
+// подписанную тем же секретом. Возвращает объект контакта или null.
+function validateTelegramContact(contactResponse) {
+  const BOT_TOKEN = process.env.BOT_TOKEN;
+  if (!BOT_TOKEN || !contactResponse) return null;
+  try {
+    const urlParams = new URLSearchParams(contactResponse);
+    const hash = urlParams.get('hash');
+    if (!hash) return null;
+    urlParams.delete('hash');
+    const dataCheckArr = [];
+    for (const [key, value] of urlParams.entries()) {
+      dataCheckArr.push(`${key}=${value}`);
+    }
+    dataCheckArr.sort();
+    const dataCheckString = dataCheckArr.join('\n');
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
+    const checkHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+    if (checkHash !== hash) return null;
+
+    // Подпись не имеет срока годности сама по себе — ограничиваем возраст вручную,
+    // чтобы старый перехваченный ответ нельзя было переиспользовать.
+    const authDate = Number(urlParams.get('auth_date'));
+    if (!authDate || (Date.now() / 1000 - authDate) > CONTACT_MAX_AGE_SECONDS) return null;
+
+    const contactStr = urlParams.get('contact');
+    if (!contactStr) return null;
+    const contact = JSON.parse(contactStr);
+    if (!contact || !contact.phone_number || !contact.user_id) return null;
+    return contact;
+  } catch (e) {
+    console.error('Contact validation error:', e.message);
     return null;
   }
 }
@@ -412,6 +453,36 @@ async function resolveAuth(initDataOrToken, platformHint) {
   return null;
 }
 
+// Привязать внешний ID мессенджера к аккаунту.
+// Конфликт по (provider, provider_user_id) означает, что ID уже числится за другим
+// аккаунтом — переводим его на нового владельца (так работает слияние).
+// Второй уникальный индекс (user_id, provider) не даст аккаунту получить два ID
+// одного мессенджера: транзакция упадёт, и это правильное поведение.
+async function attachIdentity(executor, userId, provider, providerUserId) {
+  if (!userId || !provider || !providerUserId) return;
+  await executor.query(`
+    INSERT INTO user_identities (user_id, provider, provider_user_id)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (provider, provider_user_id)
+    DO UPDATE SET user_id = EXCLUDED.user_id
+  `, [userId, provider, String(providerUserId)]);
+}
+
+// Поиск аккаунта по внешнему ID: сначала таблица идентичностей, затем legacy-колонка.
+async function findUserByIdentity(provider, providerUserId) {
+  const viaIdentity = await pool.query(`
+    SELECT u.* FROM user_identities i
+    JOIN users u ON u.id = i.user_id
+    WHERE i.provider = $1 AND i.provider_user_id = $2
+  `, [provider, String(providerUserId)]);
+  if (viaIdentity.rows.length > 0) return viaIdentity.rows[0];
+
+  const legacy = provider === 'max'
+    ? await pool.query('SELECT * FROM users WHERE max_id = $1', [providerUserId])
+    : await pool.query('SELECT * FROM users WHERE telegram_id = $1', [providerUserId]);
+  return legacy.rows[0] || null;
+}
+
 // Универсальный резолвер: всегда возвращает полную строку из таблицы users + _platform.
 // Работает для Telegram initData, MAX initData, MAX URL-hash и PWA-токена.
 async function resolveDbUser(initData, platformHint) {
@@ -421,10 +492,26 @@ async function resolveDbUser(initData, platformHint) {
     let r;
     if (auth._dbId) {
       r = await pool.query('SELECT * FROM users WHERE id = $1', [auth._dbId]);
-    } else if (auth._platform === 'max') {
-      r = await pool.query('SELECT * FROM users WHERE max_id = $1', [auth.id]);
     } else {
-      r = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [auth.id]);
+      // Сначала спрашиваем таблицу идентичностей — она единственная знает про все
+      // способы входа. Legacy-колонки остаются запасным путём: если бэкфилл почему-то
+      // не дошёл до этой строки, пользователь всё равно войдёт.
+      const provider = auth._platform === 'max' ? 'max' : 'telegram';
+      r = await pool.query(`
+        SELECT u.* FROM user_identities i
+        JOIN users u ON u.id = i.user_id
+        WHERE i.provider = $1 AND i.provider_user_id = $2
+      `, [provider, String(auth.id)]);
+      if (r.rows.length === 0) {
+        r = provider === 'max'
+          ? await pool.query('SELECT * FROM users WHERE max_id = $1', [auth.id])
+          : await pool.query('SELECT * FROM users WHERE telegram_id = $1', [auth.id]);
+        // Нашли по старой колонке — значит записи в user_identities не хватает, чиним на лету.
+        if (r.rows.length > 0) {
+          await attachIdentity(pool, r.rows[0].id, provider, auth.id).catch(e =>
+            console.warn('[identities] дозапись не удалась:', e.message));
+        }
+      }
     }
     return r.rows.length > 0 ? { ...r.rows[0], _platform: auth._platform } : null;
   } catch (e) {
@@ -663,6 +750,59 @@ const initDb = async () => {
     // 38-ФЗ: застройщик проекта (рекламная пометка)
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS developer_name TEXT;');
     await pool.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS video_url TEXT;');
+    // Подтверждение владения номером. NULL — номер введён руками и не проверен
+    // (все существующие пользователи и заявки остаются с NULL, бэкфилла нет).
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified_at TIMESTAMP;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified_source TEXT;');
+    // Куда «уехала» запись при слиянии аккаунтов. Строка-источник больше не удаляется —
+    // остаётся со статусом 'linked' как след в аудите (152-ФЗ) и для разбора спорных случаев.
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS merged_into_user_id INT;');
+
+    // --- Идентичности: «один аккаунт — много способов входа» ---
+    // Таблица делает правило ограничением схемы, а не результатом удачного слияния:
+    // один внешний ID не может принадлежать двум аккаунтам, а у аккаунта не может
+    // быть двух ID одного мессенджера. Колонки users.telegram_id/max_id пока живут
+    // как есть — на них завязаны рассылки и десятки запросов; здесь ведётся синхронная
+    // копия, а чтение идёт сначала отсюда.
+    await pool.query(`CREATE TABLE IF NOT EXISTS user_identities (
+      id SERIAL PRIMARY KEY,
+      user_id INT NOT NULL,
+      provider TEXT NOT NULL,
+      provider_user_id TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );`);
+    await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_identities_provider ON user_identities(provider, provider_user_id);');
+    await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_identities_user_provider ON user_identities(user_id, provider);');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_identities_user ON user_identities(user_id);');
+    // Перенос существующих привязок. Слитые записи уже обнулены (telegram_id/max_id = NULL),
+    // поэтому в таблицу не попадут. Повторный запуск ничего не ломает.
+    try {
+      await pool.query(`
+        INSERT INTO user_identities (user_id, provider, provider_user_id)
+        SELECT id, 'telegram', telegram_id::text FROM users WHERE telegram_id IS NOT NULL
+        ON CONFLICT DO NOTHING;
+      `);
+      await pool.query(`
+        INSERT INTO user_identities (user_id, provider, provider_user_id)
+        SELECT id, 'max', max_id::text FROM users WHERE max_id IS NOT NULL
+        ON CONFLICT DO NOTHING;
+      `);
+    } catch (e) {
+      console.error('[migration] бэкфилл user_identities не прошёл:', e.message);
+    }
+
+    // Одноразовые коды привязки второго мессенджера к существующему аккаунту
+    await pool.query(`CREATE TABLE IF NOT EXISTS account_link_codes (
+      id SERIAL PRIMARY KEY,
+      user_id INT NOT NULL,
+      code_hash TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      expires_at TIMESTAMP NOT NULL,
+      used_at TIMESTAMP,
+      used_by_user_id INT
+    );`);
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_link_codes_hash ON account_link_codes(code_hash) WHERE used_at IS NULL;');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_link_codes_user ON account_link_codes(user_id);');
 
     // --- MAX Messenger platform support (dual-platform: Telegram + MAX) ---
     // Колонка max_id — внешний ID пользователя в мессенджере MAX (аналог telegram_id)
@@ -726,6 +866,30 @@ const initDb = async () => {
       WHERE phone_normalized IS NULL AND phone IS NOT NULL
     `);
     await pool.query('CREATE INDEX IF NOT EXISTS idx_users_phone_normalized ON users(phone_normalized) WHERE phone_normalized IS NOT NULL;');
+    // Уникальность телефона среди ОДОБРЕННЫХ пользователей.
+    // Индекс намеренно частичный: pending-заявка на привязку второго мессенджера
+    // имеет тот же номер, что и основной аккаунт, и должна оставаться легальной.
+    // Если индекс не создался — в базе уже есть задвоение; не роняем старт,
+    // а печатаем конкретные номера и id, чтобы разобрать их руками.
+    try {
+      await pool.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_approved
+        ON users(phone_normalized)
+        WHERE phone_normalized IS NOT NULL AND approval_status = 'approved';
+      `);
+    } catch (e) {
+      console.error('[migration] idx_users_phone_approved не создан:', e.message);
+      const dupes = await pool.query(`
+        SELECT phone_normalized, array_agg(id ORDER BY id) AS ids
+        FROM users
+        WHERE phone_normalized IS NOT NULL AND approval_status = 'approved'
+        GROUP BY phone_normalized
+        HAVING count(*) > 1
+      `).catch(() => ({ rows: [] }));
+      for (const row of dupes.rows) {
+        console.error(`[migration] ДУБЛЬ телефона ${row.phone_normalized} → users.id: ${row.ids.join(', ')}`);
+      }
+    }
     await pool.query('CREATE INDEX IF NOT EXISTS idx_units_proj ON units(project_id);');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_book_unit ON bookings(unit_id);');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_book_user ON bookings(user_id);');
@@ -936,6 +1100,9 @@ function findTag(item, ...names) {
 }
 
 const projectSyncLocks = new Map();
+// Квартиры, по которым админу уже сообщили о конфликте «продано, но забронировано».
+// Живёт в памяти: после рестарта напомнит один раз — это не страшно.
+const reportedSoldWhileBooked = new Set();
 const FEED_DEBUG_LOGS = process.env.FEED_DEBUG_LOGS === 'true';
 const FEED_PREBOOKING_TTL_SECONDS_RAW = parseInt(process.env.FEED_PREBOOKING_TTL_SECONDS || '120', 10);
 const FEED_PREBOOKING_TTL_MS = Math.max(0, Number.isFinite(FEED_PREBOOKING_TTL_SECONDS_RAW) ? FEED_PREBOOKING_TTL_SECONDS_RAW : 120) * 1000;
@@ -1002,7 +1169,17 @@ async function syncProjectWithXml(projectId, url, options = {}) {
 
 async function syncProjectWithXmlUnsafe(projectId, url) {
   console.log(`🔄 Syncing ${projectId} from ${safeFeedLabel(url)}`);
-  const response = await fetch(url);
+  // Без таймаута зависший сервер застройщика держал запрос до системного TCP-таймаута,
+  // а вместе с ним — кнопку «Забронировать» у риелтора.
+  let response;
+  try {
+    response = await fetch(url, { signal: AbortSignal.timeout(FEED_FETCH_TIMEOUT_MS) });
+  } catch (e) {
+    if (e.name === 'TimeoutError' || e.name === 'AbortError') {
+      throw new Error(`Feed timeout after ${FEED_FETCH_TIMEOUT_MS}ms`);
+    }
+    throw e;
+  }
   if (!response.ok) throw new Error(`Feed HTTP ${response.status}`);
   const xmlText = await response.text();
   const xmlSize = xmlText.length;
@@ -1162,6 +1339,8 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
     [projectId]
   );
   const bookedUnitIds = new Set(bookedRes.rows.map(r => r.unit_id));
+  // Квартиры, которые застройщик продал, пока у нас на них висит активная бронь
+  const soldWhileBooked = [];
   if (bookedUnitIds.size > 0) {
     console.log(`🔒 Preserving ${bookedUnitIds.size} booked units during sync`);
   }
@@ -1200,9 +1379,17 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
       }
     }
 
-    // 3. Если у юнита есть активная бронь в нашей системе — статус BOOKED, независимо от фида
+    // 3. Наша активная бронь перекрывает фид — но НЕ продажу.
+    // Если застройщик продал квартиру мимо приложения, показывать её как
+    // «забронирована» опасно: риелтор продолжит вести мёртвую сделку.
+    // Продажа всегда сильнее, а сама бронь при этом не трогается — с ней
+    // разбирается админ.
     if (bookedUnitIds.has(u.id)) {
-      status = 'BOOKED';
+      if (status === 'SOLD') {
+        soldWhileBooked.push(u.id);
+      } else {
+        status = 'BOOKED';
+      }
     }
 
     unitRowsById.set(u.id, {
@@ -1224,16 +1411,27 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
   let savedStatuses = {};
 
   await withTransaction(async (client) => {
-    await client.query('DELETE FROM units WHERE project_id = $1', [projectId]);
+    // Квартиры с активной бронью не удаляем, даже если они пропали из фида:
+    // иначе бронь осталась бы ссылаться в пустоту и риелтор увидел бы «кв. undefined».
+    // Такая квартира просто сохраняет последние известные данные.
+    const bookedIds = [...bookedUnitIds];
+    if (bookedIds.length > 0) {
+      await client.query('DELETE FROM units WHERE project_id = $1 AND NOT (id = ANY($2::text[]))', [projectId, bookedIds]);
+    } else {
+      await client.query('DELETE FROM units WHERE project_id = $1', [projectId]);
+    }
     if (unitRows.length > 0) await insertUnitRows(client, unitRows);
+    // Страховка: всё забронированное у нас помечаем BOOKED ещё раз, уже в базе.
+    // Кроме проданного застройщиком — там правда важнее нашей брони.
     await client.query(
       `UPDATE units SET status = 'BOOKED', updated_at = NOW()
        WHERE project_id = $1
+         AND NOT (id = ANY($2::text[]))
          AND id IN (
            SELECT DISTINCT unit_id FROM bookings
            WHERE project_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'
          )`,
-      [projectId]
+      [projectId, soldWhileBooked]
     );
     await client.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3, feed_synced_at = NOW() WHERE id = $4', [maxFloor, maxUnitsOnFloor, url, projectId]);
 
@@ -1242,6 +1440,18 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
     savedStatuses = {};
     for (const r of savedRes.rows) savedStatuses[r.status] = parseInt(r.c);
   });
+
+  // Конфликт: у нас активная бронь, а застройщик уже продал квартиру.
+  // Сообщаем админу один раз на квартиру — синхронизация идёт каждые 5 минут,
+  // и повторные уведомления превратились бы в спам.
+  for (const unitId of soldWhileBooked) {
+    if (reportedSoldWhileBooked.has(unitId)) continue;
+    reportedSoldWhileBooked.add(unitId);
+    console.warn(`⚠️ Продано в фиде, но забронировано у нас: unit=${unitId}, project=${projectId}`);
+    notifyAdmin(
+      `⚠️ <b>Конфликт брони</b>\n\nКвартира ${unitId} (${projectId}) продана по данным застройщика, но у нас на неё активная бронь.\nПроверьте сделку и снимите бронь, если она больше не актуальна.`
+    ).catch(() => {});
+  }
 
   // Секции
   const sections = [...new Set(units.map(u => u.section).filter(Boolean))];
@@ -1318,7 +1528,7 @@ async function processBookingReminderWindow(label, flagColumn, minHours, maxHour
 
   const due = await withTransaction(async (client) => {
     const result = await client.query(`
-      SELECT b.id, b.unit_id, b.project_id, b.expires_at, b.user_id,
+      SELECT b.id, b.unit_id, b.project_id, b.expires_at, b.user_id, b.stage,
              u.telegram_id, u.max_id, u.platform, u.first_name,
              un.number AS unit_number, p.name AS project_name
       FROM bookings b
@@ -1344,7 +1554,15 @@ async function processBookingReminderWindow(label, flagColumn, minHours, maxHour
   });
 
   for (const row of due) {
-    const text = `⏳ <b>Бронь скоро истечёт</b>\n\n${bookingLabel(row)}\nОсталось примерно ${label}.\nСрок до: ${formatBookingDeadline(row.expires_at)}.\n\nЕсли сделка актуальна, успейте отправить документы и довести её до подтверждения.`;
+    // Совет должен соответствовать стадии: у того, кто уже отправил документы,
+    // мяч не на его стороне, и просить «отправить документы» бессмысленно.
+    const stage = row.stage || 'INIT';
+    const advice = stage === 'DOCS_SENT'
+      ? 'Документы отправлены и ждут подтверждения. Если сделка актуальна, поторопите менеджера — иначе квартира освободится.'
+      : stage === 'PASSPORT_SENT'
+        ? 'Паспорт получен. Загрузите документы для ипотеки, чтобы сделка двигалась дальше.'
+        : 'Отправьте паспорт покупателя, иначе бронь снимется автоматически.';
+    const text = `⏳ <b>Бронь скоро истечёт</b>\n\n${bookingLabel(row)}\nОсталось примерно ${label}.\nСрок до: ${formatBookingDeadline(row.expires_at)}.\n\n${advice}`;
     notifyUser(row, text, getAppOpenKeyboard()).catch(e => console.error('Booking reminder notify user error:', e.message));
     notifyAdmin(`⏳ Бронь скоро истечёт (${label})\n\n${bookingLabel(row)}\nРиелтор: ${row.first_name || row.user_id}\nСрок до: ${formatBookingDeadline(row.expires_at)}`, getAppOpenKeyboard())
       .catch(e => console.error('Booking reminder notify admin error:', e.message));
@@ -1374,9 +1592,11 @@ async function expireOverdueBookings() {
     const unitIds = [...new Set(result.rows.map(r => r.unit_id).filter(Boolean))];
     await client.query(
       `UPDATE bookings
-       SET stage = 'CANCELLED', expired_at = NOW(), cancel_reason = 'expired_3_days'
+       SET stage = 'CANCELLED', expired_at = NOW(), cancel_reason = $2
        WHERE id = ANY($1::int[])`,
-      [bookingIds]
+      // Причина считается от реального срока, а не хардкодом 'expired_3_days':
+      // при смене BOOKING_HOLD_HOURS в аудите не останется вранья.
+      [bookingIds, `expired_${BOOKING_HOLD_HOURS}h`]
     );
     if (unitIds.length > 0) {
       await client.query(
@@ -1394,7 +1614,7 @@ async function expireOverdueBookings() {
   });
 
   for (const row of expired) {
-    const text = `⌛ <b>Бронь истекла</b>\n\n${bookingLabel(row)} освобождена, потому что прошло ${BOOKING_HOLD_HOURS} часов с момента бронирования.`;
+    const text = `⌛ <b>Бронь истекла</b>\n\n${bookingLabel(row)} освобождена: по сделке ${BOOKING_HOLD_HOURS} часов не было движения.`;
     notifyUser(row, text, getAppOpenKeyboard()).catch(e => console.error('Booking expired notify user error:', e.message));
     notifyAdmin(`⌛ Бронь истекла и квартира освобождена\n\n${bookingLabel(row)}\nРиелтор: ${row.first_name || row.user_id}`, getAppOpenKeyboard())
       .catch(e => console.error('Booking expired notify admin error:', e.message));
@@ -1456,12 +1676,16 @@ app.post('/api/auth', rateLimit(900000, 30), async (req, res) => {
   try {
     const tgUser = parseTelegramUser(initData);
     if (!tgUser) return res.status(401).json({ error: 'Invalid initData signature' });
-    let dbUser = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [tgUser.id]);
-    if (dbUser.rows.length === 0) {
-      dbUser = await pool.query('INSERT INTO users (telegram_id, username, first_name, gold_balance, balance) VALUES ($1, $2, $3, 0, 0) RETURNING *', [tgUser.id, tgUser.username, tgUser.first_name]);
+    let existing = await findUserByIdentity('telegram', tgUser.id);
+    if (!existing) {
+      const created = await pool.query('INSERT INTO users (telegram_id, username, first_name, gold_balance, balance) VALUES ($1, $2, $3, 0, 0) RETURNING *', [tgUser.id, tgUser.username, tgUser.first_name]);
+      existing = created.rows[0];
     }
+    // Держим таблицу идентичностей в актуальном состоянии на каждом входе
+    await attachIdentity(pool, existing.id, 'telegram', tgUser.id)
+      .catch(e => console.warn('[identities] telegram:', e.message));
     // Обновить серию входов
-    const user = dbUser.rows[0];
+    const user = existing;
     if (user.platform !== 'telegram') {
       await pool.query("UPDATE users SET platform = 'telegram' WHERE id = $1", [user.id]);
       user.platform = 'telegram';
@@ -1534,20 +1758,23 @@ app.post('/api/auth/max', rateLimit(900000, 30), async (req, res) => {
 
     const isAdminMaxId = process.env.ADMIN_MAX_ID && String(maxUser.id) === String(process.env.ADMIN_MAX_ID);
 
-    let dbUser = await pool.query('SELECT * FROM users WHERE max_id = $1', [maxUser.id]);
-    if (dbUser.rows.length === 0) {
-      dbUser = await pool.query(
+    let existing = await findUserByIdentity('max', maxUser.id);
+    if (!existing) {
+      const created = await pool.query(
         `INSERT INTO users (max_id, username, first_name, platform, gold_balance, balance, is_admin, is_registered)
          VALUES ($1, $2, $3, 'max', 0, 0, $4, $4) RETURNING *`,
         [maxUser.id, maxUser.username || null, maxUser.first_name || '', isAdminMaxId]
       );
-    } else if (isAdminMaxId && !dbUser.rows[0].is_admin) {
+      existing = created.rows[0];
+    } else if (isAdminMaxId && !existing.is_admin) {
       // Если юзер уже есть, но флаг admin ещё не выставлен — ставим
-      await pool.query('UPDATE users SET is_admin = TRUE, is_registered = TRUE WHERE max_id = $1', [maxUser.id]);
-      dbUser.rows[0].is_admin = true;
-      dbUser.rows[0].is_registered = true;
+      await pool.query('UPDATE users SET is_admin = TRUE, is_registered = TRUE WHERE id = $1', [existing.id]);
+      existing.is_admin = true;
+      existing.is_registered = true;
     }
-    const user = dbUser.rows[0];
+    await attachIdentity(pool, existing.id, 'max', maxUser.id)
+      .catch(e => console.warn('[identities] max:', e.message));
+    const user = existing;
     if (user.platform !== 'max') {
       await pool.query("UPDATE users SET platform = 'max' WHERE id = $1", [user.id]);
       user.platform = 'max';
@@ -1591,53 +1818,68 @@ async function applyApplicationDecision(userId, action) {
 
   const user = userRes.rows[0];
   if (action === 'approve') {
-    const result = await withTransaction(async (client) => {
-      const sourceRes = await client.query('SELECT * FROM users WHERE id = $1 FOR UPDATE', [id]);
-      if (sourceRes.rows.length === 0) throw { status: 'not_found', message: 'Заявка не найдена' };
-      const source = sourceRes.rows[0];
+    let result;
+    try {
+      result = await withTransaction(async (client) => {
+        const sourceRes = await client.query('SELECT * FROM users WHERE id = $1 FOR UPDATE', [id]);
+        if (sourceRes.rows.length === 0) throw { status: 'not_found', message: 'Заявка не найдена' };
+        const source = sourceRes.rows[0];
 
-      if (source.phone_normalized) {
-        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`phone:${source.phone_normalized}`]);
-        const targetRes = await client.query(`
-          SELECT * FROM users
-          WHERE id != $1
-            AND phone_normalized = $2
-            AND approval_status = 'approved'
-            AND is_registered = TRUE
-          ORDER BY created_at ASC, id ASC
-          FOR UPDATE
-        `, [source.id, source.phone_normalized]);
-        const target = targetRes.rows.find(row => getIdentityMergeConflict(row, source) === null);
-        if (target) {
-          const linkedUser = await mergeUserIdentity(client, target, source);
-          const updated = await client.query(`
-            UPDATE users
-            SET is_registered = TRUE,
-                approval_status = 'approved',
-                platform = COALESCE($1, platform),
-                consent_pd = COALESCE(consent_pd, $2),
-                consent_pd_at = COALESCE(consent_pd_at, $3)
-            WHERE id = $4
-            RETURNING *
-          `, [source.platform || null, source.consent_pd || false, source.consent_pd_at || null, linkedUser.id]);
-          return { user: updated.rows[0] || linkedUser, linked: true };
+        if (source.phone_normalized) {
+          await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`phone:${source.phone_normalized}`]);
+          const targetRes = await client.query(`
+            SELECT * FROM users
+            WHERE id != $1
+              AND phone_normalized = $2
+              AND approval_status = 'approved'
+              AND is_registered = TRUE
+            ORDER BY created_at ASC, id ASC
+            FOR UPDATE
+          `, [source.id, source.phone_normalized]);
+          const target = targetRes.rows.find(row => getIdentityMergeConflict(row, source) === null);
+          if (target) {
+            const linkedUser = await mergeUserIdentity(client, target, source);
+            const updated = await client.query(`
+              UPDATE users
+              SET is_registered = TRUE,
+                  approval_status = 'approved',
+                  platform = COALESCE($1, platform),
+                  consent_pd = COALESCE(consent_pd, $2),
+                  consent_pd_at = COALESCE(consent_pd_at, $3)
+              WHERE id = $4
+              RETURNING *
+            `, [source.platform || null, source.consent_pd || false, source.consent_pd_at || null, linkedUser.id]);
+            return { user: updated.rows[0] || linkedUser, linked: true };
+          }
+          if (targetRes.rows.length > 0) {
+            return {
+              user: source,
+              linked: false,
+              conflict: true,
+              message: 'Телефон уже привязан к другому аккаунту этого же мессенджера',
+            };
+          }
         }
-        if (targetRes.rows.length > 0) {
-          return {
-            user: source,
-            linked: false,
-            conflict: true,
-            message: 'Телефон уже привязан к другому аккаунту этого же мессенджера',
-          };
-        }
+
+        const updated = await client.query(
+          `UPDATE users SET is_registered = TRUE, approval_status = 'approved' WHERE id = $1 RETURNING *`,
+          [source.id]
+        );
+        return { user: updated.rows[0], linked: false };
+      });
+    } catch (e) {
+      // 23505 — сработал idx_users_phone_approved: у номера уже есть одобренный
+      // владелец, а слияние не подошло (например, тот же мессенджер уже занят).
+      // Заявка при этом остаётся pending и никуда из админки не пропадает.
+      if (e && e.code === '23505') {
+        return {
+          ok: false,
+          status: 'bad_request',
+          message: 'Этот телефон уже закреплён за другим одобренным аккаунтом. Заявка оставлена в списке — разберите вручную.',
+        };
       }
-
-      const updated = await client.query(
-        `UPDATE users SET is_registered = TRUE, approval_status = 'approved' WHERE id = $1 RETURNING *`,
-        [source.id]
-      );
-      return { user: updated.rows[0], linked: false };
-    });
+      throw e;
+    }
 
     if (result.conflict) {
       return { ok: false, status: 'bad_request', message: result.message };
@@ -1686,6 +1928,11 @@ async function mergeUserIdentity(client, target, source) {
     [source.id]
   );
 
+  // Способы входа переезжают на основной аккаунт. Конфликт «у цели уже есть ID этого
+  // мессенджера» отсечён выше в getIdentityMergeConflict, поэтому уникальный индекс
+  // (user_id, provider) здесь не сработает.
+  await client.query('UPDATE user_identities SET user_id = $1 WHERE user_id = $2', [target.id, source.id]);
+
   await client.query('UPDATE bookings SET user_id = $1 WHERE user_id = $2', [target.id, source.id]);
   await client.query('UPDATE orders SET user_id = $1 WHERE user_id = $2', [target.id, source.id]);
 
@@ -1714,12 +1961,49 @@ async function mergeUserIdentity(client, target, source) {
     UPDATE users
     SET telegram_id = COALESCE(telegram_id, $1),
         max_id = COALESCE(max_id, $2),
-        pwa_token = COALESCE(pwa_token, $3)
+        pwa_token = COALESCE(pwa_token, $3),
+        phone_verified_at = COALESCE(phone_verified_at, $5),
+        phone_verified_source = COALESCE(phone_verified_source, $6),
+        -- Накопленное на второй записи не пропадает: балансы и опыт складываем,
+        -- серию входов берём наибольшую. Обычно источник пустой, но если человек
+        -- успел пожить во втором мессенджере — он это не потеряет.
+        balance = COALESCE(balance, 0) + $7,
+        gold_balance = COALESCE(gold_balance, 0) + $8,
+        xp_points = COALESCE(xp_points, 0) + $9,
+        deals_closed = COALESCE(deals_closed, 0) + $10,
+        login_streak = GREATEST(COALESCE(login_streak, 0), $11)
     WHERE id = $4
     RETURNING *
-  `, [source.telegram_id || null, source.max_id || null, source.pwa_token || null, target.id]);
+  `, [
+    source.telegram_id || null,
+    source.max_id || null,
+    source.pwa_token || null,
+    target.id,
+    // Подтверждение номера, принесённое заявкой, не теряем при слиянии
+    source.phone_verified_at || null,
+    source.phone_verified_source || null,
+    source.balance || 0,
+    source.gold_balance || 0,
+    source.xp_points || 0,
+    source.deals_closed || 0,
+    source.login_streak || 0,
+  ]);
 
-  await client.query('DELETE FROM users WHERE id = $1', [source.id]);
+  // Раньше здесь был DELETE — заявка исчезала бесследно в момент одобрения.
+  // Теперь строка остаётся, но полностью «обесточена»: внешние ID уже сняты выше,
+  // is_registered = FALSE убирает её из рейтингов и рассылок, статус 'linked'
+  // выводит её из списка заявок и из-под уникального индекса по телефону.
+  await client.query(`
+    UPDATE users
+    SET is_registered = FALSE,
+        approval_status = 'linked',
+        merged_into_user_id = $1,
+        balance = 0,
+        gold_balance = 0,
+        xp_points = 0,
+        deals_closed = 0
+    WHERE id = $2
+  `, [target.id, source.id]);
   return updated.rows[0] || target;
 }
 
@@ -1796,12 +2080,27 @@ app.post('/api/avatar', async (req, res) => {
 // РЕГИСТРАЦИЯ С МОДЕРАЦИЕЙ
 // =============================================
 app.post('/api/register', async (req, res) => {
-  const { initData, firstName, lastName, companyType, company, phone, consentPd } = req.body;
+  const { initData, firstName, lastName, companyType, company, phone, consentPd, contactResponse } = req.body;
   try {
     const authUser = await resolveDbUser(initData);
     if (!authUser) return res.status(401).json({ error: 'Invalid signature' });
     if (!consentPd) return res.status(400).json({ error: 'Необходимо согласие на обработку персональных данных' });
-    const phoneNormalized = normalizePhone(phone);
+
+    // Если пользователь поделился контактом через Telegram — номер берём из подписи,
+    // а не из поля ввода: это снимает опечатки и попытки указать чужой номер.
+    // Контакт обязан принадлежать тому же Telegram-аккаунту, под которым идёт вход.
+    let verifiedPhone = null;
+    if (contactResponse) {
+      const contact = validateTelegramContact(contactResponse);
+      if (contact && authUser.telegram_id && String(contact.user_id) === String(authUser.telegram_id)) {
+        verifiedPhone = contact.phone_number;
+      } else {
+        console.warn('[register] contact отклонён: подпись невалидна или user_id не совпал');
+      }
+    }
+
+    const effectivePhone = verifiedPhone || phone;
+    const phoneNormalized = normalizePhone(effectivePhone);
     if (!phoneNormalized || phoneNormalized.length < 10) {
       return res.status(400).json({ error: 'Некорректный телефон' });
     }
@@ -1826,6 +2125,14 @@ app.post('/api/register', async (req, res) => {
       const approvedMatch = samePhoneRes.rows.find(row => row.approval_status === 'approved' && row.is_registered);
       const pendingMatch = samePhoneRes.rows.find(row => row.approval_status === 'pending');
       const alreadyApproved = current.approval_status === 'approved' || (current.is_registered === true && current.approval_status !== 'rejected');
+
+      // Одобренный пользователь меняет телефон на номер другого одобренного аккаунта.
+      // Раньше это молча создавало задвоение, теперь бы упёрлось в idx_users_phone_approved —
+      // отвечаем понятной ошибкой до записи, ничего не меняя.
+      if (alreadyApproved && approvedMatch) {
+        throw { status: 400, msg: 'Этот номер уже закреплён за другим аккаунтом Клуба' };
+      }
+
       const updated = await client.query(`
         UPDATE users
         SET first_name = $1,
@@ -1838,7 +2145,9 @@ app.post('/api/register', async (req, res) => {
             is_registered = CASE WHEN $7::boolean THEN TRUE ELSE is_registered END,
             consent_pd = TRUE,
             consent_pd_at = NOW(),
-            platform = $8
+            platform = $8,
+            phone_verified_at = CASE WHEN $10::boolean THEN NOW() ELSE NULL END,
+            phone_verified_source = CASE WHEN $10::boolean THEN 'telegram_contact' ELSE NULL END
         WHERE id = $9
         RETURNING *
       `, [
@@ -1846,17 +2155,19 @@ app.post('/api/register', async (req, res) => {
         alreadyApproved ? (current.last_name || lastName) : lastName,
         alreadyApproved ? (current.company_type || companyType || 'agency') : (companyType || 'agency'),
         alreadyApproved ? (current.company || company) : company,
-        phone,
+        effectivePhone,
         phoneNormalized,
         alreadyApproved,
         authUser._platform || current.platform || 'telegram',
         current.id,
+        !!verifiedPhone,
       ]);
 
       return {
         user: updated.rows[0],
         linked: false,
         alreadyApproved,
+        phoneVerified: !!verifiedPhone,
         needsAdminLinkApproval: !alreadyApproved && !!approvedMatch,
         duplicatePending: !alreadyApproved && !!pendingMatch,
       };
@@ -1866,9 +2177,14 @@ app.post('/api/register', async (req, res) => {
     const platform = authUser._platform || 'telegram';
     const typeLabel = companyType === 'ip' ? 'ИП' : 'Агентство';
     const platformLabel = platform === 'max' ? '🟣 MAX' : '✈️ Telegram';
+    // Админу важно видеть, подтверждён ли номер самим мессенджером или введён руками —
+    // от этого зависит, насколько внимательно проверять заявку на привязку.
+    const phoneLabel = registrationResult.phoneVerified
+      ? `${effectivePhone} ✅ подтверждён Telegram`
+      : `${effectivePhone} ⚠️ введён вручную`;
     if (registrationResult.alreadyApproved) {
       notifyAdmin(
-        `ℹ️ <b>Пользователь обновил профиль</b>\n\n👤 ${registrationResult.user.first_name || firstName} ${registrationResult.user.last_name || lastName || ''}\n🏢 ${registrationResult.user.company || company}\n📞 ${phone}\n📲 Вход: ${platformLabel}`
+        `ℹ️ <b>Пользователь обновил профиль</b>\n\n👤 ${registrationResult.user.first_name || firstName} ${registrationResult.user.last_name || lastName || ''}\n🏢 ${registrationResult.user.company || company}\n📞 ${phoneLabel}\n📲 Вход: ${platformLabel}`
       );
     } else {
       const requestLabel = registrationResult.needsAdminLinkApproval
@@ -1876,7 +2192,7 @@ app.post('/api/register', async (req, res) => {
         : registrationResult.duplicatePending
           ? '⚠️ <b>Повторная заявка с тем же телефоном</b>'
           : '📋 <b>Новая заявка на вход!</b>';
-      const text = `${requestLabel}\n\n👤 ${firstName} ${lastName}\n🏢 ${typeLabel}: ${company}\n📞 ${phone}\n📲 ${platformLabel}`;
+      const text = `${requestLabel}\n\n👤 ${firstName} ${lastName}\n🏢 ${typeLabel}: ${company}\n📞 ${phoneLabel}\n📲 ${platformLabel}`;
       const keyboard = [[
         { text: '✅ Одобрить', callback_data: `approve_${userId}` },
         { text: '❌ Отклонить', callback_data: `reject_${userId}` }
@@ -1900,12 +2216,130 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
+// =============================================
+// ПРИВЯЗКА ВТОРОГО МЕССЕНДЖЕРА ПО ОДНОРАЗОВОМУ КОДУ
+// =============================================
+// Доказательство здесь — владение обеими сессиями одновременно, а не совпадение
+// телефона. Поэтому админ в этом сценарии не нужен: код виден только тому, кто
+// уже вошёл в одобренный аккаунт.
+const LINK_CODE_TTL_MINUTES = 10;
+
+function hashLinkCode(code) {
+  return crypto.createHash('sha256').update(String(code)).digest('hex');
+}
+
+function platformOf(user) {
+  return user.platform || (user.telegram_id ? 'telegram' : user.max_id ? 'max' : null);
+}
+
+// Выдать код. Доступно только одобренному пользователю.
+app.post('/api/link/code', rateLimit(900000, 20), async (req, res) => {
+  try {
+    const authUser = await resolveDbUser(req.body.initData);
+    if (!authUser) return res.status(401).json({ error: 'Invalid signature' });
+    if (authUser.approval_status !== 'approved' || !authUser.is_registered) {
+      return res.status(403).json({ error: 'Привязка доступна только после одобрения заявки' });
+    }
+
+    // Код шестизначный: его придётся руками перенести в другой мессенджер.
+    // Короткий срок жизни и одноразовость важнее длины.
+    const code = String(crypto.randomInt(100000, 1000000));
+    const expiresAt = new Date(Date.now() + LINK_CODE_TTL_MINUTES * 60000);
+
+    await withTransaction(async (client) => {
+      // Прошлые невыданные коды этого пользователя гасим — активным остаётся один.
+      await client.query(
+        `UPDATE account_link_codes SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL`,
+        [authUser.id]
+      );
+      await client.query(
+        `INSERT INTO account_link_codes (user_id, code_hash, expires_at) VALUES ($1, $2, $3)`,
+        [authUser.id, hashLinkCode(code), expiresAt]
+      );
+    });
+
+    const current = platformOf(authUser);
+    res.json({
+      code,
+      expiresAt: expiresAt.toISOString(),
+      ttlMinutes: LINK_CODE_TTL_MINUTES,
+      currentPlatform: current,
+      targetPlatform: current === 'max' ? 'telegram' : 'max',
+    });
+  } catch (e) {
+    console.error('Link code error:', e);
+    res.status(500).json({ error: 'Не удалось создать код' });
+  }
+});
+
+// Погасить код из второго мессенджера и слить аккаунты.
+app.post('/api/link/redeem', rateLimit(900000, 20), async (req, res) => {
+  const { initData, code } = req.body;
+  try {
+    const authUser = await resolveDbUser(initData);
+    if (!authUser) return res.status(401).json({ error: 'Invalid signature' });
+    const normalizedCode = String(code || '').replace(/\D/g, '');
+    if (normalizedCode.length !== 6) return res.status(400).json({ error: 'Код состоит из 6 цифр' });
+
+    const result = await withTransaction(async (client) => {
+      const codeRes = await client.query(`
+        SELECT * FROM account_link_codes
+        WHERE code_hash = $1 AND used_at IS NULL AND expires_at > NOW()
+        FOR UPDATE
+      `, [hashLinkCode(normalizedCode)]);
+      if (codeRes.rows.length === 0) throw { status: 400, msg: 'Код неверный или истёк' };
+      const linkCode = codeRes.rows[0];
+
+      if (Number(linkCode.user_id) === Number(authUser.id)) {
+        throw { status: 400, msg: 'Это тот же аккаунт — код нужно вводить во втором мессенджере' };
+      }
+
+      const targetRes = await client.query('SELECT * FROM users WHERE id = $1 FOR UPDATE', [linkCode.user_id]);
+      if (targetRes.rows.length === 0) throw { status: 400, msg: 'Аккаунт не найден' };
+      const target = targetRes.rows[0];
+
+      const sourceRes = await client.query('SELECT * FROM users WHERE id = $1 FOR UPDATE', [authUser.id]);
+      if (sourceRes.rows.length === 0) throw { status: 401, msg: 'Invalid signature' };
+      const source = sourceRes.rows[0];
+
+      // К аккаунту уже привязан другой ID этого же мессенджера — молча перетирать нельзя.
+      const conflict = getIdentityMergeConflict(target, source);
+      if (conflict) {
+        throw {
+          status: 409,
+          msg: conflict === 'telegram'
+            ? 'К этому аккаунту уже привязан другой Telegram'
+            : 'К этому аккаунту уже привязан другой MAX',
+        };
+      }
+
+      const linkedUser = await mergeUserIdentity(client, target, source);
+      await client.query(
+        `UPDATE account_link_codes SET used_at = NOW(), used_by_user_id = $1 WHERE id = $2`,
+        [source.id, linkCode.id]
+      );
+      return linkedUser;
+    });
+
+    // Заявка, которую пользователь мог подать до того, как узнал про код,
+    // закрывается вместе со слиянием: mergeUserIdentity помечает строку 'linked',
+    // и она уходит из списка админа — «призрачных» заявок не остаётся.
+    notifyUser(result, '🔗 <b>Готово!</b>\n\nВторой мессенджер привязан к вашему аккаунту Клуба Партнёров.');
+    res.json({ success: true, user: result });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.msg });
+    console.error('Link redeem error:', e);
+    res.status(500).json({ error: 'Не удалось привязать аккаунт' });
+  }
+});
+
 // Список заявок (админ) — ЗАЩИЩЁН
 app.post('/api/applications', async (req, res) => {
   try {
     if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
     const result = await pool.query(
-      `SELECT id, telegram_id, max_id, platform, first_name, last_name, company_type, company, phone, created_at
+      `SELECT id, telegram_id, max_id, platform, first_name, last_name, company_type, company, phone,
+              phone_verified_at, created_at
        FROM users WHERE approval_status = 'pending' ORDER BY created_at DESC`
     );
     res.json(result.rows);
@@ -3148,8 +3582,18 @@ app.post('/api/bookings', async (req, res) => {
     if (!user) return res.status(401).json({ error: 'Invalid signature' });
     if (!user.is_registered) return res.status(400).json({ error: 'Сначала зарегистрируйтесь' });
 
+    // Освежаем фид перед бронью, но не делаем его доступность условием работы.
+    // Если фид застройщика лежит — раньше риелтор вообще не мог забронировать;
+    // теперь бронируем по данным из базы. От двойной брони защищает не фид,
+    // а блокировка строки и уникальный индекс ниже.
     const freshFeed = await refreshFeedBeforeBooking(unitId, projectId);
-    if (!freshFeed.ok) return res.status(freshFeed.status || 503).json({ error: freshFeed.msg || 'Не удалось обновить фид' });
+    if (!freshFeed.ok && freshFeed.status === 404) {
+      return res.status(404).json({ error: freshFeed.msg || 'Квартира не найдена' });
+    }
+    const feedStale = !freshFeed.ok;
+    if (feedStale) {
+      console.warn(`⚠️ Бронирование по неактуальному фиду: unit=${unitId}, причина: ${freshFeed.msg}`);
+    }
 
     const result = await withTransaction(async (client) => {
       // Блокируем строку квартиры
@@ -3166,7 +3610,7 @@ app.post('/api/bookings', async (req, res) => {
         [user.id, unitId, unit.project_id || projectId, user.phone, user.first_name, user.company, BOOKING_HOLD_HOURS]
       );
       await client.query("UPDATE units SET status = 'BOOKED' WHERE id = $1", [unitId]);
-      return { success: true, bookingId: bookingRes.rows[0].id, expiresAt: bookingRes.rows[0].expires_at };
+      return { success: true, bookingId: bookingRes.rows[0].id, expiresAt: bookingRes.rows[0].expires_at, feedStale };
     });
     // Автопроверка миссий (асинхронно, не блокирует ответ)
     checkMissions(user.id, 'booking').then(rewards => {
@@ -3208,12 +3652,26 @@ app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, re
         unitNumber: unit.number, unitFloor: unit.floor, unitPrice: unit.price, projectId: booking.project_id }
     );
 
+    let renewedExpiresAt = null;
     await withTransaction(async (client) => {
-      await client.query(
-        `UPDATE bookings SET passport_sent = TRUE, passport_sent_at = NOW(), buyer_name = $1, buyer_phone = $2, stage = 'PASSPORT_SENT', consent_transfer = $3, consent_transfer_at = CASE WHEN $3 THEN NOW() ELSE NULL END WHERE id = $4`,
-        [buyerName, buyerPhone, consentTransfer === 'true' || consentTransfer === true, req.params.id]
+      const updatedRes = await client.query(
+        `UPDATE bookings
+         SET passport_sent = TRUE, passport_sent_at = NOW(), buyer_name = $1, buyer_phone = $2,
+             stage = 'PASSPORT_SENT',
+             consent_transfer = $3,
+             consent_transfer_at = CASE WHEN $3 THEN NOW() ELSE NULL END,
+             -- Срок брони отмеряет ПРОСТОЙ, а не возраст сделки: реальный шаг
+             -- продлевает его на полный срок заново, а напоминания включаются
+             -- по новой, иначе они уже «израсходованы» на прошлое окно.
+             expires_at = NOW() + ($5::int * INTERVAL '1 hour'),
+             reminder_12h_sent = FALSE,
+             reminder_6h_sent = FALSE
+         WHERE id = $4
+         RETURNING expires_at`,
+        [buyerName, buyerPhone, consentTransfer === 'true' || consentTransfer === true, req.params.id, BOOKING_HOLD_HOURS]
       );
       await client.query(`UPDATE units SET status = 'BOOKED' WHERE id = $1`, [booking.unit_id]);
+      renewedExpiresAt = updatedRes.rows[0]?.expires_at || null;
     });
 
     // AmoCRM: создаём лид при загрузке паспорта (когда есть все данные покупателя)
@@ -3237,7 +3695,7 @@ app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, re
       }
     }).catch(e => console.error('AmoCRM error:', e));
 
-    res.json({ success: true, emailSent, stage: 'PASSPORT_SENT' });
+    res.json({ success: true, emailSent, stage: 'PASSPORT_SENT', expiresAt: renewedExpiresAt });
   } catch (e) {
     console.error('Passport upload error:', e);
     res.status(500).json({ error: 'Server error' });
@@ -3270,7 +3728,15 @@ app.post('/api/bookings/:id/documents', upload.array('documents', 10), async (re
         unitNumber: unit.number, unitFloor: unit.floor, unitPrice: unit.price, projectId: booking.project_id }
     );
 
-    await pool.query(`UPDATE bookings SET docs_sent = TRUE, docs_sent_at = NOW(), stage = 'DOCS_SENT' WHERE id = $1`, [req.params.id]);
+    // Документы отправлены — сделка сдвинулась, отсчёт простоя начинается заново.
+    await pool.query(`
+      UPDATE bookings
+      SET docs_sent = TRUE, docs_sent_at = NOW(), stage = 'DOCS_SENT',
+          expires_at = NOW() + ($2::int * INTERVAL '1 hour'),
+          reminder_12h_sent = FALSE,
+          reminder_6h_sent = FALSE
+      WHERE id = $1
+    `, [req.params.id, BOOKING_HOLD_HOURS]);
 
     const userFull = await pool.query('SELECT * FROM users WHERE id = $1', [booking.user_id]);
     const freshBooking = await pool.query('SELECT * FROM bookings WHERE id = $1', [booking.id]);
@@ -3375,7 +3841,11 @@ app.post('/api/bookings/all', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
-// Снять бронь (только админ)
+// Снять бронь.
+// Админ — любую. Риелтор — только свою и только пока она на стадии INIT, то есть
+// паспорт ещё не ушёл застройщику. Это выход из ситуации, когда бронь создалась,
+// а отправка паспорта сорвалась: раньше квартира висела заблокированной 72 часа,
+// и распутать это мог только админ.
 app.post('/api/bookings/cancel', async (req, res) => {
   try {
     const { initData, unitId } = req.body;
@@ -3384,19 +3854,55 @@ app.post('/api/bookings/cancel', async (req, res) => {
     const user = await resolveDbUser(initData);
     if (!user) return res.status(401).json({ error: 'Invalid signature' });
 
-    // Только админ может снимать бронь
-    if (!user.is_admin && !user.can_manage_bookings) {
-      return res.status(403).json({ error: 'Недостаточно прав для снятия брони' });
-    }
+    const isManager = !!(user.is_admin || user.can_manage_bookings);
 
-    await withTransaction(async (client) => {
-      await client.query("UPDATE bookings SET stage = 'CANCELLED' WHERE unit_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'", [unitId]);
-      await client.query("UPDATE units SET status = 'FREE' WHERE id = $1", [unitId]);
+    const outcome = await withTransaction(async (client) => {
+      const activeRes = await client.query(
+        "SELECT * FROM bookings WHERE unit_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED' FOR UPDATE",
+        [unitId]
+      );
+      if (activeRes.rows.length === 0) throw { status: 404, msg: 'Активной брони на эту квартиру нет' };
+
+      if (!isManager) {
+        const own = activeRes.rows.filter(b => Number(b.user_id) === Number(user.id));
+        if (own.length === 0) throw { status: 403, msg: 'Это не ваша бронь' };
+        // Документы уже отправлены — отменить может только админ.
+        if (own.some(b => (b.stage || 'INIT') !== 'INIT' || b.passport_sent)) {
+          throw { status: 403, msg: 'Паспорт уже отправлен — снять бронь может только администратор' };
+        }
+        if (own.length !== activeRes.rows.length) {
+          throw { status: 403, msg: 'На квартире есть чужая бронь — обратитесь к администратору' };
+        }
+      }
+
+      const ids = activeRes.rows.map(b => b.id);
+      await client.query(
+        `UPDATE bookings SET stage = 'CANCELLED', cancel_reason = $2 WHERE id = ANY($1::int[])`,
+        [ids, isManager ? 'cancelled_by_admin' : 'cancelled_by_agent']
+      );
+      // Освобождаем квартиру только если других активных броней не осталось.
+      await client.query(`
+        UPDATE units u SET status = 'FREE', updated_at = NOW()
+        WHERE u.id = $1
+          AND NOT EXISTS (
+            SELECT 1 FROM bookings b
+            WHERE b.unit_id = u.id AND COALESCE(b.stage, 'INIT') != 'CANCELLED'
+          )
+      `, [unitId]);
+      return { ids, byAgent: !isManager };
     });
 
-    console.log(`🔓 Бронь снята: unit=${unitId}, by user=${user.id} (${user.is_admin ? 'admin' : 'owner'})`);
+    console.log(`🔓 Бронь снята: unit=${unitId}, bookings=${outcome.ids.join(',')}, by user=${user.id} (${isManager ? 'admin' : 'owner'})`);
+    if (outcome.byAgent) {
+      notifyAdmin(`🔓 Риелтор сам снял свою бронь до отправки паспорта\n\nКвартира: ${unitId}\nРиелтор: ${user.first_name || user.id}`)
+        .catch(() => {});
+    }
     res.json({ success: true });
-  } catch (e) { console.error('Cancel booking error:', e); res.status(500).json({ error: 'Server error' }); }
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.msg });
+    console.error('Cancel booking error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // =============================================

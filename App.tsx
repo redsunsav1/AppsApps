@@ -47,6 +47,13 @@ const App: React.FC = () => {
   const [editingItem, setEditingItem] = useState<any>(null);
   const [regName, setRegName] = useState('');
   const [regPhone, setRegPhone] = useState('');
+  // Подписанный Telegram ответ requestContact. Если он есть — сервер берёт номер
+  // из него, а не из поля ввода. Пустая строка = номер вводится вручную.
+  const [regContactResponse, setRegContactResponse] = useState('');
+  const [isRequestingContact, setIsRequestingContact] = useState(false);
+  // Ввод кода привязки: путь для тех, у кого аккаунт уже есть в другом мессенджере
+  const [linkCodeInput, setLinkCodeInput] = useState('');
+  const [isRedeemingCode, setIsRedeemingCode] = useState(false);
   const [regCompany, setRegCompany] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [regLastName, setRegLastName] = useState('');
@@ -379,6 +386,55 @@ const App: React.FC = () => {
     return () => { cancelled = true; };
   }, []);
 
+  // Просим Telegram отдать номер телефона самого пользователя.
+  // Telegram возвращает подписанную строку — сервер проверит подпись и то,
+  // что контакт принадлежит текущему аккаунту. Опечатки и чужие номера исключены.
+  const handleRequestContact = () => {
+    setIsRequestingContact(true);
+    try {
+      WebApp.requestContact((granted: boolean, response?: any) => {
+        setIsRequestingContact(false);
+        if (!granted || !response || response.status !== 'sent' || !response.response) {
+          showToast('Номер не подтверждён — можно ввести вручную', 'error');
+          return;
+        }
+        setRegContactResponse(response.response);
+        const shared = response.responseUnsafe?.contact?.phone_number;
+        if (shared) setRegPhone(shared.startsWith('+') ? shared : `+${shared}`);
+        showToast('Номер подтверждён Telegram', 'success');
+      });
+    } catch (e) {
+      // Старый клиент Telegram (метод с версии 6.9) или вход не из мессенджера
+      setIsRequestingContact(false);
+      showToast('Ваш Telegram не поддерживает это — введите номер вручную', 'error');
+    }
+  };
+
+  // Погашение кода из первого мессенджера. Успех сразу пускает в аккаунт —
+  // одобрение админа здесь не нужно, доказательством служит владение обеими сессиями.
+  const handleRedeemLinkCode = () => {
+    const code = linkCodeInput.replace(/\D/g, '');
+    if (code.length !== 6) return showToast('Код состоит из 6 цифр', 'error');
+    setIsRedeemingCode(true);
+    fetch('/api/link/redeem', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: getAuthData(), code }),
+    })
+      .then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Не удалось привязать аккаунт');
+        return data;
+      })
+      .then(data => {
+        setLinkCodeInput('');
+        if (data.user) applyAuthUser(data.user);
+        showToast('Аккаунты связаны', 'success');
+      })
+      .catch(err => showToast(err.message, 'error'))
+      .finally(() => setIsRedeemingCode(false));
+  };
+
   const handleRegistration = () => {
     if(!regPhone || !regCompany || !regName || !consentPd) return;
     setIsSubmitting(true);
@@ -393,6 +449,7 @@ const App: React.FC = () => {
         company: regCompany,
         phone: regPhone,
         consentPd: true,
+        contactResponse: regContactResponse || undefined,
       }),
     })
     .then(res => res.json())
@@ -541,6 +598,35 @@ const App: React.FC = () => {
     );
   }
 
+  // Блок ввода кода — показываем и в анкете, и на экране ожидания.
+  // Второй случай важен: человек мог подать заявку, а потом узнать про код;
+  // после успешной привязки его «висящая» заявка закрывается сама.
+  const linkCodeBlock = (
+    <div className="bg-white p-4 rounded-2xl border border-brand-beige w-full mt-4 text-left">
+      <p className="text-xs font-bold uppercase text-gray-500 mb-1">Уже в клубе?</p>
+      <p className="text-[11px] text-gray-500 mb-3">
+        Если аккаунт уже есть в другом мессенджере — возьмите код в профиле там и введите здесь. Заявка не понадобится.
+      </p>
+      <div className="flex gap-2">
+        <input
+          type="tel"
+          inputMode="numeric"
+          value={linkCodeInput}
+          onChange={e => setLinkCodeInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+          placeholder="000000"
+          className="flex-1 p-3 bg-brand-light rounded-xl border-none tracking-[0.2em] text-center font-bold focus:ring-2 focus:ring-brand-gold outline-none"
+        />
+        <button
+          onClick={handleRedeemLinkCode}
+          disabled={isRedeemingCode || linkCodeInput.length !== 6}
+          className="px-4 bg-brand-black text-white rounded-xl font-bold text-sm active:scale-95 transition-transform disabled:opacity-40"
+        >
+          {isRedeemingCode ? '...' : 'Связать'}
+        </button>
+      </div>
+    </div>
+  );
+
   // --- WAIT-LIST: Ожидание одобрения ---
   if (approvalStatus === 'pending' || user.approval_status === 'pending') {
     return (
@@ -556,6 +642,7 @@ const App: React.FC = () => {
             <span className="text-sm font-medium text-gray-600">Заявка обрабатывается...</span>
           </div>
         </div>
+        {linkCodeBlock}
       </div>
     );
   }
@@ -602,7 +689,28 @@ const App: React.FC = () => {
             </div>
           </div>
           <div><label className="block text-xs font-bold uppercase text-gray-500 mb-1">Название компании</label><input type="text" value={regCompany} onChange={e => setRegCompany(e.target.value)} placeholder="АН Этажи" className="w-full p-3 bg-brand-light rounded-xl border-none focus:ring-2 focus:ring-brand-gold outline-none"/></div>
-          <div><label className="block text-xs font-bold uppercase text-gray-500 mb-1">Ваш телефон</label><input type="tel" value={regPhone} onChange={e => setRegPhone(e.target.value)} placeholder="+7 (999) 000-00-00" className="w-full p-3 bg-brand-light rounded-xl border-none focus:ring-2 focus:ring-brand-gold outline-none"/></div>
+          <div>
+            <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Ваш телефон</label>
+            <input
+              type="tel"
+              value={regPhone}
+              onChange={e => { setRegPhone(e.target.value); setRegContactResponse(''); }}
+              placeholder="+7 (999) 000-00-00"
+              className="w-full p-3 bg-brand-light rounded-xl border-none focus:ring-2 focus:ring-brand-gold outline-none"
+            />
+            {regContactResponse ? (
+              <p className="mt-2 text-xs font-bold text-green-600">✅ Номер подтверждён Telegram</p>
+            ) : (
+              <button
+                type="button"
+                onClick={handleRequestContact}
+                disabled={isRequestingContact}
+                className="mt-2 w-full py-2 bg-brand-light rounded-xl text-sm font-bold text-brand-black active:scale-95 transition-transform disabled:opacity-50"
+              >
+                {isRequestingContact ? 'Запрашиваем...' : '📱 Подтвердить номер через Telegram'}
+              </button>
+            )}
+          </div>
           <label className="flex items-start gap-3 mt-2 cursor-pointer">
             <input type="checkbox" checked={consentPd} onChange={e => setConsentPd(e.target.checked)} className="mt-1 w-5 h-5 rounded accent-yellow-600 shrink-0" />
             <span className="text-xs text-gray-600 leading-relaxed">
@@ -611,6 +719,7 @@ const App: React.FC = () => {
           </label>
           <button onClick={handleRegistration} disabled={isSubmitting || !regPhone || !regCompany || !regName || !consentPd} className="w-full py-4 bg-brand-black text-white rounded-xl font-bold text-lg mt-4 active:scale-95 transition-transform disabled:opacity-50 disabled:scale-100">{isSubmitting ? 'Отправка...' : 'Подать заявку'}</button>
         </div>
+        {linkCodeBlock}
         {/* Модалка политики конфиденциальности */}
         {showPrivacyPolicy && (
           <div className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setShowPrivacyPolicy(false)}>

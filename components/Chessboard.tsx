@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { getAuthData } from '../utils/auth';
 import { X, ArrowLeft, Loader2, Camera, Building2, Download, Calculator, Lock, Unlock, Clock } from 'lucide-react';
 import { ProjectData, ChessUnit, MortgageProgram } from '../types';
@@ -47,78 +47,108 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
     // Consent for personal data transfer to developer (152-ФЗ)
     const [consentTransfer, setConsentTransfer] = useState(false);
 
-    // Load units when a project is selected
-    useEffect(() => {
-        if (selectedProject) {
+    // Бронь создана, но паспорт не ушёл — можно повторить отправку
+    const [pendingPassportBookingId, setPendingPassportBookingId] = useState<number | null>(null);
+
+    // Ссылка на выбранный проект, чтобы таймер обновления не пересоздавался на каждый рендер
+    const selectedProjectRef = useRef<ProjectData | null>(null);
+
+    // Загрузка шахматки. silent — обновление в фоне, без скелетона и без сброса
+    // уже показанных данных: используется для периодического обновления.
+    const loadUnits = useCallback((opts?: { silent?: boolean }) => {
+        const project = selectedProjectRef.current;
+        if (!project) return;
+        if (!opts?.silent) {
             setLoading(true);
             setUnits([]);
             setMyBookedUnitIds(new Set());
-
-            // Load units
-            const unitsPromise = fetch(`/api/units/${selectedProject.id}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ initData: getAuthData() })
-            })
-                .then(res => res.json());
-
-            // Load my bookings to know which units I booked
-            const myBookingsPromise = fetch('/api/bookings/my', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ initData: getAuthData() })
-            }).then(res => res.json()).catch(() => []);
-
-            Promise.all([unitsPromise, myBookingsPromise])
-                .then(([data, myBookings]) => {
-                    const myBookingByUnit = new Map<string, any>(
-                        (Array.isArray(myBookings) ? myBookings : [])
-                            .filter((b: any) => b.stage !== 'CANCELLED')
-                            .map((b: any) => [b.unit_id, b])
-                    );
-                    const mapped = data.map((u: any) => ({
-                        id: u.id,
-                        number: u.number,
-                        rooms: u.rooms,
-                        area: u.area,
-                        price: u.price,
-                        status: u.status,
-                        floor: u.floor,
-                        layoutImage: u.plan_image_url,
-                        section: u.section || null,
-                        bookingAgentName: u.booking_agent_name ? `${u.booking_agent_name}${u.booking_agent_last_name ? ' ' + u.booking_agent_last_name : ''}` : undefined,
-                        bookingAgentPhone: u.booking_agent_phone || undefined,
-                        bookingAgentCompany: u.booking_agent_company || undefined,
-                        bookingAgentCompanyType: u.booking_agent_company_type || undefined,
-                        bookingBuyerName: u.booking_buyer_name || undefined,
-                        bookingBuyerPhone: u.booking_buyer_phone || undefined,
-                        bookingCreatedAt: u.booking_created_at || myBookingByUnit.get(u.id)?.created_at || undefined,
-                        bookingExpiresAt: u.booking_expires_at || myBookingByUnit.get(u.id)?.expires_at || undefined,
-                        bookingStage: u.booking_stage || myBookingByUnit.get(u.id)?.stage || undefined,
-                    }));
-                    setUnits(mapped);
-                    // Extract unique sections
-                    const secs = [...new Set(mapped.map((u: ChessUnit) => u.section).filter(Boolean))] as string[];
-                    setSections(secs);
-                    setActiveSection(secs.length > 0 ? secs[0] : null);
-
-                    // Собираем unit_id моих активных бронирований
-                    const myIds = new Set<string>(
-                        (Array.isArray(myBookings) ? myBookings : [])
-                            .filter((b: any) => b.stage !== 'CANCELLED')
-                            .map((b: any) => b.unit_id)
-                    );
-                    setMyBookedUnitIds(myIds);
-                })
-                .catch(e => console.error('Error loading units:', e))
-                .finally(() => setLoading(false));
         }
-    }, [selectedProject]);
+
+        // Load units
+        const unitsPromise = fetch(`/api/units/${project.id}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData: getAuthData() })
+        })
+            .then(res => res.json());
+
+        // Load my bookings to know which units I booked
+        const myBookingsPromise = fetch('/api/bookings/my', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData: getAuthData() })
+        }).then(res => res.json()).catch(() => []);
+
+        Promise.all([unitsPromise, myBookingsPromise])
+            .then(([data, myBookings]) => {
+                const myBookingByUnit = new Map<string, any>(
+                    (Array.isArray(myBookings) ? myBookings : [])
+                        .filter((b: any) => b.stage !== 'CANCELLED')
+                        .map((b: any) => [b.unit_id, b])
+                );
+                const mapped = data.map((u: any) => ({
+                    id: u.id,
+                    number: u.number,
+                    rooms: u.rooms,
+                    area: u.area,
+                    price: u.price,
+                    status: u.status,
+                    floor: u.floor,
+                    layoutImage: u.plan_image_url,
+                    section: u.section || null,
+                    bookingAgentName: u.booking_agent_name ? `${u.booking_agent_name}${u.booking_agent_last_name ? ' ' + u.booking_agent_last_name : ''}` : undefined,
+                    bookingAgentPhone: u.booking_agent_phone || undefined,
+                    bookingAgentCompany: u.booking_agent_company || undefined,
+                    bookingAgentCompanyType: u.booking_agent_company_type || undefined,
+                    bookingBuyerName: u.booking_buyer_name || undefined,
+                    bookingBuyerPhone: u.booking_buyer_phone || undefined,
+                    bookingCreatedAt: u.booking_created_at || myBookingByUnit.get(u.id)?.created_at || undefined,
+                    bookingExpiresAt: u.booking_expires_at || myBookingByUnit.get(u.id)?.expires_at || undefined,
+                    bookingStage: u.booking_stage || myBookingByUnit.get(u.id)?.stage || undefined,
+                }));
+                setUnits(mapped);
+                // Extract unique sections
+                const secs = [...new Set(mapped.map((u: ChessUnit) => u.section).filter(Boolean))] as string[];
+                setSections(secs);
+                // При фоновом обновлении не сбрасываем выбранную риелтором секцию
+                setActiveSection(prev => {
+                    if (opts?.silent && prev && secs.includes(prev)) return prev;
+                    return secs.length > 0 ? secs[0] : null;
+                });
+
+                // Собираем unit_id моих активных бронирований
+                const myIds = new Set<string>(
+                    (Array.isArray(myBookings) ? myBookings : [])
+                        .filter((b: any) => b.stage !== 'CANCELLED')
+                        .map((b: any) => b.unit_id)
+                );
+                setMyBookedUnitIds(myIds);
+            })
+            .catch(e => console.error('Error loading units:', e))
+            .finally(() => { if (!opts?.silent) setLoading(false); });
+    }, []);
+
+    useEffect(() => { selectedProjectRef.current = selectedProject; }, [selectedProject]);
+
+    useEffect(() => {
+        if (selectedProject) loadUnits();
+    }, [selectedProject, loadUnits]);
 
     useEffect(() => {
         const timer = window.setInterval(() => setNow(Date.now()), 60000);
         return () => window.clearInterval(timer);
     }, []);
+
+    // Шахматка устаревает: пока риелтор её разглядывает, квартиру может забрать
+    // другой. Раз в минуту тихо подтягиваем статусы — но не поверх открытой формы
+    // бронирования, чтобы не дёргать данные под руками у пользователя.
+    useEffect(() => {
+        if (!selectedProject) return;
+        const timer = window.setInterval(() => {
+            if (!showBookingForm && !bookingLoading) loadUnits({ silent: true });
+        }, 60000);
+        return () => window.clearInterval(timer);
+    }, [selectedProject, showBookingForm, bookingLoading, loadUnits]);
 
     const handleProjectSelect = (p: ProjectData) => {
         setSelectedProject(p);
@@ -131,6 +161,55 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
             const reader = new FileReader();
             reader.onload = (ev) => setPassportPreview(ev.target?.result as string);
             reader.readAsDataURL(file);
+        }
+    };
+
+    // Отправка паспорта по уже созданной брони. Вынесена отдельно, чтобы при
+    // обрыве связи можно было повторить именно этот шаг: бронь к тому моменту
+    // уже существует и квартира держится за риелтором.
+    const sendPassport = async (bookingId: number, expiresAt?: string) => {
+        const formData = new FormData();
+        formData.append('initData', getAuthData());
+        formData.append('buyerName', buyerName);
+        formData.append('buyerPhone', buyerPhone);
+        formData.append('passport', passportFile as File);
+        formData.append('consentTransfer', 'true');
+
+        const res = await fetch(`/api/bookings/${bookingId}/passport`, { method: 'POST', body: formData });
+        const data = await res.json().catch(() => ({}));
+
+        if (data.success) {
+            // Отправка паспорта продлевает срок брони — берём новый из ответа сервера,
+            // иначе на экране остался бы отсчёт от момента создания.
+            const effectiveExpiresAt = data.expiresAt || expiresAt;
+            setPendingPassportBookingId(null);
+            setBookingResult({ ok: true, msg: 'Паспорт отправлен! Квартира забронирована.' });
+            setUnits(prev => prev.map(u =>
+                u.id === bookingUnit!.id ? { ...u, status: 'BOOKED', bookingExpiresAt: effectiveExpiresAt } : u
+            ));
+            setBookingUnit(prev => prev ? { ...prev, status: 'BOOKED', bookingExpiresAt: effectiveExpiresAt } : prev);
+            setShowBookingForm(false);
+            setMyBookedUnitIds(prev => new Set(prev).add(bookingUnit!.id));
+        } else {
+            // Бронь создана, паспорт не ушёл. Квартира уже держится за риелтором —
+            // важно сказать это прямо, иначе он решит, что бронирование не состоялось.
+            setPendingPassportBookingId(bookingId);
+            setBookingResult({
+                ok: false,
+                msg: `${data.error || 'Не удалось отправить паспорт'}. Квартира уже забронирована за вами — повторите отправку.`,
+            });
+        }
+    };
+
+    const handleRetryPassport = async () => {
+        if (!pendingPassportBookingId || !passportFile) return;
+        setBookingLoading(true);
+        try {
+            await sendPassport(pendingPassportBookingId, bookingUnit?.bookingExpiresAt);
+        } catch (e) {
+            setBookingResult({ ok: false, msg: 'Ошибка сети. Квартира за вами — попробуйте ещё раз.' });
+        } finally {
+            setBookingLoading(false);
         }
     };
 
@@ -152,35 +231,14 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
             const data1 = await res1.json();
             if (!data1.success || !data1.bookingId) {
                 setBookingResult({ ok: false, msg: data1.error || 'Ошибка создания бронирования' });
+                // Скорее всего квартиру забрали, пока заполнялась форма — подтянем шахматку,
+                // чтобы риелтор увидел актуальные статусы, а не то, что было при открытии.
+                loadUnits({ silent: true });
                 return;
             }
 
-            // Step 2: Upload passport → unit becomes BOOKED
-            const formData = new FormData();
-            formData.append('initData', getAuthData());
-            formData.append('buyerName', buyerName);
-            formData.append('buyerPhone', buyerPhone);
-            formData.append('passport', passportFile);
-            formData.append('consentTransfer', 'true');
-
-            const res2 = await fetch(`/api/bookings/${data1.bookingId}/passport`, {
-                method: 'POST',
-                body: formData,
-            });
-            const data2 = await res2.json();
-
-            if (data2.success) {
-                setBookingResult({ ok: true, msg: 'Паспорт отправлен! Квартира забронирована.' });
-                setUnits(prev => prev.map(u =>
-                    u.id === bookingUnit.id ? { ...u, status: 'BOOKED', bookingExpiresAt: data1.expiresAt } : u
-                ));
-                setBookingUnit({ ...bookingUnit, status: 'BOOKED', bookingExpiresAt: data1.expiresAt });
-                setShowBookingForm(false);
-                // Добавляем в список моих бронирований
-                setMyBookedUnitIds(prev => new Set(prev).add(bookingUnit.id));
-            } else {
-                setBookingResult({ ok: false, msg: data2.error || 'Ошибка загрузки паспорта' });
-            }
+            // Step 2: паспорт по созданной броне
+            await sendPassport(data1.bookingId, data1.expiresAt);
         } catch (e) {
             setBookingResult({ ok: false, msg: 'Ошибка сети. Попробуйте позже.' });
         } finally {
@@ -203,10 +261,11 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
             const data = await res.json();
             if (data.success) {
                 showToast('Бронирование отменено', 'success');
+                setPendingPassportBookingId(null);
                 setUnits(prev => prev.map(u =>
-                    u.id === bookingUnit.id ? { ...u, status: 'FREE' } : u
+                    u.id === bookingUnit.id ? { ...u, status: 'FREE', bookingExpiresAt: undefined } : u
                 ));
-                setBookingUnit({ ...bookingUnit, status: 'FREE' });
+                setBookingUnit({ ...bookingUnit, status: 'FREE', bookingExpiresAt: undefined });
                 setBookingResult(null);
                 // Убираем из списка моих бронирований
                 setMyBookedUnitIds(prev => {
@@ -526,8 +585,20 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                 </button>
                             )}
 
-                            {/* Cancel Booking - admin only */}
-                            {bookingUnit.status === 'BOOKED' && isAdmin && (
+                            {/* Повтор отправки паспорта: бронь есть, документы не ушли */}
+                            {pendingPassportBookingId && bookingUnit.status === 'BOOKED' && myBookedUnitIds.has(bookingUnit.id) && (
+                                <button
+                                    onClick={handleRetryPassport}
+                                    disabled={bookingLoading || !passportFile}
+                                    className="w-full py-3 bg-brand-black text-brand-gold rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg active:scale-[0.98] transition-transform disabled:opacity-50"
+                                >
+                                    {bookingLoading ? <Loader2 size={16} className="animate-spin" /> : <Camera size={16} />}
+                                    Повторить отправку паспорта
+                                </button>
+                            )}
+
+                            {/* Снять бронь: админ — любую, риелтор — свою, пока паспорт не ушёл */}
+                            {bookingUnit.status === 'BOOKED' && (isAdmin || (myBookedUnitIds.has(bookingUnit.id) && !!pendingPassportBookingId)) && (
                                 <button
                                     onClick={handleCancelBooking}
                                     disabled={cancelLoading}

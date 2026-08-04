@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import BookingChecklist from './BookingChecklist';
 import { UserProfile, DailyQuest, ProjectStat, getRank, Mission } from '../types';
-import { ChevronRight, ChevronDown, CheckCircle2, Phone, Send, MessageCircle, FileText, Camera, Target, Trophy, Key, Layers, Crown, MapPin, Globe, User, Flame, Download, Copy } from 'lucide-react';
+import { ChevronRight, ChevronDown, CheckCircle2, Phone, Send, MessageCircle, FileText, Camera, Target, Trophy, Key, Layers, Crown, MapPin, Globe, User, Flame, Download, Copy, Link2 } from 'lucide-react';
 import { getAuthData } from '../utils/auth';
 
 interface DashboardProps {
@@ -31,6 +31,29 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
   const currentRank = getRank(user.dealsClosed);
 
   const [mySales, setMySales] = useState<{ project: string; count: number }[]>([]);
+
+  // Код привязки второго мессенджера. Показывается только владельцу аккаунта
+  // и живёт 10 минут — этого достаточно, чтобы перенести его в другой мессенджер.
+  const [linkCode, setLinkCode] = useState('');
+  const [linkTargetPlatform, setLinkTargetPlatform] = useState('');
+  const [isLinkCodeLoading, setIsLinkCodeLoading] = useState(false);
+
+  const handleGenerateLinkCode = () => {
+    setIsLinkCodeLoading(true);
+    fetch('/api/link/code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: getAuthData() }),
+    })
+      .then(async r => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || 'Не удалось получить код');
+        setLinkCode(data.code);
+        setLinkTargetPlatform(data.targetPlatform === 'max' ? 'MAX' : 'Telegram');
+      })
+      .catch(err => alert(err.message))
+      .finally(() => setIsLinkCodeLoading(false));
+  };
 
   useEffect(() => {
     fetch('/api/bookings/my', {
@@ -307,6 +330,40 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
           </div>
         </div>
       )}
+
+      {/* Привязка второго мессенджера */}
+      <div className="mt-6 mx-4">
+        <div className="bg-white rounded-2xl p-5 shadow-sm border border-brand-light">
+          <div className="flex items-center gap-3 mb-3">
+            <div className="w-10 h-10 bg-brand-gold/10 rounded-full flex items-center justify-center text-brand-gold">
+              <Link2 size={20} />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-brand-black">Вход через второй мессенджер</h3>
+              <p className="text-[11px] text-brand-grey mt-0.5">Один аккаунт, вход и из Telegram, и из MAX</p>
+            </div>
+          </div>
+          {linkCode ? (
+            <div className="text-center">
+              <div className="text-3xl font-bold tracking-[0.3em] text-brand-black py-3">{linkCode}</div>
+              <p className="text-[11px] text-brand-grey px-2">
+                Откройте наше приложение в {linkTargetPlatform} и введите этот код на первом экране. Код действует 10 минут.
+              </p>
+            </div>
+          ) : (
+            <button
+              onClick={handleGenerateLinkCode}
+              disabled={isLinkCodeLoading}
+              className="w-full py-3 bg-brand-cream rounded-xl border border-brand-beige flex items-center justify-center gap-2 active:scale-[0.98] transition-transform disabled:opacity-50"
+            >
+              <Link2 size={16} className="text-brand-gold" />
+              <span className="text-sm font-bold text-brand-black">
+                {isLinkCodeLoading ? 'Создаём код...' : 'Получить код привязки'}
+              </span>
+            </button>
+          )}
+        </div>
+      </div>
 
       {/* Statistics Section */}
       <div className="mt-10 px-6 pb-6">

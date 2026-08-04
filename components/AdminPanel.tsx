@@ -30,6 +30,7 @@ interface ApplicationItem {
   company: string;
   company_type: string;
   phone: string;
+  phone_verified_at?: string | null;
   approval_status: string;
   created_at: string;
 }
@@ -449,7 +450,15 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
 
   const handleApproveUser = async (userId: number) => {
     try {
-      await fetch(`/api/applications/${userId}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
+      const res = await fetch(`/api/applications/${userId}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
+      // Сервер отвечает 400 при конфликте телефона — заявка остаётся в списке,
+      // и админ должен увидеть причину, а не ложное «одобрено».
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showToast(data.error || 'Не удалось одобрить заявку', 'error');
+        fetchApplications();
+        return;
+      }
       fetchApplications();
       showToast('Заявка одобрена', 'success');
     } catch (e) { showToast('Ошибка', 'error'); }
@@ -776,7 +785,12 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                     <div>
                                         <div className="font-bold text-black text-sm">{app.first_name} {app.last_name}</div>
                                         <div className="text-xs text-gray-500 mt-0.5">{app.company_type === 'ip' ? 'ИП' : 'Агентство'}: {app.company}</div>
-                                        <div className="text-xs text-gray-400 mt-0.5">{app.phone}</div>
+                                        <div className="text-xs text-gray-400 mt-0.5">
+                                            {app.phone}
+                                            {app.phone_verified_at
+                                                ? <span className="ml-1.5 text-green-600 font-bold">✅ подтверждён</span>
+                                                : <span className="ml-1.5 text-amber-600 font-bold">⚠️ введён вручную</span>}
+                                        </div>
                                     </div>
                                 </div>
                                 <div className="flex gap-2 mt-3">

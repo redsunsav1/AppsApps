@@ -2,6 +2,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { ShopItem, CurrencyType } from '../types';
 import { Lock, Trash2 } from 'lucide-react';
 import { getAuthData } from '../utils/auth';
+import { confirmDialog, alertDialog } from '../utils/dialog';
 
 interface MarketplaceProps {
   items?: ShopItem[];
@@ -50,14 +51,14 @@ const Marketplace: React.FC<MarketplaceProps> = ({ items: propItems, silver: sil
     })
     .then(res => res.json())
     .then(data => {
-      if (data.success) alert('Покупка успешна!');
-      else alert(data.error || 'Ошибка покупки');
+      if (data.success) alertDialog('Покупка успешна!');
+      else alertDialog(data.error || 'Ошибка покупки');
     })
-    .catch(() => alert('Ошибка сети'));
+    .catch(() => alertDialog('Ошибка сети'));
   };
 
   const handleDelete = async (productId: string) => {
-    if (!confirm('Удалить товар?')) return;
+    if (!await confirmDialog('Удалить товар?')) return;
     try {
       await fetch(`/api/products/${productId}`, {
         method: 'DELETE',

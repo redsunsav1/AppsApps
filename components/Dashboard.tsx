@@ -3,6 +3,7 @@ import BookingChecklist from './BookingChecklist';
 import { UserProfile, DailyQuest, ProjectStat, getRank, Mission } from '../types';
 import { ChevronRight, ChevronDown, CheckCircle2, Phone, Send, MessageCircle, FileText, Camera, Target, Trophy, Key, Layers, Crown, MapPin, Globe, User, Flame, Download, Copy, Link2 } from 'lucide-react';
 import { getAuthData } from '../utils/auth';
+import { confirmDialog, alertDialog } from '../utils/dialog';
 
 interface DashboardProps {
   user: UserProfile;
@@ -51,7 +52,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
         setLinkCode(data.code);
         setLinkTargetPlatform(data.targetPlatform === 'max' ? 'MAX' : 'Telegram');
       })
-      .catch(err => alert(err.message))
+      .catch(err => alertDialog(err.message))
       .finally(() => setIsLinkCodeLoading(false));
   };
 
@@ -108,7 +109,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 15 * 1024 * 1024) {
-      alert('Фото слишком большое (макс. 15MB)');
+      alertDialog('Фото слишком большое (макс. 15MB)');
       return;
     }
     try {
@@ -121,7 +122,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
       });
     } catch (err) {
       console.error('Avatar upload error:', err);
-      alert('Не удалось обработать фото. Попробуйте другое изображение.');
+      alertDialog('Не удалось обработать фото. Попробуйте другое изображение.');
     }
   };
 
@@ -339,7 +340,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
               onClick={() => {
                 const url = `${window.location.origin}?token=${pwaToken}`;
                 navigator.clipboard.writeText(url).then(() => {
-                  alert('Ссылка скопирована! Откройте её в Safari или Chrome.');
+                  alertDialog('Ссылка скопирована! Откройте её в Safari или Chrome.');
                 }).catch(() => {
                   prompt('Скопируйте ссылку:', url);
                 });

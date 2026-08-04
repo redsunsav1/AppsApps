@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { ConstructionUpdate } from '../types';
 import { Check, FolderOpen, Image as ImageIcon, X, ChevronLeft, ChevronRight, Edit3, Trash2 } from 'lucide-react';
 import { getAuthData } from '../utils/auth';
+import { confirmDialog, alertDialog } from '../utils/dialog';
 
 interface ContentHubProps {
   news?: any[];
@@ -19,7 +20,7 @@ const ContentHub: React.FC<ContentHubProps> = ({ news, updates, isAdmin, onEdit,
   const [selectedNews, setSelectedNews] = useState<ConstructionUpdate | null>(null);
 
   const handleDeleteNews = async (newsId: string) => {
-    if (!confirm('Удалить новость?')) return;
+    if (!await confirmDialog('Удалить новость?')) return;
     try {
       await fetch(`/api/news/${newsId}`, {
         method: 'DELETE',
@@ -126,7 +127,7 @@ const NewsDetailModal: React.FC<{ item: ConstructionUpdate, onClose: () => void,
         if(item.materialsLink) {
             window.open(item.materialsLink, '_blank');
         } else {
-            alert('Ссылка на материалы не указана');
+            alertDialog('Ссылка на материалы не указана');
         }
     };
 

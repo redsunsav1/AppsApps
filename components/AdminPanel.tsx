@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { getAuthData, getAdminPin, saveAdminPin, clearAdminPin } from '../utils/auth';
+import { confirmDialog } from '../utils/dialog';
 import { Newspaper, Building2, Link, ShoppingBag, Zap, Trash2, UserCheck, Users, Calendar, Calculator, Edit3, X, Phone, Send, ChevronRight, Database, ArrowLeft, Clock } from 'lucide-react';
 import { showToast } from '../utils/toast';
 import { getRank } from '../types';
@@ -266,7 +267,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   };
 
   const handleDeleteProject = async (id: string) => {
-    if (!confirm(`Удалить проект "${id}" и все его квартиры?`)) return;
+    if (!await confirmDialog(`Удалить проект "${id}" и все его квартиры?`)) return;
     try {
       await fetch(`/api/projects/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
       showToast('Проект удалён', 'success'); fetchProjects();
@@ -363,7 +364,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   };
 
   const handleDeleteUser = async (userId: number) => {
-    if (!confirm('Удалить пользователя?')) return;
+    if (!await confirmDialog('Удалить пользователя?')) return;
     try {
       await fetch(`/api/admin/users/${userId}`, {
         method: 'DELETE',
@@ -497,7 +498,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   };
 
   const handleDeleteQuest = async (questId: number) => {
-    if (!confirm('Деактивировать квест?')) return;
+    if (!await confirmDialog('Деактивировать квест?')) return;
     try {
       await fetch(`/api/quests/${questId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
       fetchQuests();
@@ -521,7 +522,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   };
 
   const handleRejectUser = async (userId: number) => {
-    if (!confirm('Отклонить заявку?')) return;
+    if (!await confirmDialog('Отклонить заявку?')) return;
     try {
       await fetch(`/api/applications/${userId}/reject`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
       fetchApplications();
@@ -566,7 +567,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   };
 
   const handleDeleteEvent = async (eventId: number) => {
-    if (!confirm('Удалить событие?')) return;
+    if (!await confirmDialog('Удалить событие?')) return;
     try {
       await fetch(`/api/events/${eventId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
       fetchEvents();
@@ -611,7 +612,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   };
 
   const handleDeleteMortgage = async (mpId: number) => {
-    if (!confirm('Удалить программу?')) return;
+    if (!await confirmDialog('Удалить программу?')) return;
     try {
       await fetch(`/api/mortgage-programs/${mpId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
       fetchMortgagePrograms();
@@ -757,7 +758,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                     <div className="flex gap-1 ml-2">
                                         <button onClick={() => handleEditProduct(p)} className="p-2 text-blue-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit3 size={16} /></button>
                                         <button onClick={async () => {
-                                            if (!confirm('Удалить товар?')) return;
+                                            if (!await confirmDialog('Удалить товар?')) return;
                                             await fetch(`/api/products/${p.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
                                             fetchShopProducts();
                                             showToast('Товар удалён', 'info');
@@ -1269,7 +1270,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                         <button
                                             onClick={async (e) => {
                                                 e.stopPropagation();
-                                                if (!confirm('Подтвердить сделку и начислить золотую монету?')) return;
+                                                if (!await confirmDialog('Подтвердить сделку и начислить золотую монету?')) return;
                                                 try {
                                                     const res = await fetch(`/api/bookings/${b.id}/complete`, {
                                                         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1289,7 +1290,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                         <button
                                             onClick={async (e) => {
                                                 e.stopPropagation();
-                                                if (!confirm('Отозвать подтверждение? Золотая монета будет списана.')) return;
+                                                if (!await confirmDialog('Отозвать подтверждение? Золотая монета будет списана.')) return;
                                                 try {
                                                     const res = await fetch(`/api/bookings/${b.id}/revoke`, {
                                                         method: 'POST', headers: { 'Content-Type': 'application/json' },

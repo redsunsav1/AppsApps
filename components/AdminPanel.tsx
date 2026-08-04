@@ -98,6 +98,18 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   // Applications
   const [applications, setApplications] = useState<ApplicationItem[]>([]);
 
+  // Пригласительные ссылки (Telegram + MAX)
+  const [inviteLinks, setInviteLinks] = useState<{
+    telegram: string | null; telegramError?: string | null;
+    max: string | null; maxError?: string | null;
+  } | null>(null);
+
+  const copyInviteLink = (url: string) => {
+    navigator.clipboard.writeText(url)
+      .then(() => showToast('Ссылка скопирована', 'success'))
+      .catch(() => prompt('Скопируйте ссылку:', url));
+  };
+
   // Users
   const [usersList, setUsersList] = useState<any[]>([]);
 
@@ -150,7 +162,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
 
   useEffect(() => {
     if (activeTab === 'quests') fetchQuests();
-    if (activeTab === 'applications') fetchApplications();
+    if (activeTab === 'applications') { fetchApplications(); fetchInviteLinks(); }
     if (activeTab === 'users') fetchUsers();
     if (activeTab === 'events') fetchEvents();
     if (activeTab === 'mortgage') fetchMortgagePrograms();
@@ -270,6 +282,17 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
       .then(res => res.json())
       .then(data => setApplications(Array.isArray(data) ? data : []))
       .catch(e => console.error('Applications fetch error:', e));
+  };
+
+  const fetchInviteLinks = () => {
+    fetch('/api/invite-links', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: getAuthData() }),
+    })
+      .then(res => res.json())
+      .then(data => setInviteLinks(data && !data.error ? data : { telegram: null, max: null, telegramError: data?.error, maxError: data?.error }))
+      .catch(e => console.error('Invite links fetch error:', e));
   };
 
   // PROTECTED: POST with initData
@@ -774,6 +797,44 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
 
         {activeTab === 'applications' && (
             <div className="flex flex-col gap-3 animate-fade-in">
+                {/* Пригласительные ссылки — раздавать риелторам, чтобы приходили и подавали заявки */}
+                <div className="bg-gray-50 rounded-lg p-4">
+                    <h4 className="font-bold text-black text-sm mb-1">Пригласительные ссылки</h4>
+                    <p className="text-[11px] text-gray-500 mb-3">Отправьте риелтору любую из них — он откроет приложение и заполнит заявку.</p>
+                    {inviteLinks ? (
+                        <div className="space-y-2">
+                            {([
+                                { key: 'telegram', label: '✈️ Telegram', url: inviteLinks.telegram, error: inviteLinks.telegramError },
+                                { key: 'max', label: '🟣 MAX', url: inviteLinks.max, error: inviteLinks.maxError },
+                            ]).map(item => (
+                                <div key={item.key}>
+                                    <div className="text-[11px] font-bold text-gray-500 mb-1">{item.label}</div>
+                                    {item.url ? (
+                                        <div className="flex gap-2">
+                                            <input
+                                                readOnly
+                                                value={item.url}
+                                                onFocus={e => e.currentTarget.select()}
+                                                className="flex-1 min-w-0 p-2 bg-white border rounded-lg text-xs text-black"
+                                            />
+                                            <button
+                                                onClick={() => copyInviteLink(item.url as string)}
+                                                className="px-3 bg-black text-white rounded-lg text-xs font-bold shrink-0"
+                                            >
+                                                Копировать
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <p className="text-[11px] text-amber-600">{item.error || 'Ссылка недоступна'}</p>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <p className="text-xs text-gray-400">Загрузка ссылок...</p>
+                    )}
+                </div>
+
                 <h4 className="font-bold text-black text-sm">Заявки на регистрацию</h4>
                 {applications.length === 0 ? (
                     <p className="text-gray-400 text-sm text-center py-8">Нет новых заявок</p>

@@ -134,6 +134,32 @@ function getAppUrl() {
   return process.env.APP_URL || process.env.WEBAPP_URL || process.env.WEBHOOK_URL || 'https://partnerbuild.ru';
 }
 
+// Имя Telegram-бота нужно для пригласительной ссылки. Берём его через getMe,
+// чтобы не заводить ещё одну переменную окружения и не рассинхронизировать её
+// с реальным ботом. Результат кэшируем — он не меняется.
+let cachedTelegramBotUsername = null;
+async function getTelegramBotUsername() {
+  if (cachedTelegramBotUsername) return cachedTelegramBotUsername;
+  if (process.env.TELEGRAM_BOT_USERNAME) {
+    cachedTelegramBotUsername = process.env.TELEGRAM_BOT_USERNAME.replace('@', '');
+    return cachedTelegramBotUsername;
+  }
+  const token = process.env.BOT_TOKEN;
+  if (!token) return null;
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token}/getMe`, { signal: AbortSignal.timeout(5000) });
+    const data = await r.json();
+    if (data?.ok && data.result?.username) {
+      cachedTelegramBotUsername = data.result.username;
+      return cachedTelegramBotUsername;
+    }
+    console.warn('[invite] getMe без username:', JSON.stringify(data).slice(0, 200));
+  } catch (e) {
+    console.warn('[invite] getMe не ответил:', e.message);
+  }
+  return null;
+}
+
 function getAppOpenKeyboard() {
   return [[{ text: 'Открыть приложение', url: getAppUrl() }]];
 }
@@ -677,7 +703,13 @@ async function registerWebhook() {
   try {
     const resp = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: `${WEBHOOK_URL}/api/telegram-webhook` })
+      // allowed_updates задаём явно: если его не передать, Telegram оставит
+      // прежнюю настройку, и при старом ограничении на callback_query
+      // сообщения /start от новых пользователей просто не дойдут.
+      body: JSON.stringify({
+        url: `${WEBHOOK_URL}/api/telegram-webhook`,
+        allowed_updates: ['message', 'callback_query'],
+      })
     });
     const result = await resp.json();
     console.log('🔗 Webhook:', result.ok ? 'registered' : result.description);
@@ -2217,6 +2249,28 @@ app.post('/api/register', async (req, res) => {
 });
 
 // =============================================
+// ПРИГЛАСИТЕЛЬНЫЕ ССЫЛКИ
+// =============================================
+// Две постоянные ссылки: одна ведёт в Telegram-бота, вторая — в MAX.
+// По ним человек попадает в мини-приложение и заполняет заявку на вступление.
+app.post('/api/invite-links', async (req, res) => {
+  try {
+    if (!await isAdmin(req.body.initData)) return res.status(403).json({ error: 'Forbidden' });
+
+    const tgUsername = await getTelegramBotUsername();
+    res.json({
+      telegram: tgUsername ? `https://t.me/${tgUsername}` : null,
+      telegramError: tgUsername ? null : 'Не удалось определить имя Telegram-бота. Проверьте BOT_TOKEN или задайте TELEGRAM_BOT_USERNAME.',
+      max: isMaxEnabled() ? getMaxMiniAppLink() : null,
+      maxError: isMaxEnabled() ? null : 'MAX отключён (MAX_ENABLED не равен true).',
+    });
+  } catch (e) {
+    console.error('Invite links error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// =============================================
 // ПРИВЯЗКА ВТОРОГО МЕССЕНДЖЕРА ПО ОДНОРАЗОВОМУ КОДУ
 // =============================================
 // Доказательство здесь — владение обеими сессиями одновременно, а не совпадение
@@ -2370,8 +2424,40 @@ app.post('/api/applications/:userId/reject', async (req, res) => {
 });
 
 // Telegram webhook для inline-кнопок
+// Приветствие по /start. Раньше Telegram-вебхук обрабатывал только нажатия кнопок,
+// поэтому человек, пришедший по пригласительной ссылке и нажавший «Запустить»,
+// не получал в ответ ничего и не понимал, что делать дальше.
+async function handleTelegramStart(message) {
+  const chatId = message?.chat?.id;
+  if (!chatId) return;
+  const name = message.from?.first_name ? `, ${message.from.first_name}` : '';
+  const text =
+    `👋 <b>Здравствуйте${name}!</b>\n\n` +
+    `Это «Клуб Партнёров» — закрытое приложение для риелторов: шахматки объектов, бронирование квартир и партнёрские бонусы.\n\n` +
+    `Нажмите кнопку ниже, чтобы открыть приложение и заполнить короткую заявку. Мы рассмотрим её и откроем доступ.`;
+
+  // Сначала пробуем кнопку мини-аппа — она открывает приложение прямо внутри
+  // Telegram. Если бот так не настроен, Telegram вернёт ошибку, и мы повторим
+  // обычной ссылкой, чтобы приглашение сработало в любом случае.
+  const viaMiniApp = await notifyUserTelegram(chatId, text, [[
+    { text: '🏠 Открыть приложение', web_app: { url: getAppUrl() } },
+  ]]);
+  if (!viaMiniApp?.ok) {
+    console.warn('[invite] web_app-кнопка не прошла, шлём обычную ссылку:', viaMiniApp?.description || '');
+    await notifyUserTelegram(chatId, text, getAppOpenKeyboard());
+  }
+}
+
 app.post('/api/telegram-webhook', async (req, res) => {
   try {
+    const message = req.body?.message;
+    const messageText = (message?.text || '').trim().toLowerCase();
+    if (messageText === '/start' || messageText === 'start') {
+      res.sendStatus(200);
+      handleTelegramStart(message).catch(e => console.error('Telegram /start error:', e.message));
+      return;
+    }
+
     const callback = req.body?.callback_query;
     if (!callback) return res.sendStatus(200);
     const data = callback.data;

@@ -885,6 +885,14 @@ const initDb = async () => {
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS image_url TEXT;');
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS feed_url TEXT;');
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS feed_synced_at TIMESTAMP;');
+    // Валидаторы фида: позволяют не скачивать и не переразбирать то, что не изменилось
+    await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS feed_etag TEXT;');
+    await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS feed_last_modified TEXT;');
+    await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS feed_hash TEXT;');
+    // Архив: распроданный проект не синхронизируется и не показывается риелторам,
+    // но его сделки и история остаются нетронутыми
+    await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE;');
+    await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS xp_points INT DEFAULT 0;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS deals_closed INT DEFAULT 0;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT;');
@@ -1343,28 +1351,74 @@ async function syncProjectWithXml(projectId, url, options = {}) {
     return existing;
   }
 
-  const task = syncProjectWithXmlUnsafe(projectId, url)
+  const task = syncProjectWithXmlUnsafe(projectId, url, options)
     .finally(() => projectSyncLocks.delete(key));
   projectSyncLocks.set(key, task);
   return task;
 }
 
-async function syncProjectWithXmlUnsafe(projectId, url) {
-  console.log(`🔄 Syncing ${projectId} from ${safeFeedLabel(url)}`);
+// Отметить, что фид проверен: время нужно, чтобы бронирование не дёргало фид
+// на каждый клик (см. FEED_PREBOOKING_TTL_MS), даже когда данные не менялись.
+async function markFeedChecked(projectId) {
+  await pool.query('UPDATE projects SET feed_synced_at = NOW() WHERE id = $1', [projectId])
+    .catch(e => console.warn('feed_synced_at update failed:', e.message));
+}
+
+async function syncProjectWithXmlUnsafe(projectId, url, options = {}) {
+  // force=true — полный пересбор независимо от валидаторов (кнопка «Пересинхронизировать»)
+  const force = options.force === true;
+  console.log(`🔄 Syncing ${projectId} from ${safeFeedLabel(url)}${force ? ' (force)' : ''}`);
+
+  // Валидаторы прошлой загрузки: ETag/Last-Modified — чтобы сервер застройщика
+  // мог ответить «304 не изменилось» вместо двух мегабайт XML; hash — чтобы не
+  // переразбирать и не переписывать 600+ строк, если содержимое то же самое.
+  let cached = {};
+  if (!force) {
+    const c = await pool.query(
+      'SELECT feed_etag, feed_last_modified, feed_hash, (SELECT count(*) FROM units WHERE project_id = $1)::int AS unit_count FROM projects WHERE id = $1',
+      [projectId]
+    ).catch(() => null);
+    cached = c?.rows[0] || {};
+  }
+
   // Без таймаута зависший сервер застройщика держал запрос до системного TCP-таймаута,
   // а вместе с ним — кнопку «Забронировать» у риелтора.
   let response;
   try {
-    response = await fetch(url, { signal: AbortSignal.timeout(FEED_FETCH_TIMEOUT_MS) });
+    const headers = {};
+    // Условные заголовки шлём только если в базе уже есть данные: иначе «не изменилось»
+    // оставило бы шахматку пустой навсегда.
+    if (!force && cached.unit_count > 0) {
+      if (cached.feed_etag) headers['If-None-Match'] = cached.feed_etag;
+      if (cached.feed_last_modified) headers['If-Modified-Since'] = cached.feed_last_modified;
+    }
+    response = await fetch(url, { headers, signal: AbortSignal.timeout(FEED_FETCH_TIMEOUT_MS) });
   } catch (e) {
     if (e.name === 'TimeoutError' || e.name === 'AbortError') {
       throw new Error(`Feed timeout after ${FEED_FETCH_TIMEOUT_MS}ms`);
     }
     throw e;
   }
+
+  // 304: застройщик подтвердил, что фид не менялся — не скачали ни байта полезной нагрузки
+  if (response.status === 304) {
+    await markFeedChecked(projectId);
+    console.log(`⏭️ ${projectId}: фид не изменился (304), синк пропущен`);
+    return { skipped: true, reason: 'not_modified', savedCount: cached.unit_count || 0 };
+  }
   if (!response.ok) throw new Error(`Feed HTTP ${response.status}`);
   const xmlText = await response.text();
   const xmlSize = xmlText.length;
+
+  // Фид скачан, но содержимое идентично прошлому — самый частый случай при
+  // частой синхронизации. Пропускаем разбор XML и перезапись таблицы квартир:
+  // именно это раньше съедало процессор и память каждые несколько минут.
+  const feedHash = crypto.createHash('sha256').update(xmlText).digest('hex');
+  if (!force && cached.feed_hash === feedHash && cached.unit_count > 0) {
+    await markFeedChecked(projectId);
+    console.log(`⏭️ ${projectId}: содержимое фида не изменилось (hash), разбор пропущен (${(xmlSize / 1024).toFixed(0)} КБ)`);
+    return { skipped: true, reason: 'unchanged', savedCount: cached.unit_count };
+  }
   const parser = new xml2js.Parser({ explicitArray: true, trim: true });
   const result = await parser.parseStringPromise(xmlText);
 
@@ -1636,7 +1690,17 @@ async function syncProjectWithXmlUnsafe(projectId, url) {
          )`,
       [projectId, soldWhileBooked]
     );
-    await client.query('UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3, feed_synced_at = NOW() WHERE id = $4', [maxFloor, maxUnitsOnFloor, url, projectId]);
+    // Вместе с данными сохраняем валидаторы: следующий цикл сможет обойтись
+    // ответом «304» или сравнением хеша вместо полного пересбора.
+    await client.query(
+      `UPDATE projects SET floors = $1, units_per_floor = $2, feed_url = $3, feed_synced_at = NOW(),
+              feed_etag = $5, feed_last_modified = $6, feed_hash = $7
+       WHERE id = $4`,
+      [maxFloor, maxUnitsOnFloor, url, projectId,
+       response.headers.get('etag') || null,
+       response.headers.get('last-modified') || null,
+       feedHash]
+    );
 
     // Подсчёт сохранённых статусов из БД (после парсинга)
     const savedRes = await client.query('SELECT status, count(*) as c FROM units WHERE project_id = $1 GROUP BY status', [projectId]);
@@ -1842,9 +1906,13 @@ const feedFailureStreaks = new Map();
 const FEED_ALERT_AFTER_FAILURES = Math.max(1, parseInt(process.env.FEED_ALERT_AFTER_FAILURES || '3', 10) || 3);
 let lastXmlSyncAt = null;
 
-cron.schedule('*/5 * * * *', async () => {
+// Раз в 15 минут вместо каждых 5: шахматка от этого не устаревает — перед
+// бронированием фид обновляется принудительно, а это единственный момент,
+// где расхождение критично. Настраивается через FEED_SYNC_CRON.
+const FEED_SYNC_CRON = process.env.FEED_SYNC_CRON || '*/15 * * * *';
+cron.schedule(FEED_SYNC_CRON, async () => {
   try {
-    const res = await pool.query('SELECT id, feed_url FROM projects WHERE feed_url IS NOT NULL');
+    const res = await pool.query('SELECT id, feed_url FROM projects WHERE feed_url IS NOT NULL AND COALESCE(is_archived, FALSE) = FALSE');
     for (const project of res.rows) {
       if (!project.feed_url) continue;
       try {
@@ -2918,9 +2986,33 @@ app.post('/api/admin/user-orders', async (req, res) => {
 // =============================================
 app.get('/api/projects', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM projects');
+    // Риелтор не должен видеть распроданный проект в списке; админу он нужен —
+    // чтобы вернуть из архива или посмотреть историю.
+    const forAdmin = await isAdminRequest(req);
+    const result = forAdmin
+      ? await pool.query('SELECT * FROM projects ORDER BY COALESCE(is_archived, FALSE), name')
+      : await pool.query('SELECT * FROM projects WHERE COALESCE(is_archived, FALSE) = FALSE ORDER BY name');
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// Архивировать / вернуть из архива (админ).
+// Архив — правильная замена удалению для распроданного проекта: синхронизация
+// прекращается (и перестаёт тратить ресурсы), риелторы проект не видят,
+// но сделки, статистика и история броней остаются нетронутыми.
+app.post('/api/projects/:id/archive', async (req, res) => {
+  try {
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
+    const archived = req.body.archived !== false;
+    const result = await pool.query(
+      `UPDATE projects SET is_archived = $1, archived_at = CASE WHEN $1 THEN NOW() ELSE NULL END
+       WHERE id = $2 RETURNING id, name`,
+      [archived, req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Project not found' });
+    logAuditFromRequest(req, archived ? 'project.archive' : 'project.unarchive', 'project', req.params.id);
+    res.json({ success: true, archived });
+  } catch (e) { console.error('Archive project error:', e); res.status(500).json({ error: 'Server error' }); }
 });
 
 // Редактирование проекта (название, этажи, кв/этаж)
@@ -2945,10 +3037,31 @@ app.delete('/api/projects/:id', async (req, res) => {
   try {
     if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const pid = req.params.id;
-    await pool.query('DELETE FROM bookings WHERE project_id = $1', [pid]);
-    await pool.query('DELETE FROM units WHERE project_id = $1', [pid]);
-    await pool.query('DELETE FROM projects WHERE id = $1', [pid]);
-    res.json({ success: true });
+
+    // Удаление проекта стирает и брони по нему — вместе с закрытыми сделками
+    // риелторов, которые формируют их историю продаж и рейтинг за период.
+    // Молча уничтожать это нельзя: требуем осознанного подтверждения и
+    // подсказываем архив как безопасную альтернативу.
+    const dealsRes = await pool.query(
+      "SELECT count(*)::int AS c FROM bookings WHERE project_id = $1 AND stage = 'COMPLETE'",
+      [pid]
+    );
+    const completedDeals = dealsRes.rows[0]?.c || 0;
+    if (completedDeals > 0 && req.body?.confirmDeleteDeals !== true) {
+      return res.status(409).json({
+        error: `В проекте ${completedDeals} закрытых сделок. Удаление сотрёт их из истории риелторов и рейтингов за период. Archived — безопаснее: проект скроется и перестанет синхронизироваться, а сделки останутся.`,
+        completedDeals,
+        canArchive: true,
+      });
+    }
+
+    await withTransaction(async (client) => {
+      await client.query('DELETE FROM bookings WHERE project_id = $1', [pid]);
+      await client.query('DELETE FROM units WHERE project_id = $1', [pid]);
+      await client.query('DELETE FROM projects WHERE id = $1', [pid]);
+    });
+    logAuditFromRequest(req, 'project.delete', 'project', pid, { deleted_completed_deals: completedDeals });
+    res.json({ success: true, deletedCompletedDeals: completedDeals });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -2959,7 +3072,9 @@ app.post('/api/projects/:id/resync', async (req, res) => {
     const project = (await pool.query('SELECT * FROM projects WHERE id = $1', [req.params.id])).rows[0];
     if (!project) return res.status(404).json({ error: 'Project not found' });
     if (!project.feed_url) return res.status(400).json({ error: 'No feed_url saved' });
-    const diag = await syncProjectWithXml(project.id, project.feed_url);
+    // Ручной ресинк всегда полный: админ нажимает эту кнопку именно тогда,
+    // когда хочет пересобрать шахматку, а не «проверить, не изменилось ли».
+    const diag = await syncProjectWithXml(project.id, project.feed_url, { force: true });
     const count = typeof diag === 'object' ? diag.savedCount : diag;
     res.json({ success: true, count, diag });
   } catch (e) { res.status(500).json({ error: 'Resync failed: ' + e.message }); }

@@ -263,15 +263,47 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   };
 
   const fetchProjects = () => {
-    fetch('/api/projects').then(r => r.json()).then(data => setProjectsList(data)).catch(e => console.error(e));
+    // Заголовок нужен, чтобы сервер отдал ещё и архивные проекты — риелторам они не видны
+    fetch('/api/projects', { headers: { 'x-init-data': getAuthData() } })
+      .then(r => r.json()).then(data => setProjectsList(data)).catch(e => console.error(e));
   };
 
-  const handleDeleteProject = async (id: string) => {
-    if (!await confirmDialog(`Удалить проект "${id}" и все его квартиры?`)) return;
+  const handleArchiveProject = async (id: string, archived: boolean) => {
+    const question = archived
+      ? `Отправить проект "${id}" в архив? Он перестанет синхронизироваться и скроется у риелторов, все сделки и история сохранятся.`
+      : `Вернуть проект "${id}" из архива?`;
+    if (!await confirmDialog(question)) return;
     try {
-      await fetch(`/api/projects/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
+      const res = await fetch(`/api/projects/${id}/archive`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: getAuthData(), archived }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Ошибка');
+      showToast(archived ? 'Проект в архиве' : 'Проект возвращён', 'success');
+      fetchProjects();
+    } catch (e: any) { showToast(e.message || 'Ошибка архивации', 'error'); }
+  };
+
+  const handleDeleteProject = async (id: string, confirmDeleteDeals = false) => {
+    if (!confirmDeleteDeals && !await confirmDialog(`Удалить проект "${id}" и все его квартиры?`)) return;
+    try {
+      const res = await fetch(`/api/projects/${id}`, {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: getAuthData(), confirmDeleteDeals }),
+      });
+      const data = await res.json().catch(() => ({}));
+      // 409 — в проекте есть закрытые сделки: спрашиваем ещё раз, уже с последствиями
+      if (res.status === 409 && data.completedDeals) {
+        const ok = await confirmDialog(
+          `${data.error}\n\nВсё равно удалить проект вместе с ${data.completedDeals} закрытыми сделками?`
+        );
+        if (ok) await handleDeleteProject(id, true);
+        return;
+      }
+      if (!res.ok) throw new Error(data.error || 'Ошибка удаления');
       showToast('Проект удалён', 'success'); fetchProjects();
-    } catch { showToast('Ошибка удаления', 'error'); }
+    } catch (e: any) { showToast(e.message || 'Ошибка удаления', 'error'); }
   };
 
   const handleSaveProject = async (id: string) => {
@@ -1417,6 +1449,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                             <div>
                                                 <span className="font-bold text-black">{p.name}</span>
                                                 <span className="text-xs text-gray-400 ml-2 font-mono">({p.id})</span>
+                                                {p.is_archived && <span className="ml-2 text-[10px] bg-gray-300 text-gray-700 px-1.5 py-0.5 rounded font-bold">В АРХИВЕ</span>}
                                             </div>
                                         </div>
                                         {p.image_url && (
@@ -1427,14 +1460,19 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                         <div className="text-xs text-gray-500 mb-3 space-y-1">
                                             <div>Этажей: <b className="text-black">{p.floors}</b> • Кв/этаж: <b className="text-black">{p.units_per_floor}</b></div>
                                             {p.feed_url && <div className="truncate">Фид: {p.feed_url.slice(0, 50)}...</div>}
+                                            {p.is_archived && <div className="text-gray-400">Не синхронизируется, скрыт от риелторов. Сделки сохранены.</div>}
                                         </div>
                                         <div className="flex gap-2 flex-wrap">
                                             <button onClick={() => { setEditingProjectId(p.id); setEditProjectName(p.name); setEditProjectFloors(''); setEditProjectUPF(''); setEditProjectImage(p.image_url || ''); }}
                                                 className="bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg text-xs font-bold">Настроить</button>
-                                            {p.feed_url && (
+                                            {p.feed_url && !p.is_archived && (
                                                 <button onClick={() => handleResyncProject(p.id)} disabled={loading}
                                                     className="bg-green-100 text-green-700 px-3 py-1.5 rounded-lg text-xs font-bold">{loading ? '...' : 'Обновить фид'}</button>
                                             )}
+                                            <button onClick={() => handleArchiveProject(p.id, !p.is_archived)}
+                                                className="bg-gray-200 text-gray-700 px-3 py-1.5 rounded-lg text-xs font-bold">
+                                                {p.is_archived ? 'Вернуть из архива' : 'В архив'}
+                                            </button>
                                             <button onClick={() => handleDeleteProject(p.id)}
                                                 className="bg-red-100 text-red-700 px-3 py-1.5 rounded-lg text-xs font-bold">Удалить</button>
                                         </div>

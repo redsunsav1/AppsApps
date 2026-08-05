@@ -244,10 +244,11 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     setProfilePrizes([]);
     try {
       const [bookingsRes, prizesRes] = await Promise.all([
+        // Брони фильтрует сервер: тянуть все брони системы ради одного профиля незачем
         fetch('/api/bookings/all', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData: getAuthData() }),
+          body: JSON.stringify({ initData: getAuthData(), userId: user.id }),
         }),
         fetch('/api/admin/user-orders', {
           method: 'POST',
@@ -255,8 +256,8 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
           body: JSON.stringify({ initData: getAuthData(), userId: user.id }),
         }),
       ]);
-      const allBookings = await bookingsRes.json();
-      setProfileBookings(Array.isArray(allBookings) ? allBookings.filter((b: any) => b.user_id === user.id) : []);
+      const userBookings = await bookingsRes.json();
+      setProfileBookings(Array.isArray(userBookings) ? userBookings : []);
       const prizes = await prizesRes.json();
       setProfilePrizes(Array.isArray(prizes) ? prizes : []);
     } catch { setProfileBookings([]); setProfilePrizes([]); }

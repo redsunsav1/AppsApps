@@ -2989,9 +2989,17 @@ app.get('/api/projects', async (req, res) => {
     // Риелтор не должен видеть распроданный проект в списке; админу он нужен —
     // чтобы вернуть из архива или посмотреть историю.
     const forAdmin = await isAdminRequest(req);
-    const result = forAdmin
-      ? await pool.query('SELECT * FROM projects ORDER BY COALESCE(is_archived, FALSE), name')
-      : await pool.query('SELECT * FROM projects WHERE COALESCE(is_archived, FALSE) = FALSE ORDER BY name');
+    if (forAdmin) {
+      const all = await pool.query('SELECT * FROM projects ORDER BY COALESCE(is_archived, FALSE), name');
+      return res.json(all.rows);
+    }
+    // Риелтору отдаём только поля, которые реально рисуются в интерфейсе.
+    // feed_url сюда не входит: ссылка на выгрузку Profitbase — по сути ключ,
+    // по которому кто угодно скачает всю базу квартир застройщика с ценами.
+    const result = await pool.query(
+      `SELECT id, name, floors, units_per_floor, image_url, developer_name, feed_synced_at
+       FROM projects WHERE COALESCE(is_archived, FALSE) = FALSE ORDER BY name`
+    );
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -4392,11 +4400,20 @@ app.post('/api/bookings/my', async (req, res) => {
 app.post('/api/bookings/all', async (req, res) => {
   try {
     if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
+    // Фильтр по пользователю делаем в базе. Раньше админка забирала все брони
+    // системы и отсеивала нужные уже в телефоне — с ростом числа партнёров это
+    // означало качать сотни килобайт ради одного профиля.
+    const userId = parseInt(req.body?.userId, 10);
+    const byUser = Number.isFinite(userId);
+    // Ограничение — только для выборки «все подряд»: она растёт вместе с базой.
+    const limit = Math.min(2000, Math.max(1, parseInt(req.body?.limit, 10) || 1000));
     const result = await pool.query(`
       SELECT b.*, u.first_name, u.last_name, u.phone, u.company, un.number as unit_number, un.project_id
       FROM bookings b LEFT JOIN users u ON b.user_id = u.id LEFT JOIN units un ON b.unit_id = un.id
+      ${byUser ? 'WHERE b.user_id = $1' : ''}
       ORDER BY b.created_at DESC
-    `);
+      ${byUser ? '' : `LIMIT ${limit}`}
+    `, byUser ? [userId] : []);
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });

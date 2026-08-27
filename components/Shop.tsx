@@ -1,80 +1,72 @@
-import React, { useMemo, useState, useEffect } from 'react';
-import { ShopItem, CurrencyType } from '../types';
-import { Lock, Trash2 } from 'lucide-react';
-import { getAuthData } from '../utils/auth';
-import { confirmDialog, alertDialog } from '../utils/dialog';
+import React from 'react';
+import { Lock } from 'lucide-react';
 
 interface MarketplaceProps {
-  items?: ShopItem[];
-  silver?: number;
-  gold?: number;
   userSilver?: number;
   userGold?: number;
+  silver?: number;
+  gold?: number;
   isAdmin?: boolean;
-  onPurchase?: (item: ShopItem) => void;
 }
 
-const Marketplace: React.FC<MarketplaceProps> = ({ items: propItems, silver: silverProp, gold: goldProp, userSilver, userGold, isAdmin, onPurchase }) => {
+// Призы показываем силуэтами: фотографий товаров нет, а под размытием от снимка
+// всё равно осталось бы пятно. Форму видно, деталей — нет: ровно то, что нужно анонсу.
+const IPhone = () => (
+  <svg viewBox="0 0 100 120" className="h-24" aria-hidden>
+    <rect x="18" y="6" width="64" height="108" rx="16" fill="#433830" />
+    <rect x="23" y="11" width="54" height="98" rx="12" fill="#6B5C4E" />
+    <rect x="27" y="15" width="27" height="27" rx="9" fill="#3A312A" />
+    <circle cx="35" cy="23" r="4.5" fill="#241D18" />
+    <circle cx="46" cy="23" r="4.5" fill="#241D18" />
+    <circle cx="35" cy="34" r="4.5" fill="#241D18" />
+  </svg>
+);
+
+const Headphones = () => (
+  <svg viewBox="0 0 120 100" className="h-24" aria-hidden>
+    <path d="M22 58 Q22 16 60 16 Q98 16 98 58" fill="none" stroke="#D6C4A8" strokeWidth="10" strokeLinecap="round" />
+    <rect x="6" y="44" width="34" height="48" rx="14" fill="#E0CCAF" />
+    <rect x="80" y="44" width="34" height="48" rx="14" fill="#E0CCAF" />
+    <rect x="14" y="53" width="18" height="30" rx="9" fill="#D6C4A8" />
+    <rect x="88" y="53" width="18" height="30" rx="9" fill="#D6C4A8" />
+  </svg>
+);
+
+const Tee = () => (
+  <svg viewBox="0 0 100 100" className="h-24" aria-hidden>
+    <path
+      d="M34 18 L44 13 Q50 22 56 13 L66 18 L88 32 L78 47 L70 40 L70 88 Q50 92 30 88 L30 40 L22 47 L12 32 Z"
+      fill="#D9C3A2"
+    />
+    <path d="M44 13 Q50 24 56 13" fill="none" stroke="#C2AB88" strokeWidth="4" />
+  </svg>
+);
+
+const Hoodie = () => (
+  <svg viewBox="0 0 100 100" className="h-24" aria-hidden>
+    <path
+      d="M30 28 L40 22 L60 22 L70 28 L90 42 L80 56 L70 48 L70 90 Q50 94 30 90 L30 48 L20 56 L10 42 Z"
+      fill="#D9C3A2"
+    />
+    <path d="M35 27 Q50 13 65 27 Q66 34 58 36 Q50 40 42 36 Q34 34 35 27 Z" fill="#C2AB88" />
+    <rect x="34" y="60" width="32" height="19" rx="7" fill="#C2AB88" />
+    <path d="M44 34 L43 50 M56 34 L57 50" stroke="#F7F2E8" strokeWidth="4" strokeLinecap="round" />
+  </svg>
+);
+
+const PRIZES = [
+  { name: 'iPhone 17 Pro', art: <IPhone /> },
+  { name: 'AirPods Max', art: <Headphones /> },
+  { name: 'Футболка клуба', art: <Tee /> },
+  { name: 'Худи клуба', art: <Hoodie /> },
+];
+
+// Магазин закрыт до запуска: каталог не показываем, но даём увидеть, ради чего
+// копятся баллы. Товарами по-прежнему управляет админка — как откроем, сюда
+// вернётся сетка из /api/products (см. историю файла).
+const Marketplace: React.FC<MarketplaceProps> = ({ userSilver, userGold, silver: silverProp, gold: goldProp }) => {
   const silver = userSilver ?? silverProp ?? 0;
   const gold = userGold ?? goldProp ?? 0;
-
-  const [fetchedItems, setFetchedItems] = useState<ShopItem[]>([]);
-
-  useEffect(() => {
-    fetch('/api/products')
-      .then(res => res.json())
-      .then(data => {
-        const mapped: ShopItem[] = data.map((p: any) => ({
-          id: String(p.id),
-          name: p.title || '',
-          category: p.category || 'MERCH',
-          price: p.price || 0,
-          currency: p.currency === 'GOLD' ? CurrencyType.GOLD : CurrencyType.SILVER,
-          image: p.image_url || '🎁',
-          inStock: p.is_active !== false,
-        }));
-        setFetchedItems(mapped);
-      })
-      .catch(e => console.error('Products fetch error:', e));
-  }, []);
-
-  const items = propItems && propItems.length > 0 ? propItems : fetchedItems;
-
-  const handlePurchase = (item: ShopItem) => {
-    if (onPurchase) { onPurchase(item); return; }
-    const initData = getAuthData();
-    if (!initData) return;
-    fetch('/api/buy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData, productId: parseInt(item.id) }),
-    })
-    .then(res => res.json())
-    .then(data => {
-      if (data.success) alertDialog('Покупка успешна!');
-      else alertDialog(data.error || 'Ошибка покупки');
-    })
-    .catch(() => alertDialog('Ошибка сети'));
-  };
-
-  const handleDelete = async (productId: string) => {
-    if (!await confirmDialog('Удалить товар?')) return;
-    try {
-      await fetch(`/api/products/${productId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData: getAuthData() }),
-      });
-      setFetchedItems(prev => prev.filter(i => i.id !== productId));
-    } catch (e) { console.error('Delete error:', e); }
-  };
-
-  const sortedItems = useMemo(() => {
-    return [...items].sort((a, b) => {
-        if (a.currency !== b.currency) return a.currency === CurrencyType.GOLD ? 1 : -1;
-        return a.price - b.price;
-    });
-  }, [items]);
 
   return (
     <div className="pb-36 animate-fade-in">
@@ -99,72 +91,37 @@ const Marketplace: React.FC<MarketplaceProps> = ({ items: propItems, silver: sil
         </div>
       </header>
 
-      <div className="px-4 py-4 grid grid-cols-2 gap-3">
-        {sortedItems.length === 0 && (
-          <div className="col-span-2 text-center py-10 text-brand-grey text-sm">Товаров пока нет</div>
-        )}
-        {sortedItems.map((item) => {
-          const userBalance = item.currency === CurrencyType.SILVER ? silver : gold;
-          const canAfford = userBalance >= item.price;
-          const isGold = item.currency === CurrencyType.GOLD;
+      <div className="mx-4 mt-5 bg-brand-white rounded-2xl border border-brand-beige p-6 text-center shadow-sm">
+        <div className="w-14 h-14 rounded-full bg-brand-gold/15 mx-auto flex items-center justify-center text-brand-gold">
+          <Lock size={24} />
+        </div>
+        <h3 className="text-lg font-extrabold text-brand-black mt-4 leading-snug">
+          Совсем скоро станет доступен внутренний магазин
+        </h3>
+        <p className="text-sm text-brand-grey mt-2 leading-relaxed">
+          Баллы за брони и миссии копятся уже сейчас — потратить их можно будет здесь.
+        </p>
+      </div>
 
-          return (
-            <div
-              key={item.id}
-              className={`
-                group p-4 rounded-2xl shadow-sm border flex flex-col relative overflow-hidden transition-all active:scale-[0.98]
-                ${isGold
-                    ? 'bg-gradient-to-br from-[#D6C4A8] to-[#C5B191] border-[#C5B191]'
-                    : 'bg-brand-white border-brand-light'}
-              `}
-            >
-              {isAdmin && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
-                  className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center z-10 shadow"
-                >
-                  <Trash2 size={12} />
-                </button>
-              )}
-
-              {/* Image Placeholder */}
-              <div className={`h-24 rounded-xl mb-3 flex items-center justify-center overflow-hidden ${isGold ? 'bg-white/20' : 'bg-brand-cream'}`}>
-                {item.image && item.image.startsWith('http') ? (
-                  <img src={item.image} alt={item.name} className="w-full h-full object-cover rounded-xl" />
-                ) : (
-                  <span className="text-4xl">{item.image || '🎁'}</span>
-                )}
-              </div>
-
-              <div className="flex-1 flex flex-col">
-                <h3 className="font-bold text-sm leading-tight mb-1 line-clamp-2 text-brand-black">{item.name}</h3>
-                <div className="mt-auto pt-3">
-                    <button
-                    onClick={() => handlePurchase(item)}
-                    disabled={!canAfford || !item.inStock}
-                    className={`
-                        w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all
-                        ${isGold 
-                            ? (canAfford ? 'bg-brand-black text-brand-gold hover:bg-brand-black/80' : 'bg-black/10 text-black/30') 
-                            : (canAfford ? 'bg-brand-black text-brand-gold hover:bg-brand-black/80' : 'bg-brand-light text-white')}
-                    `}
-                    >
-                    {!canAfford && <Lock size={12} />}
-                    {item.inStock ? (
-                        <>
-                            {item.price.toLocaleString()} 
-                            {isGold 
-                                ? <div className="w-3 h-3 rounded-full bg-brand-gold border border-brand-black flex items-center justify-center text-[6px] font-bold text-black">X</div>
-                                : <div className="w-3 h-3 rounded-full bg-slate-300 border border-slate-400"></div>
-                            }
-                        </>
-                    ) : 'Нет в наличии'}
-                    </button>
-                </div>
-              </div>
-            </div>
-          );
-        })}
+      {/* Витрина до открытия: силуэты видно, деталей — нет */}
+      <div
+        aria-hidden
+        className="px-4 mt-5 grid grid-cols-2 gap-3 select-none pointer-events-none"
+        style={{
+          filter: 'blur(5px)',
+          WebkitMaskImage: 'linear-gradient(to bottom, #000 88%, transparent 100%)',
+          maskImage: 'linear-gradient(to bottom, #000 88%, transparent 100%)',
+        }}
+      >
+        {PRIZES.map((prize) => (
+          <div
+            key={prize.name}
+            className="bg-brand-white rounded-2xl border border-brand-light p-4 flex flex-col items-center gap-3 shadow-sm"
+          >
+            <div className="h-24 flex items-center justify-center">{prize.art}</div>
+            <span className="text-sm font-bold text-brand-black text-center leading-tight">{prize.name}</span>
+          </div>
+        ))}
       </div>
     </div>
   );

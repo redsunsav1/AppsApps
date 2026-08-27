@@ -1153,20 +1153,37 @@ const initDb = async () => {
     await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log (actor_user_id);');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log (action);');
 
-    // Сид-данные
-    const projCheck = await pool.query('SELECT count(*) FROM projects');
-    if (parseInt(projCheck.rows[0].count) === 0) {
-      await pool.query(`INSERT INTO projects (id, name, floors, units_per_floor, image_url) VALUES ('brk', 'ЖК Бруклин', 12, 6, NULL) ON CONFLICT DO NOTHING`);
-    }
     // Обновляем developer_name для известных проектов
-    await pool.query(`UPDATE projects SET developer_name = 'ООО СЗ «ХОРОШО»' WHERE id = 'brk' AND developer_name IS NULL`);
     await pool.query(`UPDATE projects SET developer_name = 'ООО СЗ «ХОРОШОЗДЕСЬ»' WHERE id = 'mnh' AND developer_name IS NULL`);
-    await pool.query(`UPDATE projects SET developer_name = 'ООО СЗ «ХОРОШОАЛЬЯНС»' WHERE id = 'bbk' AND developer_name IS NULL`);
+
+    // Одноразовая чистка: в работе остаются только Харизма и Манхэттен.
+    // Не удаляем, а архивируем — синхронизация фида прекращается и риелторы проект
+    // не видят, но сделки, брони и статистика остаются нетронутыми. Вернуть проект
+    // можно кнопкой в админке; повторно чистка не сработает — стоит отметка в app_settings.
+    // Сверяем по названию, а не по id: id проектам присваивает админ при импорте фида.
+    const PROJECTS_CLEANUP_KEY = 'projects_cleanup_only_hrz_mnh';
+    const cleanupDone = await pool.query('SELECT 1 FROM app_settings WHERE key = $1', [PROJECTS_CLEANUP_KEY]);
+    if (cleanupDone.rows.length === 0) {
+      const archived = await pool.query(`
+        UPDATE projects SET is_archived = TRUE, archived_at = NOW()
+        WHERE COALESCE(is_archived, FALSE) = FALSE
+          AND lower(name) NOT LIKE '%харизм%'
+          AND lower(name) NOT LIKE '%манх%'
+        RETURNING id, name`);
+      await pool.query(
+        `INSERT INTO app_settings (key, value) VALUES ($1, $2)
+         ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+        [PROJECTS_CLEANUP_KEY, new Date().toISOString()]
+      );
+      if (archived.rows.length > 0) {
+        console.log(`🗂 В архив: ${archived.rows.map(r => `${r.name} (${r.id})`).join(', ')}`);
+      }
+    }
 
     const questCheck = await pool.query('SELECT count(*) FROM quests');
     if (parseInt(questCheck.rows[0].count) === 0) {
       await pool.query(`INSERT INTO quests (type, title, reward_xp, reward_amount, reward_currency) VALUES
-        ('SHARE', 'Репост новости ЖК Бруклин', 50, 100, 'SILVER'),
+        ('SHARE', 'Репост новости клуба', 50, 100, 'SILVER'),
         ('TEST', 'Тест: Планировки ЖК Харизма', 100, 200, 'SILVER'),
         ('DEAL', 'Продать 2-к квартиру', 1000, 10, 'GOLD')
       ON CONFLICT DO NOTHING`);

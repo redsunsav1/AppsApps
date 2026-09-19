@@ -1,18 +1,29 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { getAuthData } from '../utils/auth';
-import { X, ArrowLeft, Loader2, Camera, Building2, Download, Calculator, Lock, Unlock, Clock } from 'lucide-react';
+import { X, ArrowLeft, Loader2, Camera, Building2, Download, Calculator, Lock, Unlock, Clock, SearchX, Send } from 'lucide-react';
 import { ProjectData, ChessUnit, MortgageProgram } from '../types';
 import MortgageCalc from './tools/MortgageCalc';
 import { showToast } from '../utils/toast';
+import ChessboardFilters, { ChessView } from './ChessboardFilters';
+import {
+    UnitFilter, EMPTY_FILTER, isFilterActive, matchesFilter,
+    buildGridLayout, availableRoomOptions, roomLabel, roomShort, formatPriceShort,
+} from '../utils/chessboard';
+import {
+    CardAgent, renderUnitCard, shareUnitCard, buildUnitText,
+    cardFileName, calcMonthlyPayment, bestRate,
+} from '../utils/unitCard';
 
 interface ChessboardProps {
   onClose: () => void;
   projects: ProjectData[];
   isAdmin?: boolean;
   mortgagePrograms?: MortgageProgram[];
+  /** Контакты риелтора — попадают в карточку, которую он отправляет клиенту. */
+  agent?: CardAgent;
 }
 
-const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin = false, mortgagePrograms = [] }) => {
+const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin = false, mortgagePrograms = [], agent }) => {
     const [loading, setLoading] = useState(false);
     const [units, setUnits] = useState<ChessUnit[]>([]);
     const [selectedProject, setSelectedProject] = useState<ProjectData | null>(null);
@@ -31,6 +42,14 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
     // Section selector
     const [sections, setSections] = useState<string[]>([]);
     const [activeSection, setActiveSection] = useState<string | null>(null);
+
+    // Подбор под запрос клиента. Фильтр ничего не выбрасывает из сетки:
+    // неподходящие квартиры гаснут, дом остаётся целым.
+    const [filter, setFilter] = useState<UnitFilter>({ ...EMPTY_FILTER });
+    const [view, setView] = useState<ChessView>('grid');
+
+    // Подготовка карточки для отправки клиенту
+    const [cardLoading, setCardLoading] = useState(false);
 
     // Show mortgage calc modal
     const [showMortgage, setShowMortgage] = useState(false);
@@ -283,6 +302,30 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
         }
     };
 
+    // Собираем картинку с планировкой, ценой и контактами и отдаём системному
+    // «Поделиться» — оттуда она уходит клиенту в мессенджер одним касанием.
+    const handleShareCard = async () => {
+        if (!bookingUnit || cardLoading) return;
+        setCardLoading(true);
+        try {
+            const rate = bestRate(mortgagePrograms);
+            const monthly = rate ? calcMonthlyPayment(bookingUnit.price, rate) : 0;
+            const text = buildUnitText(bookingUnit, selectedProject, agent, monthly);
+            const blob = await renderUnitCard(bookingUnit, selectedProject, agent, monthly);
+            if (!blob) {
+                showToast('Не удалось собрать карточку', 'error');
+                return;
+            }
+            const outcome = await shareUnitCard(blob, cardFileName(bookingUnit, selectedProject), text);
+            if (outcome === 'downloaded') showToast('Карточка сохранена в загрузки', 'success');
+            if (outcome === 'failed') showToast('Не удалось отправить карточку', 'error');
+        } catch (e) {
+            showToast('Не удалось собрать карточку', 'error');
+        } finally {
+            setCardLoading(false);
+        }
+    };
+
     const resetBookingForm = () => {
         setBookingUnit(null);
         setBuyerName('');
@@ -299,10 +342,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
         return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(price);
     };
 
-    const getRoomLabel = (rooms: number) => {
-        if (rooms === 0) return 'Студия';
-        return `${rooms}-комн`;
-    };
+    const getRoomLabel = roomLabel;
 
     const formatTimeLeft = (expiresAt?: string) => {
         if (!expiresAt) return null;
@@ -317,6 +357,41 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
         if (hours > 0) return `${hours} ч ${minutes} мин`;
         return `${minutes} мин`;
     };
+
+    // Квартиры выбранной секции — единая основа и для сетки, и для списка.
+    const sectionUnits = useMemo(
+        () => (sections.length > 0 && activeSection ? units.filter(u => u.section === activeSection) : units),
+        [units, sections, activeSection]
+    );
+
+    // Раскладка считается по ВСЕМ квартирам секции, а не по отфильтрованным:
+    // именно это не даёт дому «поехать», когда риелтор сужает подбор.
+    const layout = useMemo(
+        () => buildGridLayout(sectionUnits, selectedProject?.floors || 0),
+        [sectionUnits, selectedProject]
+    );
+
+    const filterActive = isFilterActive(filter);
+
+    // null — фильтр выключен, подсветка не нужна вовсе.
+    const matchedIds = useMemo(() => {
+        if (!filterActive) return null;
+        const set = new Set<string>();
+        for (const unit of sectionUnits) if (matchesFilter(unit, filter)) set.add(unit.id);
+        return set;
+    }, [sectionUnits, filter, filterActive]);
+
+    const roomOptions = useMemo(() => availableRoomOptions(sectionUnits), [sectionUnits]);
+
+    // В списке — только подходящее, дешёвое сверху: так собирается подборка клиенту.
+    // Квартиры без цены уходят в конец, чтобы не возглавлять список нулями.
+    const listUnits = useMemo(() => {
+        const base = matchedIds ? sectionUnits.filter(u => matchedIds.has(u.id)) : sectionUnits;
+        return [...base].sort((a, b) => {
+            if (a.price > 0 && b.price > 0) return a.price - b.price;
+            return b.price - a.price;
+        });
+    }, [sectionUnits, matchedIds]);
 
     return (
         <div className="fixed inset-0 z-50 flex flex-col bg-brand-cream animate-fade-in text-brand-black" style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
@@ -402,74 +477,110 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                     </div>
                                 )}
 
-                                <div className="flex items-center gap-4 mb-4 justify-center text-xs font-medium text-brand-grey sticky top-8 bg-brand-cream/95 py-2 backdrop-blur-sm z-10" style={{ top: sections.length > 1 ? '2.5rem' : '0' }}>
-                                    <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-white border border-brand-light rounded-sm"></div> Свободно</div>
-                                    <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-brand-cream border border-brand-gold rounded-sm"></div> Бронь</div>
-                                    <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-brand-light rounded-sm opacity-50"></div> Продано</div>
-                                </div>
+                                <ChessboardFilters
+                                    filter={filter}
+                                    onChange={setFilter}
+                                    roomOptions={roomOptions}
+                                    matched={matchedIds ? matchedIds.size : sectionUnits.length}
+                                    total={sectionUnits.length}
+                                    view={view}
+                                    onViewChange={setView}
+                                />
 
-                                <div className="overflow-x-auto pb-4">
-                                    <div className="space-y-1 min-w-max px-2">
-                                        {(() => {
-                                            // Filter by section if sections exist
-                                            const filteredUnits = sections.length > 0 && activeSection
-                                                ? units.filter(u => u.section === activeSection)
-                                                : units;
+                                {view === 'grid' ? (
+                                    <>
+                                        <div className="flex items-center gap-4 mb-4 justify-center text-xs font-medium text-brand-grey py-1">
+                                            <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-white border border-brand-light rounded-sm"></div> Свободно</div>
+                                            <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-brand-cream border border-brand-gold rounded-sm"></div> Бронь</div>
+                                            <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-brand-light rounded-sm opacity-50"></div> Продано</div>
+                                        </div>
 
-                                            // Calculate max floor and units per floor dynamically
-                                            const maxFloor = Math.max(selectedProject.floors, ...filteredUnits.map(u => u.floor));
-                                            const floorUnitCounts: Record<number, number> = {};
-                                            filteredUnits.forEach(u => {
-                                                floorUnitCounts[u.floor] = (floorUnitCounts[u.floor] || 0) + 1;
-                                            });
-                                            const cols = sections.length > 0
-                                                ? Math.max(...Object.values(floorUnitCounts), 1)
-                                                : (selectedProject.unitsPerFloor || 8);
-
-                                            return Array.from({length: maxFloor}).map((_, i) => {
-                                                const floorNum = maxFloor - i;
-                                                if (floorNum < 1) return null;
-
-                                                const floorUnits = filteredUnits.filter(u => u.floor === floorNum);
-                                                floorUnits.sort((a, b) => parseInt(a.number) - parseInt(b.number));
-
-                                                return (
-                                                    <div key={floorNum} className="flex gap-2 items-center">
+                                        <div className="overflow-x-auto pb-4">
+                                            <div className="space-y-1.5 min-w-max px-2">
+                                                {layout.rows.map(row => (
+                                                    <div key={row.floor} className="flex gap-2 items-center">
                                                         <div className="w-7 text-xs font-bold text-brand-grey text-center sticky left-0 bg-brand-cream z-10">
-                                                            {floorNum}
+                                                            {row.floor}
                                                         </div>
 
-                                                        <div className="flex-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${cols}, minmax(40px, 1fr))` }}>
-                                                            {Array.from({length: cols}).map((_, idx) => {
-                                                                const unit = floorUnits[idx];
-
+                                                        <div className="flex-1 grid gap-1.5" style={{ gridTemplateColumns: `repeat(${layout.cols}, minmax(52px, 1fr))` }}>
+                                                            {row.cells.map((unit, idx) => {
                                                                 if (!unit) {
-                                                                    return <div key={`empty-${floorNum}-${idx}`} className="h-10 w-12 bg-gray-200/30 rounded-md border border-transparent" />
+                                                                    return <div key={`empty-${row.floor}-${idx}`} className="h-12 rounded-lg bg-black/[0.03]" />;
                                                                 }
-
+                                                                // Фильтр не выбрасывает квартиру из сетки — только гасит.
+                                                                const matched = matchedIds !== null && matchedIds.has(unit.id);
+                                                                const dimmed = matchedIds !== null && !matched;
                                                                 return (
-                                                                    <div
+                                                                    <button
                                                                         key={unit.id}
                                                                         onClick={() => { resetBookingForm(); setBookingUnit(unit); }}
                                                                         className={`
-                                                                            h-10 w-12 rounded-md flex flex-col items-center justify-center border text-[9px] transition-all cursor-pointer
-                                                                            ${unit.status === 'FREE' ? 'bg-white border-brand-light hover:border-brand-gold hover:bg-brand-cream shadow-sm' : ''}
-                                                                            ${unit.status === 'BOOKED' ? 'bg-brand-cream border-brand-gold/30 text-brand-gold' : ''}
-                                                                            ${unit.status === 'SOLD' ? 'bg-brand-light border-transparent text-white opacity-40 cursor-default' : ''}
+                                                                            h-12 rounded-lg flex flex-col items-center justify-center border transition-all
+                                                                            ${unit.status === 'FREE' ? 'bg-white border-brand-light active:border-brand-gold' : ''}
+                                                                            ${unit.status === 'BOOKED' ? 'bg-brand-cream border-brand-gold/40 text-brand-gold' : ''}
+                                                                            ${unit.status === 'SOLD' ? 'bg-brand-light border-transparent text-brand-grey' : ''}
+                                                                            ${matched ? 'ring-2 ring-brand-gold shadow-md' : ''}
+                                                                            ${dimmed ? 'opacity-20 grayscale' : unit.status === 'SOLD' ? 'opacity-60' : 'shadow-sm'}
                                                                         `}
                                                                     >
-                                                                        <span className="font-bold">{unit.number}</span>
-                                                                        {unit.status === 'FREE' && <span>{unit.area}</span>}
-                                                                    </div>
+                                                                        <span className="text-[11px] font-extrabold leading-none">{unit.number}</span>
+                                                                        <span className="text-[9px] leading-none mt-1 font-bold opacity-70">
+                                                                            {roomShort(unit.rooms)}{unit.area > 0 ? ` · ${Math.round(unit.area)}` : ''}
+                                                                        </span>
+                                                                    </button>
                                                                 );
                                                             })}
                                                         </div>
                                                     </div>
-                                                );
-                                            });
-                                        })()}
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div className="space-y-2 pb-4">
+                                        {listUnits.length === 0 ? (
+                                            <div className="py-16 flex flex-col items-center justify-center text-brand-grey gap-2">
+                                                <SearchX size={30} className="opacity-40" />
+                                                <span className="text-sm font-bold text-brand-black">Ничего не подошло</span>
+                                                <span className="text-xs">Ослабьте условия подбора</span>
+                                            </div>
+                                        ) : listUnits.map(unit => (
+                                            <button
+                                                key={unit.id}
+                                                onClick={() => { resetBookingForm(); setBookingUnit(unit); }}
+                                                className="w-full bg-brand-white border border-brand-light rounded-2xl p-3.5 flex items-center gap-3.5 text-left shadow-sm transition-all active:scale-[0.99] active:border-brand-gold"
+                                            >
+                                                <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center shrink-0 ${
+                                                    unit.status === 'FREE' ? 'bg-brand-cream text-brand-black'
+                                                        : unit.status === 'BOOKED' ? 'bg-brand-gold/15 text-brand-gold'
+                                                        : 'bg-brand-light text-brand-grey'
+                                                }`}>
+                                                    <span className="text-[15px] font-extrabold leading-none">{unit.number}</span>
+                                                </div>
+
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="text-sm font-extrabold text-brand-black truncate">
+                                                        {roomLabel(unit.rooms)}{unit.area > 0 ? ` · ${unit.area} м²` : ''}
+                                                    </div>
+                                                    <div className="text-[11px] text-brand-grey mt-0.5 truncate">
+                                                        {unit.section ? `${unit.section} · ` : ''}{unit.floor} этаж
+                                                    </div>
+                                                </div>
+
+                                                <div className="text-right shrink-0">
+                                                    <div className="text-sm font-black text-brand-black">{formatPriceShort(unit.price)}</div>
+                                                    <div className={`text-[10px] font-bold mt-0.5 ${
+                                                        unit.status === 'FREE' ? 'text-green-600'
+                                                            : unit.status === 'BOOKED' ? 'text-brand-gold' : 'text-brand-grey'
+                                                    }`}>
+                                                        {unit.status === 'FREE' ? 'Свободна' : unit.status === 'BOOKED' ? 'Бронь' : 'Продана'}
+                                                    </div>
+                                                </div>
+                                            </button>
+                                        ))}
                                     </div>
-                                </div>
+                                )}
                              </>
                          )}
                     </div>
@@ -566,6 +677,17 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                     <Download size={16} /> Скачать планировку
                                 </a>
                             )}
+
+                            {/* Отправить клиенту */}
+                            <button
+                                onClick={handleShareCard}
+                                disabled={cardLoading}
+                                className="w-full py-3 bg-brand-black text-brand-gold rounded-xl font-bold text-sm flex items-center justify-center gap-2 active:scale-[0.98] transition-transform disabled:opacity-60"
+                            >
+                                {cardLoading
+                                    ? <><Loader2 size={16} className="animate-spin" /> Готовим карточку...</>
+                                    : <><Send size={16} /> Отправить клиенту</>}
+                            </button>
 
                             {/* Mortgage Calculator */}
                             <button

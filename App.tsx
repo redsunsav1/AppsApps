@@ -822,6 +822,7 @@ const App: React.FC = () => {
           onClose={() => setIsChessboardOpen(false)}
           isAdmin={user.is_admin || user.can_manage_bookings}
           mortgagePrograms={mortgagePrograms}
+          agent={{ name: user.name, lastName: user.last_name, company: user.company, phone: user.phone }}
         />
       )}
     </div>

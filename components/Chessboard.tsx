@@ -13,6 +13,7 @@ import {
     CardAgent, renderUnitCard, shareUnitCard, buildUnitText,
     cardFileName, calcMonthlyPayment, bestRate,
 } from '../utils/unitCard';
+import { calcCommission, formatCommission, parseCommissionPercent } from '../utils/commission';
 
 interface ChessboardProps {
   onClose: () => void;
@@ -50,6 +51,10 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
 
     // Подготовка карточки для отправки клиенту
     const [cardLoading, setCardLoading] = useState(false);
+
+    // Ставка агентского вознаграждения. Отдаётся только подтверждённому партнёру,
+    // поэтому запрашивается отдельно, а не приходит с публичными настройками.
+    const [commissionPercent, setCommissionPercent] = useState(0);
 
     // Show mortgage calc modal
     const [showMortgage, setShowMortgage] = useState(false);
@@ -145,6 +150,17 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
             })
             .catch(e => console.error('Error loading units:', e))
             .finally(() => { if (!opts?.silent) setLoading(false); });
+    }, []);
+
+    useEffect(() => {
+        fetch('/api/commission', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData: getAuthData() }),
+        })
+            .then(r => (r.ok ? r.json() : null))
+            .then(data => setCommissionPercent(parseCommissionPercent(data?.percent)))
+            .catch(() => setCommissionPercent(0));
     }, []);
 
     useEffect(() => { selectedProjectRef.current = selectedProject; }, [selectedProject]);
@@ -617,6 +633,20 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                             {bookingUnit.price > 0 && (
                                 <div className="text-2xl font-black text-brand-black mt-3">
                                     {formatPrice(bookingUnit.price)}
+                                </div>
+                            )}
+
+                            {/* Вознаграждение риелтора. Только для него: в карточку,
+                                которая уходит клиенту, эта сумма не попадает. */}
+                            {bookingUnit.price > 0 && commissionPercent > 0 && (
+                                <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-brand-gold/30 bg-brand-gold/10 px-3 py-2.5">
+                                    <div className="min-w-0">
+                                        <div className="text-[10px] font-bold uppercase tracking-wide text-brand-gold">Ваше вознаграждение</div>
+                                        <div className="text-[10px] text-brand-grey mt-0.5">Расчёт по ставке {commissionPercent}%</div>
+                                    </div>
+                                    <div className="text-lg font-black text-brand-black shrink-0">
+                                        {formatCommission(calcCommission(bookingUnit.price, commissionPercent))}
+                                    </div>
                                 </div>
                             )}
 

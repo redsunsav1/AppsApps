@@ -1137,6 +1137,8 @@ const initDb = async () => {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );`);
     await pool.query(`INSERT INTO app_settings (key, value) VALUES ('min_down_payment_percent', '10') ON CONFLICT DO NOTHING;`);
+    // Базовая ставка агентского вознаграждения, % от цены лота. Меняется в админке.
+    await pool.query(`INSERT INTO app_settings (key, value) VALUES ('commission_percent', '4') ON CONFLICT DO NOTHING;`);
 
     // --- Аудит-лог: кто, что и с чем сделал. Append-only, никогда не чистится кодом приложения ---
     await pool.query(`CREATE TABLE IF NOT EXISTS audit_log (
@@ -3459,13 +3461,37 @@ app.delete('/api/quests/:id', async (req, res) => {
 // =============================================
 // API: НАСТРОЙКИ ПРИЛОЖЕНИЯ
 // =============================================
+// Настройки, которые нельзя отдавать в открытый доступ: этот эндпоинт публичный,
+// а размер агентского вознаграждения — коммерческая информация застройщика.
+const PRIVATE_SETTING_KEYS = new Set(['commission_percent']);
+
 app.get('/api/settings', async (req, res) => {
   try {
     const result = await pool.query('SELECT key, value FROM app_settings');
     const settings = {};
-    for (const row of result.rows) settings[row.key] = row.value;
+    for (const row of result.rows) {
+      if (PRIVATE_SETTING_KEYS.has(row.key)) continue;
+      settings[row.key] = row.value;
+    }
     res.json(settings);
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
+});
+
+// Ставка вознаграждения — только подтверждённому партнёру.
+app.post('/api/commission', rateLimitByUser(60000, 60), async (req, res) => {
+  try {
+    const user = await resolveDbUser(req.body?.initData);
+    if (!user || !user.is_registered || (user.approval_status !== 'approved' && !user.is_admin)) {
+      return res.status(401).json({ error: 'Требуется подтверждённый аккаунт' });
+    }
+    const row = await pool.query("SELECT value FROM app_settings WHERE key = 'commission_percent'");
+    const percent = Number(String(row.rows[0]?.value ?? '').replace(',', '.'));
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ percent: Number.isFinite(percent) && percent > 0 && percent <= 100 ? percent : 0 });
+  } catch (e) {
+    console.error('Commission error:', e.message);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 app.post('/api/settings', async (req, res) => {

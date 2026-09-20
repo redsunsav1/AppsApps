@@ -15,6 +15,7 @@ import {
     cardFileName, calcMonthlyPayment, bestRate,
 } from '../utils/unitCard';
 import { calcCommission, formatCommission, parseCommissionPercent } from '../utils/commission';
+import { Copy, ShieldCheck } from 'lucide-react';
 
 interface ChessboardProps {
   onClose: () => void;
@@ -56,6 +57,11 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
     // Ставка агентского вознаграждения. Отдаётся только подтверждённому партнёру,
     // поэтому запрашивается отдельно, а не приходит с публичными настройками.
     const [commissionPercent, setCommissionPercent] = useState(0);
+
+    // Ссылка для покупателя: он сам даёт согласие и сам загружает документ.
+    // Риелтор её только пересылает — приложение сообщений не отправляет.
+    const [consentUrl, setConsentUrl] = useState('');
+    const [consentLoading, setConsentLoading] = useState(false);
 
     // Show mortgage calc modal
     const [showMortgage, setShowMortgage] = useState(false);
@@ -249,8 +255,26 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
         }
     };
 
+    const requestConsentLink = async (bookingId: number) => {
+        setConsentLoading(true);
+        try {
+            const res = await fetch(`/api/bookings/${bookingId}/consent-link`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ initData: getAuthData() }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.url) setConsentUrl(data.url);
+            else showToast(data.error || 'Не удалось получить ссылку', 'error');
+        } catch {
+            showToast('Ошибка сети', 'error');
+        } finally {
+            setConsentLoading(false);
+        }
+    };
+
     const handleBooking = async () => {
-        if (!bookingUnit || !selectedProject || !buyerName || !buyerPhone || !passportFile) return;
+        if (!bookingUnit || !selectedProject || !buyerName || !buyerPhone) return;
         setBookingLoading(true);
         setBookingResult(null);
         try {
@@ -273,8 +297,16 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                 return;
             }
 
-            // Step 2: паспорт по созданной броне
-            await sendPassport(data1.bookingId, data1.expiresAt);
+            // Квартира уже удерживается. Документы покупатель донесёт сам по ссылке —
+            // согласие на обработку должен дать он, а не риелтор за него.
+            setBookingResult({ ok: true, msg: 'Квартира забронирована. Отправьте покупателю ссылку для согласия и загрузки паспорта.' });
+            setUnits(prev => prev.map(u =>
+                u.id === bookingUnit.id ? { ...u, status: 'BOOKED', bookingExpiresAt: data1.expiresAt } : u
+            ));
+            setBookingUnit(prev => prev ? { ...prev, status: 'BOOKED', bookingExpiresAt: data1.expiresAt } : prev);
+            setShowBookingForm(false);
+            setMyBookedUnitIds(prev => new Set(prev).add(bookingUnit.id));
+            await requestConsentLink(data1.bookingId);
         } catch (e) {
             setBookingResult({ ok: false, msg: 'Ошибка сети. Попробуйте позже.' });
         } finally {
@@ -350,6 +382,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
         setPassportFile(null);
         setPassportPreview(null);
         setBookingResult(null);
+        setConsentUrl('');
         setShowBookingForm(false);
         setShowMortgage(false);
         setConsentTransfer(false);
@@ -784,6 +817,42 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                             )}
                         </div>
 
+                        {/* Ссылка для покупателя */}
+                        {consentUrl && (
+                            <div className="mb-4 rounded-xl border border-brand-gold/40 bg-brand-cream p-3 space-y-2">
+                                <div className="flex items-center gap-2 text-xs font-extrabold text-brand-black">
+                                    <ShieldCheck size={15} className="text-brand-gold" /> Ссылка для покупателя
+                                </div>
+                                <p className="text-[11px] text-brand-grey leading-relaxed">
+                                    Перешлите её покупателю. Он подтвердит согласие и загрузит паспорт сам.
+                                    Ссылка действует ограниченное время.
+                                </p>
+                                <div className="flex gap-2">
+                                    <input
+                                        readOnly
+                                        value={consentUrl}
+                                        onFocus={e => e.currentTarget.select()}
+                                        className="flex-1 min-w-0 text-[11px] bg-white border border-brand-light rounded-lg px-2 py-2 text-brand-black"
+                                    />
+                                    <button
+                                        onClick={() => {
+                                            navigator.clipboard?.writeText(consentUrl)
+                                                .then(() => showToast('Ссылка скопирована', 'success'))
+                                                .catch(() => showToast('Скопируйте вручную', 'error'));
+                                        }}
+                                        className="px-3 py-2 bg-brand-black text-brand-gold rounded-lg text-xs font-bold flex items-center gap-1.5 shrink-0"
+                                    >
+                                        <Copy size={14} /> Копировать
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                        {consentLoading && (
+                            <div className="mb-4 flex items-center gap-2 text-xs text-brand-grey">
+                                <Loader2 size={14} className="animate-spin" /> Готовим ссылку для покупателя...
+                            </div>
+                        )}
+
                         {/* Booking Form (expanded) */}
                         {showBookingForm && bookingUnit.status === 'FREE' && !bookingResult?.ok && (
                             <div className="space-y-3 mb-4 pt-4 border-t border-gray-100 animate-fade-in">
@@ -803,56 +872,21 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                     className="w-full p-3 bg-gray-50 rounded-xl border border-gray-200 focus:ring-2 focus:ring-brand-gold outline-none text-sm"
                                 />
 
-                                {/* Passport Upload */}
-                                <div>
-                                    <label className="block text-xs font-bold uppercase text-gray-500 mb-2">Фото паспорта</label>
-                                    <input
-                                        ref={fileInputRef}
-                                        type="file"
-                                        accept="image/*"
-                                        capture="environment"
-                                        onChange={handleFileChange}
-                                        className="hidden"
-                                    />
-                                    {passportPreview ? (
-                                        <div className="relative">
-                                            <img src={passportPreview} alt="Паспорт" className="w-full h-40 object-cover rounded-xl border border-gray-200" />
-                                            <button
-                                                onClick={() => { setPassportFile(null); setPassportPreview(null); }}
-                                                className="absolute top-2 right-2 bg-white rounded-full p-1 shadow"
-                                            >
-                                                <X size={16} />
-                                            </button>
-                                        </div>
-                                    ) : (
-                                        <button
-                                            onClick={() => fileInputRef.current?.click()}
-                                            className="w-full py-6 border-2 border-dashed border-gray-300 rounded-xl flex flex-col items-center gap-2 text-gray-400 hover:border-brand-gold hover:text-brand-gold transition-colors"
-                                        >
-                                            <Camera size={24} />
-                                            <span className="text-xs font-bold">Сделать фото или загрузить</span>
-                                        </button>
-                                    )}
-                                </div>
-
-                                {/* 152-ФЗ: согласие на передачу ПДн застройщику */}
-                                <label className="flex items-start gap-2 cursor-pointer select-none mt-2">
-                                    <input
-                                        type="checkbox"
-                                        checked={consentTransfer}
-                                        onChange={e => setConsentTransfer(e.target.checked)}
-                                        className="mt-0.5 w-4 h-4 accent-brand-gold shrink-0"
-                                    />
-                                    <span className="text-[11px] text-gray-500 leading-tight">
-                                        Я даю согласие на передачу моих персональных данных и документов покупателя
-                                        застройщику{selectedProject?.developerName ? ` ${selectedProject.developerName}` : ''} для
-                                        оформления бронирования квартиры
+                                {/* Паспорт здесь больше не запрашивается: согласие на обработку
+                                    должен дать сам покупатель, а не риелтор за него. После брони
+                                    появится ссылка — покупатель по ней подтвердит согласие и
+                                    загрузит документ сам. */}
+                                <div className="flex items-start gap-2 rounded-xl border border-brand-gold/30 bg-brand-gold/10 p-3">
+                                    <ShieldCheck size={16} className="text-brand-gold shrink-0 mt-0.5" />
+                                    <span className="text-[11px] text-brand-black leading-relaxed">
+                                        Квартира будет закреплена сразу. Паспорт покупатель загрузит сам —
+                                        после брони вы получите ссылку, которую нужно ему переслать.
                                     </span>
-                                </label>
+                                </div>
 
                                 <button
                                     onClick={handleBooking}
-                                    disabled={bookingLoading || !buyerName || !buyerPhone || !passportFile || !consentTransfer}
+                                    disabled={bookingLoading || !buyerName || !buyerPhone}
                                     className="w-full py-3 bg-brand-black text-white rounded-xl font-bold shadow-lg disabled:opacity-50 flex items-center justify-center gap-2"
                                 >
                                     {bookingLoading ? <><Loader2 size={16} className="animate-spin" /> Отправка...</> : 'Подтвердить бронирование'}

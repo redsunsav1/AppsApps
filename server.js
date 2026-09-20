@@ -339,6 +339,15 @@ setInterval(() => { const now = Date.now(); for (const [k, v] of rlMap) { if (no
 // Rate limit по пользователю, а не по IP: в Telegram WebApp множество клиентов
 // приходит с одних и тех же адресов, и IP-лимит либо бесполезен (слишком щедрый),
 // либо бьёт по невиновным. Ключ — хэш initData/токена; без него откат на IP.
+// IP покупателя в аудите держим только в виде HMAC: доказательство согласия
+// сохраняется, а сам адрес не лежит открытым текстом.
+function hashConsentValue(value) {
+  if (!value) return null;
+  const secret = process.env.CONSENT_AUDIT_SECRET || process.env.ADMIN_SECRET || process.env.BOT_TOKEN;
+  if (!secret) return null;
+  return crypto.createHmac('sha256', secret).update(String(value)).digest('hex');
+}
+
 function rateLimitByUser(windowMs, maxReq) {
   return (req, res, next) => {
     const initData = req.body?.initData || req.get('x-init-data') || '';
@@ -918,6 +927,17 @@ const initDb = async () => {
     // 152-ФЗ: согласия на обработку ПДн
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_pd BOOLEAN DEFAULT FALSE;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_pd_at TIMESTAMP;');
+    // Согласие покупателя на обработку ПДн. Раньше галочку ставил риелтор —
+    // то есть согласие давал не тот человек. Теперь фиксируем факт от самого
+    // покупателя: когда, с какого адреса и под какой редакцией текста.
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS buyer_consent BOOLEAN DEFAULT FALSE;');
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS buyer_consent_at TIMESTAMP;');
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS buyer_consent_ip_hash TEXT;');
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS buyer_consent_user_agent TEXT;');
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS buyer_consent_version TEXT;');
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS consent_token TEXT;');
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS consent_token_expires TIMESTAMP;');
+    await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_consent_token ON bookings(consent_token) WHERE consent_token IS NOT NULL;');
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS consent_transfer BOOLEAN DEFAULT FALSE;');
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS consent_transfer_at TIMESTAMP;');
     // 38-ФЗ: застройщик проекта (рекламная пометка)
@@ -1145,6 +1165,10 @@ const initDb = async () => {
     await pool.query(`INSERT INTO app_settings (key, value) VALUES ('min_down_payment_percent', '10') ON CONFLICT DO NOTHING;`);
     // Базовая ставка агентского вознаграждения, % от цены лота. Меняется в админке.
     await pool.query(`INSERT INTO app_settings (key, value) VALUES ('commission_percent', '4') ON CONFLICT DO NOTHING;`);
+    // Текст согласия покупателя. Редактируется в админке без релиза: формулировку
+    // правит юрист, а версия меняется вместе с текстом, чтобы в аудите было видно,
+    // под какой редакцией человек подписался.
+    await pool.query(`INSERT INTO app_settings (key, value) VALUES ('buyer_consent_version', '1') ON CONFLICT DO NOTHING;`);
 
     // --- Аудит-лог: кто, что и с чем сделал. Append-only, никогда не чистится кодом приложения ---
     await pool.query(`CREATE TABLE IF NOT EXISTS audit_log (
@@ -4264,6 +4288,202 @@ app.post('/api/bookings', rateLimitByUser(900000, 20), async (req, res) => {
   }
 });
 
+// =============================================
+// СОГЛАСИЕ ПОКУПАТЕЛЯ
+// =============================================
+// Паспорт покупателя — персональные данные третьего лица, и риелтор не может
+// дать согласие за него. Поэтому согласие берётся у самого покупателя по
+// одноразовой ссылке: он её открывает, читает, подтверждает и загружает документ.
+// Файл, как и прежде, нигде не сохраняется — проходит через память и уходит
+// в системы застройщика (его почта и его amoCRM).
+
+const CONSENT_TOKEN_TTL_HOURS = Math.max(1, parseInt(process.env.CONSENT_TOKEN_TTL_HOURS || '24', 10) || 24);
+
+async function consentTextVersion() {
+  try {
+    const r = await pool.query("SELECT value FROM app_settings WHERE key = 'buyer_consent_version'");
+    return String(r.rows[0]?.value || '1');
+  } catch { return '1'; }
+}
+
+// Общая доставка паспорта: одна и та же для риелтора и для покупателя, чтобы
+// денежный путь в amoCRM не разъехался на две расходящиеся копии.
+async function deliverPassport({ booking, unit, file, buyerName, buyerPhone, bookingId }) {
+  const emailSent = await sendDocumentEmail(
+    `📋 Паспорт покупателя — Кв.${unit.number}, ${booking.project_id}`, file ? [file] : [],
+    { agentName: booking.agent_name, agentPhone: booking.agent_phone, agentCompany: booking.agent_company,
+      buyerName: buyerName || '', buyerPhone: buyerPhone || '',
+      unitNumber: unit.number, unitFloor: unit.floor, unitPrice: unit.price, projectId: booking.project_id }
+  );
+
+  let renewedExpiresAt = null;
+  await withTransaction(async (client) => {
+    const updatedRes = await client.query(
+      `UPDATE bookings
+       SET passport_sent = TRUE, passport_sent_at = NOW(), buyer_name = $1, buyer_phone = $2,
+           stage = 'PASSPORT_SENT',
+           consent_transfer = TRUE,
+           consent_transfer_at = NOW(),
+           consent_token = NULL,
+           expires_at = NOW() + ($4::int * INTERVAL '1 hour'),
+           reminder_12h_sent = FALSE,
+           reminder_6h_sent = FALSE
+       WHERE id = $3
+       RETURNING expires_at`,
+      [buyerName, buyerPhone, bookingId, BOOKING_HOLD_HOURS]
+    );
+    await client.query(`UPDATE units SET status = 'BOOKED' WHERE id = $1`, [booking.unit_id]);
+    renewedExpiresAt = updatedRes.rows[0]?.expires_at || null;
+  });
+
+  const userFull = await pool.query('SELECT * FROM users WHERE id = $1', [booking.user_id]);
+  const freshBooking = await pool.query('SELECT * FROM bookings WHERE id = $1', [bookingId]);
+  const fresh = freshBooking.rows[0] || {};
+  const bookingForCRM = { ...booking, amocrm_lead_id: fresh.amocrm_lead_id || booking.amocrm_lead_id };
+  const consentLine = fresh.buyer_consent_at
+    ? `✅ Согласие покупателя получено ${new Date(fresh.buyer_consent_at).toLocaleString('ru-RU')} (ред. ${fresh.buyer_consent_version || '—'})`
+    : `⚠️ Согласие покупателя не зафиксировано`;
+
+  syncToAmoCRM(bookingForCRM, userFull.rows[0], unit).then(async (leadId) => {
+    if (leadId) {
+      await pool.query('UPDATE bookings SET amocrm_lead_id = $1, amocrm_synced = TRUE WHERE id = $2', [String(leadId), bookingId]);
+      const noteText = `📋 Данные бронирования\n\n` +
+        `🏠 Квартира: №${unit.number}, этаж ${unit.floor}, ${unit.rooms}-к, ${unit.area} м²\n` +
+        `💰 Цена: ${Number(unit.price).toLocaleString('ru-RU')} ₽\n` +
+        `📁 Проект: ${booking.project_id}\n\n` +
+        `👤 Покупатель: ${buyerName || '—'}\n📞 Телефон покупателя: ${buyerPhone || '—'}\n\n` +
+        `${consentLine}\n\n` +
+        `🤝 Риелтор: ${booking.agent_name} (${booking.agent_company})\n📞 Телефон риелтора: ${booking.agent_phone}\n\n` +
+        `📎 Паспорт: ${file ? file.originalname : 'отправлен на email'}`;
+      await attachNoteToAmoCRM(leadId, noteText, file ? [file] : [], 'passport');
+    }
+  }).catch(e => console.error('AmoCRM error:', e));
+
+  return { emailSent, renewedExpiresAt };
+}
+
+async function loadBookingWithAgent(bookingId) {
+  const r = await pool.query(
+    `SELECT b.*, u.first_name as agent_name, u.phone as agent_phone, u.company as agent_company
+     FROM bookings b JOIN users u ON b.user_id = u.id WHERE b.id = $1`, [bookingId]);
+  return r.rows[0] || null;
+}
+
+// Риелтор запрашивает ссылку и пересылает её покупателю сам: приложение не
+// отправляет сообщений, значит не собирает контакты покупателя отдельно.
+app.post('/api/bookings/:id/consent-link', rateLimitByUser(60000, 20), async (req, res) => {
+  try {
+    const dbUser = await resolveDbUser(req.body?.initData);
+    if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
+    const booking = await loadBookingWithAgent(req.params.id);
+    if (!booking) return res.status(404).json({ error: 'Бронь не найдена' });
+    if (dbUser.id !== booking.user_id) return res.status(403).json({ error: 'Not your booking' });
+    if (booking.passport_sent) return res.status(400).json({ error: 'Паспорт уже отправлен' });
+
+    const token = crypto.randomBytes(32).toString('hex');
+    await pool.query(
+      `UPDATE bookings SET consent_token = $1, consent_token_expires = NOW() + ($2::int * INTERVAL '1 hour') WHERE id = $3`,
+      [token, CONSENT_TOKEN_TTL_HOURS, booking.id]
+    );
+    logAudit(dbUser, 'booking.consent_link_issued', 'booking', booking.id, {});
+    const base = process.env.APP_URL || '';
+    res.json({ success: true, url: `${base}/consent/${token}`, expiresInHours: CONSENT_TOKEN_TTL_HOURS });
+  } catch (e) {
+    console.error('Consent link error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+async function resolveConsentBooking(token) {
+  if (!token || !/^[a-f0-9]{64}$/.test(String(token))) return null;
+  const r = await pool.query(
+    `SELECT b.*, un.number AS unit_number, un.floor AS unit_floor, un.area AS unit_area,
+            un.rooms AS unit_rooms, un.price AS unit_price,
+            p.name AS project_name, p.developer_name
+     FROM bookings b
+     LEFT JOIN units un ON un.id = b.unit_id
+     LEFT JOIN projects p ON p.id = b.project_id
+     WHERE b.consent_token = $1 AND b.consent_token_expires > NOW()`, [token]);
+  return r.rows[0] || null;
+}
+
+// Публичная страница покупателя. Отдаём только то, что нужно для осознанного
+// согласия: что за квартира и кому уйдут документы. Ни телефона, ни данных
+// риелтора, ни чужих броней.
+app.get('/api/consent/:token', rateLimit(60000, 60), async (req, res) => {
+  try {
+    const booking = await resolveConsentBooking(req.params.token);
+    if (!booking) return res.status(404).json({ error: 'Ссылка недействительна или истекла' });
+    const settings = await pool.query("SELECT key, value FROM app_settings WHERE key IN ('buyer_consent_text','buyer_consent_version','pd_operator_name')");
+    const map = {};
+    for (const row of settings.rows) map[row.key] = row.value;
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      project: booking.project_name || '',
+      developer: booking.developer_name || '',
+      unitNumber: booking.unit_number || '',
+      unitFloor: booking.unit_floor || null,
+      unitArea: booking.unit_area || null,
+      unitRooms: booking.unit_rooms ?? null,
+      buyerName: booking.buyer_name || '',
+      consentText: map.buyer_consent_text || '',
+      consentVersion: map.buyer_consent_version || '1',
+      consentGiven: booking.buyer_consent === true,
+      passportSent: booking.passport_sent === true,
+    });
+  } catch (e) {
+    console.error('Consent fetch error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/consent/:token/accept', rateLimit(60000, 30), async (req, res) => {
+  try {
+    const booking = await resolveConsentBooking(req.params.token);
+    if (!booking) return res.status(404).json({ error: 'Ссылка недействительна или истекла' });
+    if (booking.passport_sent) return res.status(400).json({ error: 'Документы уже отправлены' });
+    const version = await consentTextVersion();
+    await pool.query(
+      `UPDATE bookings SET buyer_consent = TRUE, buyer_consent_at = NOW(),
+              buyer_consent_ip_hash = $1, buyer_consent_user_agent = $2, buyer_consent_version = $3
+       WHERE id = $4`,
+      [hashConsentValue(req.ip), String(req.get('user-agent') || '').slice(0, 500), version, booking.id]
+    );
+    logAudit(null, 'booking.buyer_consent_given', 'booking', booking.id, { version });
+    res.json({ success: true, version });
+  } catch (e) {
+    console.error('Consent accept error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Покупатель загружает документ сам. Согласие к этому моменту обязано быть
+// зафиксировано — иначе мы снова принимаем чужие данные без основания.
+app.post('/api/consent/:token/passport', rateLimit(3600000, 10), upload.single('passport'), async (req, res) => {
+  try {
+    const booking = await resolveConsentBooking(req.params.token);
+    if (!booking) return res.status(404).json({ error: 'Ссылка недействительна или истекла' });
+    if (!booking.buyer_consent) return res.status(400).json({ error: 'Сначала подтвердите согласие' });
+    if (booking.passport_sent) return res.status(400).json({ error: 'Документы уже отправлены' });
+    if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
+
+    const full = await loadBookingWithAgent(booking.id);
+    const unitRes = await pool.query('SELECT * FROM units WHERE id = $1', [booking.unit_id]);
+    const unit = unitRes.rows[0] || {};
+
+    const { emailSent } = await deliverPassport({
+      booking: full, unit, file: req.file, bookingId: booking.id,
+      buyerName: booking.buyer_name || '', buyerPhone: booking.buyer_phone || '',
+    });
+
+    logAudit(null, 'booking.passport_upload_by_buyer', 'booking', booking.id, { email_sent: emailSent });
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Buyer passport upload error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Шаг 1: Загрузка паспорта → квартира BOOKED
 app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, res) => {
   try {
@@ -4277,6 +4497,11 @@ app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, re
 
     if (dbUser.id !== booking.user_id) return res.status(403).json({ error: 'Not your booking' });
     if (booking.passport_sent) return res.status(400).json({ error: 'Паспорт уже отправлен' });
+    // Согласие на обработку даёт покупатель, а не риелтор. Без зафиксированного
+    // согласия отправка документа не допускается ни с какой стороны.
+    if (!booking.buyer_consent) {
+      return res.status(403).json({ error: 'Покупатель ещё не подтвердил согласие. Отправьте ему ссылку.' });
+    }
 
     const unitRes = await pool.query('SELECT * FROM units WHERE id = $1', [booking.unit_id]);
     const unit = unitRes.rows[0] || {};

@@ -169,6 +169,11 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [minDownPayment, setMinDownPayment] = useState('10');
   // Ставка вознаграждения не приходит с публичными настройками — читаем отдельно.
   const [commissionPercent, setCommissionPercent] = useState('4');
+  // Текст согласия покупателя правит юрист — держим его в настройках,
+  // чтобы менять формулировку без релиза.
+  const [consentText, setConsentText] = useState('');
+  const [consentVersion, setConsentVersion] = useState('1');
+  const [consentSaving, setConsentSaving] = useState(false);
 
   // Projects
   const [projectsList, setProjectsList] = useState<any[]>([]);
@@ -416,6 +421,8 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
       .catch(() => {});
     fetch('/api/settings').then(r => r.json()).then(d => {
       if (d.min_down_payment_percent) setMinDownPayment(d.min_down_payment_percent);
+      if (d.buyer_consent_text) setConsentText(d.buyer_consent_text);
+      if (d.buyer_consent_version) setConsentVersion(d.buyer_consent_version);
     }).catch(() => {});
   };
 
@@ -1165,6 +1172,53 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                     <p className="text-[10px] text-yellow-700 mt-1">
                         Базовая ставка от цены лота. Риелтор видит расчёт в карточке квартиры и сводку в профиле.
                         Клиенту эта сумма не показывается. Ставка 0 полностью скрывает вознаграждение.
+                    </p>
+                </div>
+
+                {/* Согласие покупателя на обработку персональных данных */}
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                    <label className="text-xs font-bold text-blue-800 block mb-1.5">Текст согласия покупателя</label>
+                    <textarea
+                        value={consentText}
+                        onChange={e => setConsentText(e.target.value)}
+                        rows={10}
+                        placeholder="Вставьте согласованный с юристом текст. Пока поле пустое, покупатель не сможет дать согласие и загрузить документы."
+                        className="w-full p-2 border border-blue-300 rounded-lg text-black bg-white text-xs leading-relaxed"
+                    />
+                    <div className="flex items-center gap-2 mt-2">
+                        <label className="text-[10px] font-bold text-blue-800">Редакция</label>
+                        <input
+                            value={consentVersion}
+                            onChange={e => setConsentVersion(e.target.value)}
+                            className="w-20 p-2 border border-blue-300 rounded-lg text-black font-bold bg-white text-center text-xs"
+                        />
+                        <button
+                            disabled={consentSaving}
+                            onClick={async () => {
+                                setConsentSaving(true);
+                                try {
+                                    for (const [key, value] of [['buyer_consent_text', consentText], ['buyer_consent_version', consentVersion]]) {
+                                        const res = await fetch('/api/settings', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ initData: getAuthData(), key, value }),
+                                        });
+                                        const data = await res.json();
+                                        if (!data.success) throw new Error(data.error || 'Ошибка');
+                                    }
+                                    showToast('Согласие сохранено', 'success');
+                                } catch (e: any) { showToast(e.message || 'Ошибка сети', 'error'); }
+                                finally { setConsentSaving(false); }
+                            }}
+                            className="px-4 py-2 bg-blue-700 text-white rounded-lg text-xs font-bold disabled:opacity-60"
+                        >
+                            {consentSaving ? 'Сохраняем...' : 'Сохранить'}
+                        </button>
+                    </div>
+                    <p className="text-[10px] text-blue-700 mt-1.5 leading-relaxed">
+                        Покупатель читает этот текст по ссылке от риелтора и подтверждает согласие сам.
+                        Редакция фиксируется вместе с согласием — меняйте её при каждой правке текста,
+                        иначе в аудите будет не видно, под чем именно человек подписался.
                     </p>
                 </div>
 

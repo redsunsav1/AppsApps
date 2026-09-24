@@ -6,6 +6,7 @@ import MortgageCalc from './tools/MortgageCalc';
 import { showToast } from '../utils/toast';
 import ChessboardFilters, { ChessView } from './ChessboardFilters';
 import ConstructionProgress from './ConstructionProgress';
+import BuyerLinkPanel from './BuyerLinkPanel';
 import {
     UnitFilter, EMPTY_FILTER, isFilterActive, matchesFilter,
     buildGridLayout, availableRoomOptions, roomLabel, roomShort, formatPriceShort,
@@ -58,10 +59,12 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
     // поэтому запрашивается отдельно, а не приходит с публичными настройками.
     const [commissionPercent, setCommissionPercent] = useState(0);
 
-    // Ссылка для покупателя: он сам даёт согласие и сам загружает документ.
-    // Риелтор её только пересылает — приложение сообщений не отправляет.
-    const [consentUrl, setConsentUrl] = useState('');
-    const [consentLoading, setConsentLoading] = useState(false);
+    // Бронь, по которой открыта панель «Паспорт покупателя» (QR или ссылка).
+    // Покупатель сам даёт согласие и сам загружает документ.
+    const [buyerLinkBookingId, setBuyerLinkBookingId] = useState<number | null>(null);
+    // Мои активные брони по квартирам: нужны, чтобы вернуться к QR позже,
+    // если риелтор закрыл карточку, а покупатель ещё не загрузил паспорт.
+    const [myBookingByUnitId, setMyBookingByUnitId] = useState<Map<string, { id: number; passportSent: boolean }>>(new Map());
 
     // Show mortgage calc modal
     const [showMortgage, setShowMortgage] = useState(false);
@@ -154,6 +157,11 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                         .map((b: any) => b.unit_id)
                 );
                 setMyBookedUnitIds(myIds);
+                setMyBookingByUnitId(new Map(
+                    (Array.isArray(myBookings) ? myBookings : [])
+                        .filter((b: any) => b.stage !== 'CANCELLED')
+                        .map((b: any) => [b.unit_id, { id: Number(b.id), passportSent: b.passport_sent === true }])
+                ));
             })
             .catch(e => console.error('Error loading units:', e))
             .finally(() => { if (!opts?.silent) setLoading(false); });
@@ -255,23 +263,20 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
         }
     };
 
-    const requestConsentLink = async (bookingId: number) => {
-        setConsentLoading(true);
-        try {
-            const res = await fetch(`/api/bookings/${bookingId}/consent-link`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ initData: getAuthData() }),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (res.ok && data.url) setConsentUrl(data.url);
-            else showToast(data.error || 'Не удалось получить ссылку', 'error');
-        } catch {
-            showToast('Ошибка сети', 'error');
-        } finally {
-            setConsentLoading(false);
+    // Покупатель загрузил паспорт — сервер продлил бронь, обновляем отсчёт на экране.
+    const handlePassportReceived = useCallback((expiresAt?: string) => {
+        if (!bookingUnit) return;
+        const unitId = bookingUnit.id;
+        setMyBookingByUnitId(prev => {
+            const cur = prev.get(unitId);
+            return cur ? new Map(prev).set(unitId, { ...cur, passportSent: true }) : prev;
+        });
+        if (expiresAt) {
+            setUnits(prev => prev.map(u => u.id === unitId ? { ...u, bookingExpiresAt: expiresAt } : u));
+            setBookingUnit(prev => prev && prev.id === unitId ? { ...prev, bookingExpiresAt: expiresAt } : prev);
         }
-    };
+        setBookingResult({ ok: true, msg: 'Паспорт получен. Бронь продлена.' });
+    }, [bookingUnit]);
 
     const handleBooking = async () => {
         if (!bookingUnit || !selectedProject || !buyerName || !buyerPhone) return;
@@ -286,6 +291,8 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                     initData: getAuthData(),
                     unitId: bookingUnit.id,
                     projectId: selectedProject.id,
+                    buyerName: buyerName.trim(),
+                    buyerPhone: buyerPhone.trim(),
                 }),
             });
             const data1 = await res1.json();
@@ -299,14 +306,15 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
 
             // Квартира уже удерживается. Документы покупатель донесёт сам по ссылке —
             // согласие на обработку должен дать он, а не риелтор за него.
-            setBookingResult({ ok: true, msg: 'Квартира забронирована. Отправьте покупателю ссылку для согласия и загрузки паспорта.' });
+            setBookingResult({ ok: true, msg: 'Квартира закреплена за вами. Осталось получить паспорт покупателя.' });
             setUnits(prev => prev.map(u =>
                 u.id === bookingUnit.id ? { ...u, status: 'BOOKED', bookingExpiresAt: data1.expiresAt } : u
             ));
             setBookingUnit(prev => prev ? { ...prev, status: 'BOOKED', bookingExpiresAt: data1.expiresAt } : prev);
             setShowBookingForm(false);
             setMyBookedUnitIds(prev => new Set(prev).add(bookingUnit.id));
-            await requestConsentLink(data1.bookingId);
+            setMyBookingByUnitId(prev => new Map(prev).set(bookingUnit.id, { id: Number(data1.bookingId), passportSent: false }));
+            setBuyerLinkBookingId(Number(data1.bookingId));
         } catch (e) {
             setBookingResult({ ok: false, msg: 'Ошибка сети. Попробуйте позже.' });
         } finally {
@@ -382,7 +390,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
         setPassportFile(null);
         setPassportPreview(null);
         setBookingResult(null);
-        setConsentUrl('');
+        setBuyerLinkBookingId(null);
         setShowBookingForm(false);
         setShowMortgage(false);
         setConsentTransfer(false);
@@ -817,41 +825,25 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                             )}
                         </div>
 
-                        {/* Ссылка для покупателя */}
-                        {consentUrl && (
-                            <div className="mb-4 rounded-xl border border-brand-gold/40 bg-brand-cream p-3 space-y-2">
-                                <div className="flex items-center gap-2 text-xs font-extrabold text-brand-black">
-                                    <ShieldCheck size={15} className="text-brand-gold" /> Ссылка для покупателя
-                                </div>
-                                <p className="text-[11px] text-brand-grey leading-relaxed">
-                                    Перешлите её покупателю. Он подтвердит согласие и загрузит паспорт сам.
-                                    Ссылка действует ограниченное время.
-                                </p>
-                                <div className="flex gap-2">
-                                    <input
-                                        readOnly
-                                        value={consentUrl}
-                                        onFocus={e => e.currentTarget.select()}
-                                        className="flex-1 min-w-0 text-[11px] bg-white border border-brand-light rounded-lg px-2 py-2 text-brand-black"
-                                    />
-                                    <button
-                                        onClick={() => {
-                                            navigator.clipboard?.writeText(consentUrl)
-                                                .then(() => showToast('Ссылка скопирована', 'success'))
-                                                .catch(() => showToast('Скопируйте вручную', 'error'));
-                                        }}
-                                        className="px-3 py-2 bg-brand-black text-brand-gold rounded-lg text-xs font-bold flex items-center gap-1.5 shrink-0"
-                                    >
-                                        <Copy size={14} /> Копировать
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-                        {consentLoading && (
-                            <div className="mb-4 flex items-center gap-2 text-xs text-brand-grey">
-                                <Loader2 size={14} className="animate-spin" /> Готовим ссылку для покупателя...
-                            </div>
-                        )}
+                        {/* Паспорт покупателя: QR, если он рядом, или ссылка в мессенджер */}
+                        {buyerLinkBookingId ? (
+                            <BuyerLinkPanel
+                                bookingId={buyerLinkBookingId}
+                                unitNumber={bookingUnit.number}
+                                projectName={selectedProject?.name}
+                                onPassportReceived={handlePassportReceived}
+                            />
+                        ) : bookingUnit.status === 'BOOKED' && !isAdmin && (() => {
+                            const mine = myBookingByUnitId.get(bookingUnit.id);
+                            return mine && !mine.passportSent ? (
+                                <button
+                                    onClick={() => setBuyerLinkBookingId(mine.id)}
+                                    className="w-full mb-4 py-3 bg-brand-cream border border-brand-gold/50 rounded-xl font-bold text-sm flex items-center justify-center gap-2 text-brand-black active:scale-[0.98] transition-transform"
+                                >
+                                    <ShieldCheck size={16} className="text-brand-gold" /> Паспорт покупателя: QR или ссылка
+                                </button>
+                            ) : null;
+                        })()}
 
                         {/* Booking Form (expanded) */}
                         {showBookingForm && bookingUnit.status === 'FREE' && !bookingResult?.ok && (

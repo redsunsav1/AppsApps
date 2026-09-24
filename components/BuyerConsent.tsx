@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Building2, Check, Loader2, ShieldCheck, Upload, AlertCircle } from 'lucide-react';
+import { Building2, Check, Loader2, ShieldCheck, Upload, AlertCircle, Camera, RotateCcw, FileText } from 'lucide-react';
 
 /**
  * Страница покупателя. Открывается по одноразовой ссылке, которую риелтор
@@ -36,6 +36,19 @@ const BuyerConsent: React.FC<{ token: string }> = ({ token }) => {
   const [submitting, setSubmitting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [done, setDone] = useState(false);
+  // Файл сначала показываем, а не отправляем: повторная отправка закрыта,
+  // и размытое фото ушло бы застройщику безвозвратно.
+  const [picked, setPicked] = useState<File | null>(null);
+  const [pickedPreview, setPickedPreview] = useState<string | null>(null);
+
+  useEffect(() => () => { if (pickedPreview) URL.revokeObjectURL(pickedPreview); }, [pickedPreview]);
+
+  const pick = (file: File | null) => {
+    if (!file) return;
+    setError('');
+    setPicked(file);
+    setPickedPreview(file.type.startsWith('image/') ? URL.createObjectURL(file) : null);
+  };
 
   const load = () => {
     fetch(`/api/consent/${token}`)
@@ -199,22 +212,69 @@ const BuyerConsent: React.FC<{ token: string }> = ({ token }) => {
               </p>
             </Card>
 
+            {/* Камера и выбор файла — отдельными полями: capture сразу открывает
+                основную камеру, а без него остаётся галерея и PDF-скан. */}
+            <input
+              id="buyer-passport-camera"
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={e => { pick(e.target.files?.[0] || null); e.target.value = ''; }}
+            />
             <input
               id="buyer-passport"
               type="file"
               accept="image/*,application/pdf"
               className="hidden"
-              onChange={e => handleUpload(e.target.files?.[0] || null)}
+              onChange={e => { pick(e.target.files?.[0] || null); e.target.value = ''; }}
             />
-            <button
-              onClick={() => document.getElementById('buyer-passport')?.click()}
-              disabled={uploading}
-              className="w-full py-4 bg-brand-black text-white rounded-xl font-bold flex items-center justify-center gap-2 active:scale-[0.98] transition-transform disabled:opacity-60"
-            >
-              {uploading
-                ? <><Loader2 size={18} className="animate-spin" /> Отправляем...</>
-                : <><Upload size={18} /> Загрузить паспорт</>}
-            </button>
+
+            {picked ? (
+              <>
+                <Card>
+                  {pickedPreview ? (
+                    <img src={pickedPreview} alt="Фото паспорта" className="w-full max-h-72 object-contain rounded-xl bg-brand-cream" />
+                  ) : (
+                    <div className="flex items-center gap-2 text-sm text-brand-black">
+                      <FileText size={18} className="text-brand-gold" /> {picked.name}
+                    </div>
+                  )}
+                  <p className="text-[11px] text-brand-grey mt-3">Проверьте, что фото чёткое и данные читаются.</p>
+                </Card>
+                <button
+                  onClick={() => handleUpload(picked)}
+                  disabled={uploading}
+                  className="w-full py-4 bg-brand-black text-white rounded-xl font-bold flex items-center justify-center gap-2 active:scale-[0.98] transition-transform disabled:opacity-60"
+                >
+                  {uploading
+                    ? <><Loader2 size={18} className="animate-spin" /> Отправляем...</>
+                    : <><Upload size={18} /> Отправить застройщику</>}
+                </button>
+                <button
+                  onClick={() => { setPicked(null); setPickedPreview(null); }}
+                  disabled={uploading}
+                  className="w-full py-3 bg-brand-white border border-brand-light text-brand-black rounded-xl font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60"
+                >
+                  <RotateCcw size={16} /> Переснять
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => document.getElementById('buyer-passport-camera')?.click()}
+                  className="w-full py-4 bg-brand-black text-white rounded-xl font-bold flex items-center justify-center gap-2 active:scale-[0.98] transition-transform"
+                >
+                  <Camera size={18} /> Сфотографировать паспорт
+                </button>
+                <button
+                  onClick={() => document.getElementById('buyer-passport')?.click()}
+                  className="w-full py-3 bg-brand-white border border-brand-light text-brand-black rounded-xl font-bold text-sm flex items-center justify-center gap-2"
+                >
+                  <Upload size={16} /> Выбрать файл или скан
+                </button>
+              </>
+            )}
           </>
         )}
 

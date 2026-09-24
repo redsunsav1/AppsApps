@@ -4237,6 +4237,10 @@ app.post('/api/missions', async (req, res) => {
 // Шаг 0: Создать бронь (с FOR UPDATE + проверка уникальности)
 app.post('/api/bookings', rateLimitByUser(900000, 20), async (req, res) => {
   const { initData, unitId, projectId } = req.body;
+  // ФИО и телефон покупателя вводит риелтор. Раньше форма их собирала, но не
+  // отправляла — и застройщик получал паспорт с «Покупатель: —».
+  const buyerName = String(req.body?.buyerName || '').trim().slice(0, 200) || null;
+  const buyerPhone = String(req.body?.buyerPhone || '').trim().slice(0, 40) || null;
   try {
     const user = await resolveDbUser(initData);
     if (!user) return res.status(401).json({ error: 'Invalid signature' });
@@ -4265,9 +4269,9 @@ app.post('/api/bookings', rateLimitByUser(900000, 20), async (req, res) => {
       const existing = await client.query("SELECT id FROM bookings WHERE unit_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'", [unitId]);
       if (existing.rows.length > 0) throw { status: 400, msg: 'На эту квартиру уже есть активное бронирование' };
       const bookingRes = await client.query(
-        `INSERT INTO bookings (user_id, unit_id, project_id, user_phone, user_name, user_company, stage, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'INIT', NOW() + ($7::int * INTERVAL '1 hour')) RETURNING *`,
-        [user.id, unitId, unit.project_id || projectId, user.phone, user.first_name, user.company, BOOKING_HOLD_HOURS]
+        `INSERT INTO bookings (user_id, unit_id, project_id, user_phone, user_name, user_company, stage, expires_at, buyer_name, buyer_phone)
+         VALUES ($1, $2, $3, $4, $5, $6, 'INIT', NOW() + ($7::int * INTERVAL '1 hour'), $8, $9) RETURNING *`,
+        [user.id, unitId, unit.project_id || projectId, user.phone, user.first_name, user.company, BOOKING_HOLD_HOURS, buyerName, buyerPhone]
       );
       await client.query("UPDATE units SET status = 'BOOKED' WHERE id = $1", [unitId]);
       return { success: true, bookingId: bookingRes.rows[0].id, expiresAt: bookingRes.rows[0].expires_at, feedStale };
@@ -4380,16 +4384,42 @@ app.post('/api/bookings/:id/consent-link', rateLimitByUser(60000, 20), async (re
     if (dbUser.id !== booking.user_id) return res.status(403).json({ error: 'Not your booking' });
     if (booking.passport_sent) return res.status(400).json({ error: 'Паспорт уже отправлен' });
 
+    // Действующую ссылку отдаём ту же: риелтор мог уже переслать её покупателю,
+    // и повторное открытие QR не должно молча ломать отправленное сообщение.
+    const base = process.env.APP_URL || '';
+    const alive = booking.consent_token && booking.consent_token_expires && new Date(booking.consent_token_expires) > new Date(Date.now() + 60 * 60 * 1000);
+    if (alive) {
+      return res.json({ success: true, url: `${base}/consent/${booking.consent_token}`, expiresAt: booking.consent_token_expires });
+    }
+
     const token = crypto.randomBytes(32).toString('hex');
-    await pool.query(
-      `UPDATE bookings SET consent_token = $1, consent_token_expires = NOW() + ($2::int * INTERVAL '1 hour') WHERE id = $3`,
+    const upd = await pool.query(
+      `UPDATE bookings SET consent_token = $1, consent_token_expires = NOW() + ($2::int * INTERVAL '1 hour') WHERE id = $3
+       RETURNING consent_token_expires`,
       [token, CONSENT_TOKEN_TTL_HOURS, booking.id]
     );
     logAudit(dbUser, 'booking.consent_link_issued', 'booking', booking.id, {});
-    const base = process.env.APP_URL || '';
-    res.json({ success: true, url: `${base}/consent/${token}`, expiresInHours: CONSENT_TOKEN_TTL_HOURS });
+    res.json({ success: true, url: `${base}/consent/${token}`, expiresAt: upd.rows[0]?.consent_token_expires });
   } catch (e) {
     console.error('Consent link error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Риелтор держит QR на экране и видит, дошёл ли покупатель до согласия и паспорта.
+// Отдаём только два флага по собственной брони — без данных покупателя.
+app.post('/api/bookings/:id/consent-status', rateLimitByUser(60000, 40), async (req, res) => {
+  try {
+    const dbUser = await resolveDbUser(req.body?.initData);
+    if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
+    const r = await pool.query('SELECT user_id, buyer_consent, passport_sent, expires_at FROM bookings WHERE id = $1', [req.params.id]);
+    const b = r.rows[0];
+    if (!b) return res.status(404).json({ error: 'Бронь не найдена' });
+    if (b.user_id !== dbUser.id) return res.status(403).json({ error: 'Not your booking' });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ consentGiven: b.buyer_consent === true, passportSent: b.passport_sent === true, expiresAt: b.expires_at });
+  } catch (e) {
+    console.error('Consent status error:', e);
     res.status(500).json({ error: 'Server error' });
   }
 });

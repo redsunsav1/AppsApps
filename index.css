@@ -36,3 +36,43 @@ body {
 }
 
 button { touch-action: manipulation; }
+
+/* ── Ход строительства (components/ConstructionProgress.tsx) ── */
+.cp-plan { animation: cp-fade 0.4s ease-out both; }
+.cp-floor {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  animation: cp-floor-in 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.25) both;
+}
+.cp-crane { animation: cp-rise 0.7s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.cp-hook {
+  animation:
+    cp-lower 0.9s cubic-bezier(0.3, 0.8, 0.3, 1) both,
+    cp-bob 2.6s ease-in-out infinite;
+}
+.cp-spark { animation: cp-spark 1.4s steps(1, end) infinite backwards; }
+.cp-flag { transform-box: fill-box; transform-origin: left center; animation: cp-wave 1.6s ease-in-out infinite; }
+.cp-bar {
+  background-color: #BA8F50;
+  background-image: repeating-linear-gradient(-45deg, transparent 0 6px, rgba(67, 56, 48, 0.35) 6px 12px);
+  background-size: 17px 17px;
+  animation: cp-stripes 0.9s linear infinite;
+}
+
+@keyframes cp-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes cp-floor-in {
+  from { opacity: 0; transform: translateY(-14px) scaleY(0.6); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes cp-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes cp-lower { from { transform: translateY(var(--cp-lift, -30px)); } to { transform: translateY(0); } }
+@keyframes cp-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes cp-spark {
+  0% { opacity: 1; } 12% { opacity: 0.2; } 20% { opacity: 1; } 34% { opacity: 0; } 70% { opacity: 0; } 78% { opacity: 1; }
+}
+@keyframes cp-wave { 0%, 100% { transform: scaleX(1); } 50% { transform: scaleX(0.8); } }
+@keyframes cp-stripes { from { background-position: 0 0; } to { background-position: 17px 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .cp-anim *, .cp-bar { animation: none !important; }
+}

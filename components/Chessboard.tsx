@@ -5,6 +5,7 @@ import { ProjectData, ChessUnit, MortgageProgram } from '../types';
 import MortgageCalc from './tools/MortgageCalc';
 import { showToast } from '../utils/toast';
 import ChessboardFilters, { ChessView } from './ChessboardFilters';
+import ConstructionProgress from './ConstructionProgress';
 import {
     UnitFilter, EMPTY_FILTER, isFilterActive, matchesFilter,
     buildGridLayout, availableRoomOptions, roomLabel, roomShort, formatPriceShort,
@@ -450,6 +451,17 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                         {p.developerName && (
                                             <p className="text-[10px] text-gray-400 mt-1">Реклама. Застройщик: {p.developerName}</p>
                                         )}
+                                        {p.constructionProgress != null && (
+                                            <div className="mt-2">
+                                                <div className="flex justify-between text-[10px] font-bold text-brand-black">
+                                                    <span>Готовность {p.constructionProgress}%</span>
+                                                    {p.completionDate && <span className="text-brand-grey font-medium">сдача {p.completionDate}</span>}
+                                                </div>
+                                                <div className="mt-1 h-1 rounded-full bg-brand-light overflow-hidden">
+                                                    <div className="h-full rounded-full bg-brand-gold" style={{ width: `${Math.min(100, Math.max(0, p.constructionProgress))}%` }} />
+                                                </div>
+                                            </div>
+                                        )}
                                         <div className="mt-2 flex items-center gap-2 text-brand-gold text-[10px] font-bold uppercase tracking-wide bg-brand-gold/10 px-2 py-1 rounded-lg w-fit">
                                             <Building2 size={12} />
                                             Открыть шахматку
@@ -474,6 +486,16 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                             </div>
                          ) : (
                              <>
+                                {selectedProject.constructionProgress != null && (
+                                    <ConstructionProgress
+                                        progress={selectedProject.constructionProgress}
+                                        floors={selectedProject.floors}
+                                        stage={selectedProject.constructionStage}
+                                        completionDate={selectedProject.completionDate}
+                                        asOf={selectedProject.progressAsOf}
+                                    />
+                                )}
+
                                 {/* Section tabs */}
                                 {sections.length > 1 && (
                                     <div className="flex gap-2 mb-4 overflow-x-auto pb-1 sticky top-0 bg-brand-cream/95 z-20 pt-1 backdrop-blur-sm">

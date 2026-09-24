@@ -120,6 +120,13 @@ export interface ProjectData {
   image: string;
   profitbaseUrl?: string;
   developerName?: string;
+  /** Готовность дома, 0–100. null — застройщик не дал данных, шкалу не рисуем. */
+  constructionProgress?: number | null;
+  constructionStage?: string;
+  /** Срок сдачи в свободной форме: «II кв. 2027». */
+  completionDate?: string;
+  /** YYYY-MM-DD — на какую дату актуальна готовность. */
+  progressAsOf?: string;
 }
 
 export interface MortgageProgram {

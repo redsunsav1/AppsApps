@@ -177,6 +177,10 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [editProjectFloors, setEditProjectFloors] = useState('');
   const [editProjectUPF, setEditProjectUPF] = useState('');
   const [editProjectImage, setEditProjectImage] = useState('');
+  const [editProjectProgress, setEditProjectProgress] = useState('');
+  const [editProjectStage, setEditProjectStage] = useState('');
+  const [editProjectCompletion, setEditProjectCompletion] = useState('');
+  const [editProjectAsOf, setEditProjectAsOf] = useState('');
 
   const [loading, setLoading] = useState(false);
 
@@ -315,8 +319,17 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     if (editProjectFloors) body.floors = editProjectFloors;
     if (editProjectUPF) body.unitsPerFloor = editProjectUPF;
     body.imageUrl = editProjectImage;
+    body.constructionProgress = editProjectProgress;
+    body.constructionStage = editProjectStage;
+    body.completionDate = editProjectCompletion;
+    body.progressAsOf = editProjectAsOf;
     try {
-      await fetch(`/api/projects/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await fetch(`/api/projects/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showToast(data.error || 'Ошибка', 'error');
+        return;
+      }
       showToast('Сохранено', 'success'); setEditingProjectId(null); setEditProjectImage(''); fetchProjects();
     } catch { showToast('Ошибка', 'error'); }
   };
@@ -1486,6 +1499,37 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                                     className="w-full p-2 border rounded-lg text-black bg-white text-sm" placeholder={String(p.units_per_floor)} />
                                             </div>
                                         </div>
+                                        <div className="bg-white border rounded-lg p-2 space-y-2">
+                                            <div className="text-[10px] font-bold text-gray-500 uppercase">Ход строительства</div>
+                                            <div className="flex gap-2">
+                                                <div className="w-20">
+                                                    <label className="text-[10px] text-gray-400 block mb-0.5">Готовность, %</label>
+                                                    <input type="number" min={0} max={100} value={editProjectProgress} onChange={e => setEditProjectProgress(e.target.value)}
+                                                        className="w-full p-2 border rounded-lg text-black bg-white text-sm" placeholder="—" />
+                                                </div>
+                                                <div className="flex-1">
+                                                    <label className="text-[10px] text-gray-400 block mb-0.5">Этап</label>
+                                                    <input list="construction-stages" value={editProjectStage} onChange={e => setEditProjectStage(e.target.value)}
+                                                        className="w-full p-2 border rounded-lg text-black bg-white text-sm" placeholder="Монолитный каркас" />
+                                                </div>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <div className="flex-1">
+                                                    <label className="text-[10px] text-gray-400 block mb-0.5">Срок сдачи</label>
+                                                    <input value={editProjectCompletion} onChange={e => setEditProjectCompletion(e.target.value)}
+                                                        className="w-full p-2 border rounded-lg text-black bg-white text-sm" placeholder="II кв. 2027" />
+                                                </div>
+                                                <div className="flex-1">
+                                                    <label className="text-[10px] text-gray-400 block mb-0.5">Данные на дату</label>
+                                                    <input type="date" value={editProjectAsOf} onChange={e => setEditProjectAsOf(e.target.value)}
+                                                        className="w-full p-2 border rounded-lg text-black bg-white text-sm" />
+                                                </div>
+                                            </div>
+                                            <datalist id="construction-stages">
+                                                {['Котлован', 'Фундамент', 'Монолитный каркас', 'Кровля', 'Фасад', 'Инженерные сети', 'Отделка', 'Благоустройство', 'Ввод в эксплуатацию'].map(s => <option key={s} value={s} />)}
+                                            </datalist>
+                                            <p className="text-[10px] text-gray-400">Цифра — это реклама: берите её у застройщика или с наш.дом.рф. Пустая готовность — шкала скрыта.</p>
+                                        </div>
                                         <div className="flex gap-2">
                                             <button onClick={() => handleSaveProject(p.id)} className="flex-1 bg-blue-600 text-white px-3 py-2 rounded-lg text-xs font-bold">Сохранить</button>
                                             <button onClick={() => { setEditingProjectId(null); setEditProjectImage(''); }} className="bg-gray-200 px-3 py-2 rounded-lg text-xs">Отмена</button>
@@ -1507,11 +1551,16 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                         )}
                                         <div className="text-xs text-gray-500 mb-3 space-y-1">
                                             <div>Этажей: <b className="text-black">{p.floors}</b> • Кв/этаж: <b className="text-black">{p.units_per_floor}</b></div>
+                                            {p.construction_progress != null && (
+                                                <div>Готовность: <b className="text-black">{p.construction_progress}%</b>{p.construction_stage ? ` • ${p.construction_stage}` : ''}{p.completion_date ? ` • сдача ${p.completion_date}` : ''}</div>
+                                            )}
                                             {p.feed_url && <div className="truncate">Фид: {p.feed_url.slice(0, 50)}...</div>}
                                             {p.is_archived && <div className="text-gray-400">Не синхронизируется, скрыт от риелторов. Сделки сохранены.</div>}
                                         </div>
                                         <div className="flex gap-2 flex-wrap">
-                                            <button onClick={() => { setEditingProjectId(p.id); setEditProjectName(p.name); setEditProjectFloors(''); setEditProjectUPF(''); setEditProjectImage(p.image_url || ''); }}
+                                            <button onClick={() => { setEditingProjectId(p.id); setEditProjectName(p.name); setEditProjectFloors(''); setEditProjectUPF(''); setEditProjectImage(p.image_url || '');
+                                                setEditProjectProgress(p.construction_progress != null ? String(p.construction_progress) : ''); setEditProjectStage(p.construction_stage || '');
+                                                setEditProjectCompletion(p.completion_date || ''); setEditProjectAsOf(p.progress_as_of || ''); }}
                                                 className="bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg text-xs font-bold">Настроить</button>
                                             {p.feed_url && !p.is_archived && (
                                                 <button onClick={() => handleResyncProject(p.id)} disabled={loading}

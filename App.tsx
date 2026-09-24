@@ -209,6 +209,10 @@ const App: React.FC = () => {
           image: p.image_url || '',
           profitbaseUrl: p.feed_url || '',
           developerName: p.developer_name || '',
+          constructionProgress: p.construction_progress ?? null,
+          constructionStage: p.construction_stage || '',
+          completionDate: p.completion_date || '',
+          progressAsOf: p.progress_as_of || '',
         }));
         setProjects(mapped);
       })

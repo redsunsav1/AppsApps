@@ -922,6 +922,12 @@ const initDb = async () => {
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS consent_transfer_at TIMESTAMP;');
     // 38-ФЗ: застройщик проекта (рекламная пометка)
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS developer_name TEXT;');
+    // Ход строительства: процент, этап и срок вносит админ по данным застройщика.
+    // progress_as_of — дата, на которую цифра актуальна; выводится подписью под шкалой.
+    await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS construction_progress INT;');
+    await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS construction_stage TEXT;');
+    await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS completion_date TEXT;');
+    await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS progress_as_of DATE;');
     await pool.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS video_url TEXT;');
     // Подтверждение владения номером. NULL — номер введён руками и не проверен
     // (все существующие пользователи и заявки остаются с NULL, бэкфилла нет).
@@ -3009,14 +3015,21 @@ app.get('/api/projects', async (req, res) => {
     // чтобы вернуть из архива или посмотреть историю.
     const forAdmin = await isAdminRequest(req);
     if (forAdmin) {
-      const all = await pool.query('SELECT * FROM projects ORDER BY COALESCE(is_archived, FALSE), name');
+      // Дату отдаём строкой: объект Date сдвинется на часовой пояс и «съест» день.
+      // Одноимённая колонка в конце перекрывает ту, что пришла из *.
+      const all = await pool.query(
+        `SELECT *, to_char(progress_as_of, 'YYYY-MM-DD') AS progress_as_of
+         FROM projects ORDER BY COALESCE(is_archived, FALSE), name`
+      );
       return res.json(all.rows);
     }
     // Риелтору отдаём только поля, которые реально рисуются в интерфейсе.
     // feed_url сюда не входит: ссылка на выгрузку Profitbase — по сути ключ,
     // по которому кто угодно скачает всю базу квартир застройщика с ценами.
     const result = await pool.query(
-      `SELECT id, name, floors, units_per_floor, image_url, developer_name, feed_synced_at
+      `SELECT id, name, floors, units_per_floor, image_url, developer_name, feed_synced_at,
+              construction_progress, construction_stage, completion_date,
+              to_char(progress_as_of, 'YYYY-MM-DD') AS progress_as_of
        FROM projects WHERE COALESCE(is_archived, FALSE) = FALSE ORDER BY name`
     );
     res.json(result.rows);
@@ -3046,12 +3059,29 @@ app.post('/api/projects/:id/archive', async (req, res) => {
 app.put('/api/projects/:id', async (req, res) => {
   try {
     if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
-    const { name, floors, unitsPerFloor, imageUrl } = req.body;
+    const { name, floors, unitsPerFloor, imageUrl,
+            constructionProgress, constructionStage, completionDate, progressAsOf } = req.body;
     const sets = []; const vals = []; let idx = 1;
     if (name) { sets.push(`name = $${idx++}`); vals.push(name); }
     if (floors) { sets.push(`floors = $${idx++}`); vals.push(parseInt(floors)); }
     if (unitsPerFloor) { sets.push(`units_per_floor = $${idx++}`); vals.push(parseInt(unitsPerFloor)); }
     if (imageUrl !== undefined) { sets.push(`image_url = $${idx++}`); vals.push(String(imageUrl || '').trim() || null); }
+    if (constructionProgress !== undefined) {
+      // Пустое значение — снять шкалу с проекта.
+      const raw = String(constructionProgress ?? '').trim();
+      const pct = raw === '' ? null : parseInt(raw, 10);
+      if (pct !== null && (!Number.isFinite(pct) || pct < 0 || pct > 100)) {
+        return res.status(400).json({ error: 'Готовность — от 0 до 100' });
+      }
+      sets.push(`construction_progress = $${idx++}`); vals.push(pct);
+    }
+    if (constructionStage !== undefined) { sets.push(`construction_stage = $${idx++}`); vals.push(String(constructionStage || '').trim().slice(0, 60) || null); }
+    if (completionDate !== undefined) { sets.push(`completion_date = $${idx++}`); vals.push(String(completionDate || '').trim().slice(0, 40) || null); }
+    if (progressAsOf !== undefined) {
+      const d = String(progressAsOf || '').trim();
+      if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) return res.status(400).json({ error: 'Неверная дата' });
+      sets.push(`progress_as_of = $${idx++}`); vals.push(d || null);
+    }
     if (sets.length === 0) return res.status(400).json({ error: 'Nothing to update' });
     vals.push(req.params.id);
     await pool.query(`UPDATE projects SET ${sets.join(', ')} WHERE id = $${idx}`, vals);

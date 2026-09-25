@@ -463,6 +463,17 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     } catch (e) { showToast('Ошибка', 'error'); } finally { setLoading(false); }
   };
 
+  const handleImportSiteNews = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/news/import-site', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
+      const data = await res.json();
+      if (!res.ok) return showToast(data.error || 'Ошибка импорта', 'error');
+      showToast(`С сайта: найдено ${data.found}, добавлено ${data.added}${data.errors?.length ? `, ошибок ${data.errors.length}` : ''}`, data.added || !data.errors?.length ? 'success' : 'error');
+      if (data.added) onNewsAdded();
+    } catch (e) { showToast('Ошибка импорта', 'error'); } finally { setLoading(false); }
+  };
+
   const handleDebugFeed = async () => {
     if (!importUrl) return showToast('Вставь URL фида', 'error');
     setLoading(true); setDebugResult('');
@@ -736,6 +747,9 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
         <div className="flex-1 overflow-y-auto custom-scrollbar px-5 pt-3 pb-5" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 1rem)' }}>
         {activeTab === 'news' && (
             <div className="flex flex-col gap-3 animate-fade-in">
+                {!editData && (
+                    <button onClick={handleImportSiteNews} disabled={loading} className="w-full p-3 rounded-lg border border-[#BA8F50] text-[#BA8F50] font-bold text-sm">{loading ? 'Загружаю…' : 'Загрузить новости с horoshogk.ru'}</button>
+                )}
                 <input placeholder="Заголовок" value={title} onChange={e => setTitle(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
                 <div className="flex gap-2">
                     <input placeholder="Проект (ЖК...)" value={projectName} onChange={e => setProjectName(e.target.value)} className="p-3 border rounded-lg flex-1 text-black bg-gray-50" />

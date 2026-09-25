@@ -8,6 +8,7 @@ import xml2js from 'xml2js';
 import cron from 'node-cron';
 import multer from 'multer';
 import nodemailer from 'nodemailer';
+import { importSiteNews } from './server/newsImport.js';
 
 // =============================================
 // MAX Messenger Platform Adapter (inline)
@@ -949,6 +950,9 @@ const initDb = async () => {
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS completion_date TEXT;');
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS progress_as_of DATE;');
     await pool.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS video_url TEXT;');
+    // Новости, импортированные с сайта застройщика: по source_url не дублируем
+    await pool.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS source_url TEXT;');
+    await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_news_source_url ON news(source_url) WHERE source_url IS NOT NULL;');
     // Подтверждение владения номером. NULL — номер введён руками и не проверен
     // (все существующие пользователи и заявки остаются с NULL, бэкфилла нет).
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified_at TIMESTAMP;');
@@ -2914,6 +2918,35 @@ app.post('/api/news', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// Импорт новостей с сайта застройщика. Без рассылки — см. server/newsImport.js
+let newsImportRunning = false;
+async function runNewsImport() {
+  if (newsImportRunning) return { busy: true };
+  newsImportRunning = true;
+  try { return await importSiteNews(pool); }
+  finally { newsImportRunning = false; }
+}
+
+app.post('/api/news/import-site', async (req, res) => {
+  try {
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
+    const result = await runNewsImport();
+    if (result.busy) return res.status(409).json({ error: 'Импорт уже идёт' });
+    res.json({ success: true, ...result, errors: result.errors.slice(0, 10) });
+  } catch (e) {
+    console.error('News import error:', e.message);
+    res.status(502).json({ error: `Сайт не отдал новости: ${e.message}` });
+  }
+});
+
+// Раз в 6 часов подтягиваем свежие новости. Отключается NEWS_IMPORT_CRON=off
+const NEWS_IMPORT_CRON = process.env.NEWS_IMPORT_CRON || '40 */6 * * *';
+if (NEWS_IMPORT_CRON !== 'off') {
+  cron.schedule(NEWS_IMPORT_CRON, () => {
+    runNewsImport().catch(e => console.error('News import cron error:', e.message));
+  });
+}
+
 app.post('/api/news/unread-count', async (req, res) => {
   try {
     const dbUser = await resolveDbUser(req.body.initData);
@@ -4866,6 +4899,9 @@ initDb().then(() => {
     console.log('⚪ MAX platform: disabled (set MAX_ENABLED=true to enable)');
   }
   fetchAmoCRMPipelines().then(() => fetchAmoCRMCustomFields());
+  // Подтягиваем новости с сайта сразу после старта, не дожидаясь крона. Уже
+  // импортированные пропускаются по source_url, так что рестарт ничего не дублирует.
+  if (NEWS_IMPORT_CRON !== 'off') runNewsImport().catch(e => console.error('News import on start error:', e.message));
   app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT} | v2025-02-20-dedup`));
 }).catch(err => {
   console.error('❌ Fatal: could not init DB, starting anyway...', err);

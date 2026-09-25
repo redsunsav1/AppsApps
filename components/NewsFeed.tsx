@@ -46,22 +46,20 @@ const ContentHub: React.FC<ContentHubProps> = ({ news, updates, isAdmin, onEdit,
             className="bg-brand-white rounded-2xl overflow-hidden shadow-sm border border-brand-light active:scale-[0.99] transition-transform cursor-pointer"
             style={{ animationDelay: `${idx * 100}ms` }}
           >
-            {/* Image Area */}
-            <div className="h-48 bg-brand-light relative overflow-hidden">
+            {/* Картинка целиком, без обрезки: новости с сайта застройщика — часто
+                баннеры со своим текстом. Слишком высокая вписывается в 420px,
+                поля по бокам закрывает размытая копия той же картинки. */}
+            <div className={`${item.images && item.images[0] ? 'min-h-[8rem]' : 'h-48'} bg-brand-light relative overflow-hidden`}>
               {item.images && item.images[0] ? (
-                <img src={item.images[0]} alt={item.title} className="w-full h-full object-cover" />
+                <>
+                  <img src={item.images[0]} alt="" aria-hidden className="absolute inset-0 w-full h-full object-cover blur-xl scale-110 opacity-60" />
+                  <img src={item.images[0]} alt={item.title} loading="lazy" className="relative block w-full h-auto max-h-[420px] object-contain mx-auto" />
+                </>
               ) : (
                 <div className="w-full h-full bg-gradient-to-br from-brand-cream to-brand-light flex items-center justify-center">
                   <ImageIcon size={40} className="text-brand-gold/30" />
                 </div>
               )}
-              <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent"></div>
-              <div className="absolute bottom-0 left-0 right-0 p-4">
-                {item.projectName && (
-                  <span className="text-white/80 text-[10px] font-semibold uppercase tracking-wider block truncate">{item.projectName}</span>
-                )}
-                <h3 className="text-base font-bold text-white leading-snug line-clamp-2">{item.title}</h3>
-              </div>
               {typeof item.progress === 'number' && item.progress > 0 && (
                 <div className="absolute top-3 right-3 bg-brand-gold text-white text-[10px] font-bold px-2 py-0.5 rounded-md shadow-md">
                   {item.progress}%
@@ -85,12 +83,16 @@ const ContentHub: React.FC<ContentHubProps> = ({ news, updates, isAdmin, onEdit,
               )}
             </div>
 
-            {/* Card footer with date */}
-            {item.date && (
-              <div className="px-4 py-2.5 border-t border-brand-light/50">
-                <span className="text-[11px] text-brand-grey font-medium">{item.date}</span>
-              </div>
-            )}
+            {/* Заголовок под картинкой, чтобы не закрывать её */}
+            <div className="px-4 pt-3 pb-3">
+              {item.projectName && (
+                <span className="text-brand-gold text-[10px] font-bold uppercase tracking-wider block truncate">{item.projectName}</span>
+              )}
+              <h3 className="text-base font-bold text-brand-black leading-snug line-clamp-2">{item.title}</h3>
+              {item.date && (
+                <span className="text-[11px] text-brand-grey font-medium block mt-1">{item.date}</span>
+              )}
+            </div>
           </div>
         ))}
         {items.length === 0 && (
@@ -157,13 +159,13 @@ const NewsDetailModal: React.FC<{ item: ConstructionUpdate, onClose: () => void,
             {/* Scrollable content area — takes remaining height */}
             <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
 
-                {/* Image carousel — compact, no cropping */}
+                {/* Image carousel — no cropping */}
                 {item.images && item.images.length > 0 && (
                     <div className="relative" style={{ background: '#F0EDE8' }}>
                         <img
                             src={item.images[currentImage]}
                             alt="Gallery"
-                            style={{ width: '100%', maxHeight: '30vh', objectFit: 'contain', display: 'block' }}
+                            style={{ width: '100%', maxHeight: '60vh', objectFit: 'contain', display: 'block' }}
                         />
                         {item.images.length > 1 && (
                             <>

@@ -463,12 +463,19 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     } catch (e) { showToast('Ошибка', 'error'); } finally { setLoading(false); }
   };
 
+  // Отчёт импорта новостей: диагностика страницы или список ошибок
+  const [importReport, setImportReport] = useState('');
   const handleImportSiteNews = async () => {
-    setLoading(true);
+    setLoading(true); setImportReport('');
     try {
       const res = await fetch('/api/news/import-site', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initData: getAuthData() }) });
       const data = await res.json();
-      if (!res.ok) return showToast(data.error || 'Ошибка импорта', 'error');
+      if (!res.ok) {
+        // Диагностику показываем целиком: по ней подгоняется разбор сайта
+        if (data.diagnostics) setImportReport(`${data.error}\n\n${data.diagnostics}`);
+        return showToast(data.error || 'Ошибка импорта', 'error');
+      }
+      if (data.errors?.length) setImportReport(`Найдено ${data.found} (${data.mode}), добавлено ${data.added}. Ошибки:\n${data.errors.join('\n')}`);
       showToast(`С сайта: найдено ${data.found}, добавлено ${data.added}${data.errors?.length ? `, ошибок ${data.errors.length}` : ''}`, data.added || !data.errors?.length ? 'success' : 'error');
       if (data.added) onNewsAdded();
     } catch (e) { showToast('Ошибка импорта', 'error'); } finally { setLoading(false); }
@@ -749,6 +756,20 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
             <div className="flex flex-col gap-3 animate-fade-in">
                 {!editData && (
                     <button onClick={handleImportSiteNews} disabled={loading} className="w-full p-3 rounded-lg border border-[#BA8F50] text-[#BA8F50] font-bold text-sm">{loading ? 'Загружаю…' : 'Загрузить новости с horoshogk.ru'}</button>
+                )}
+                {!editData && importReport && (
+                    <div className="flex flex-col gap-1.5">
+                        <textarea readOnly value={importReport} onFocus={e => e.target.select()} className="p-2 border rounded-lg w-full h-40 text-[10px] font-mono text-black bg-gray-50" />
+                        <button
+                            onClick={async () => {
+                                try { await navigator.clipboard.writeText(importReport); showToast('Скопировано', 'success'); }
+                                catch { showToast('Выделите текст в поле и скопируйте вручную', 'error'); }
+                            }}
+                            className="self-start px-3 py-1.5 rounded-md bg-gray-200 text-black text-xs font-bold"
+                        >
+                            Скопировать отчёт
+                        </button>
+                    </div>
                 )}
                 <input placeholder="Заголовок" value={title} onChange={e => setTitle(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
                 <div className="flex gap-2">

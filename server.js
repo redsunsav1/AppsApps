@@ -2935,7 +2935,7 @@ app.post('/api/news/import-site', async (req, res) => {
     res.json({ success: true, ...result, errors: result.errors.slice(0, 10) });
   } catch (e) {
     console.error('News import error:', e.message);
-    res.status(502).json({ error: `Сайт не отдал новости: ${e.message}` });
+    res.status(502).json({ error: `Сайт не отдал новости: ${e.message}`, diagnostics: e.diagnostics || null });
   }
 });
 

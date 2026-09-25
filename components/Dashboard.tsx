@@ -4,7 +4,6 @@ import { UserProfile, DailyQuest, ProjectStat, getRank, Mission } from '../types
 import { ChevronRight, ChevronDown, CheckCircle2, Phone, Send, MessageCircle, FileText, Camera, Target, Trophy, Key, Layers, Crown, MapPin, Globe, User, Flame, Download, Copy, Link2 } from 'lucide-react';
 import { getAuthData } from '../utils/auth';
 import { confirmDialog, alertDialog } from '../utils/dialog';
-import { summarizeCommission, formatCommission, parseCommissionPercent, dealsWord } from '../utils/commission';
 
 interface DashboardProps {
   user: UserProfile;
@@ -33,8 +32,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
   const currentRank = getRank(user.dealsClosed);
 
   const [mySales, setMySales] = useState<{ project: string; count: number }[]>([]);
-  const [myBookings, setMyBookings] = useState<any[]>([]);
-  const [commissionPercent, setCommissionPercent] = useState(0);
 
   // Код привязки второго мессенджера. Показывается только владельцу аккаунта
   // и живёт 10 минут — этого достаточно, чтобы перенести его в другой мессенджер.
@@ -68,7 +65,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
       .then(r => r.json())
       .then(data => {
         if (!Array.isArray(data)) return;
-        setMyBookings(data);
         const completed = data.filter((b: any) => b.stage === 'COMPLETE');
         const grouped: Record<string, number> = {};
         completed.forEach((b: any) => {
@@ -79,19 +75,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
       })
       .catch(() => {});
   }, []);
-
-  useEffect(() => {
-    fetch('/api/commission', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData: getAuthData() }),
-    })
-      .then(r => (r.ok ? r.json() : null))
-      .then(data => setCommissionPercent(parseCommissionPercent(data?.percent)))
-      .catch(() => setCommissionPercent(0));
-  }, []);
-
-  const commission = summarizeCommission(myBookings, commissionPercent);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [avatarUrl, setAvatarUrl] = useState(user.avatar || '');
@@ -446,40 +429,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
                                   <span className="text-xs font-bold text-brand-black">продано ({s.count})</span>
                               </div>
                           ))}
-                      </div>
-                  )}
-
-                  {/* Вознаграждение. Это расчёт по ставке, а не факт выплаты —
-                      приложение о выплатах не знает, и подпись говорит об этом прямо. */}
-                  {commissionPercent > 0 && (commission.closedCount > 0 || commission.pendingCount > 0) && (
-                      <div className="mt-4 pt-4 border-t border-brand-light">
-                          <div className="flex items-center justify-between mb-2">
-                              <span className="text-xs font-bold text-brand-black">Вознаграждение</span>
-                              <span className="text-[10px] text-brand-grey">ставка {commissionPercent}%</span>
-                          </div>
-                          <div className="grid grid-cols-2 gap-2">
-                              <div className="rounded-xl bg-brand-cream border border-brand-light p-3">
-                                  <div className="text-[10px] font-bold uppercase tracking-wide text-brand-grey">В работе</div>
-                                  <div className="text-base font-black text-brand-black mt-1 leading-tight">
-                                      {formatCommission(commission.pending) || '—'}
-                                  </div>
-                                  <div className="text-[10px] text-brand-grey mt-0.5">
-                                      {commission.pendingCount} {dealsWord(commission.pendingCount)}
-                                  </div>
-                              </div>
-                              <div className="rounded-xl bg-brand-gold/10 border border-brand-gold/30 p-3">
-                                  <div className="text-[10px] font-bold uppercase tracking-wide text-brand-gold">По закрытым</div>
-                                  <div className="text-base font-black text-brand-black mt-1 leading-tight">
-                                      {formatCommission(commission.closed) || '—'}
-                                  </div>
-                                  <div className="text-[10px] text-brand-grey mt-0.5">
-                                      {commission.closedCount} {dealsWord(commission.closedCount)}
-                                  </div>
-                              </div>
-                          </div>
-                          <p className="text-[10px] text-brand-grey mt-2 leading-relaxed">
-                              Расчётная величина по ставке {commissionPercent}% от цены лота. Фактическая выплата — по договору с застройщиком.
-                          </p>
                       </div>
                   )}
               </div>

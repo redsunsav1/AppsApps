@@ -167,8 +167,6 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [mpDescription, setMpDescription] = useState('');
   const [editingMortgageId, setEditingMortgageId] = useState<number | null>(null);
   const [minDownPayment, setMinDownPayment] = useState('10');
-  // Ставка вознаграждения не приходит с публичными настройками — читаем отдельно.
-  const [commissionPercent, setCommissionPercent] = useState('4');
   // Текст согласия покупателя правит юрист — держим его в настройках,
   // чтобы менять формулировку без релиза.
   const [consentText, setConsentText] = useState('');
@@ -411,14 +409,6 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
       .then(res => res.json())
       .then(data => setMortgageList(Array.isArray(data) ? data : []))
       .catch(e => console.error('Mortgage fetch error:', e));
-    fetch('/api/commission', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData: getAuthData() }),
-    })
-      .then(r => (r.ok ? r.json() : null))
-      .then(d => { if (d?.percent) setCommissionPercent(String(d.percent)); })
-      .catch(() => {});
     fetch('/api/settings').then(r => r.json()).then(d => {
       if (d.min_down_payment_percent) setMinDownPayment(d.min_down_payment_percent);
       if (d.buyer_consent_text) setConsentText(d.buyer_consent_text);
@@ -1136,43 +1126,6 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                         </button>
                     </div>
                     <p className="text-[10px] text-amber-600 mt-1">Применяется ко всем пользователям в калькуляторе</p>
-                </div>
-
-                {/* Базовая ставка агентского вознаграждения */}
-                <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3">
-                    <label className="text-xs font-bold text-yellow-800 block mb-1.5">Агентское вознаграждение (%)</label>
-                    <div className="flex gap-2">
-                        <input
-                            type="number"
-                            min="0"
-                            max="100"
-                            step="0.1"
-                            value={commissionPercent}
-                            onChange={e => setCommissionPercent(e.target.value)}
-                            className="w-24 p-2 border border-yellow-400 rounded-lg text-black font-bold bg-white text-center"
-                        />
-                        <button
-                            onClick={async () => {
-                                try {
-                                    const res = await fetch('/api/settings', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ initData: getAuthData(), key: 'commission_percent', value: commissionPercent }),
-                                    });
-                                    const data = await res.json();
-                                    if (data.success) showToast('Сохранено', 'success');
-                                    else showToast(data.error || 'Ошибка', 'error');
-                                } catch { showToast('Ошибка сети', 'error'); }
-                            }}
-                            className="px-4 py-2 bg-yellow-700 text-white rounded-lg text-xs font-bold"
-                        >
-                            Сохранить
-                        </button>
-                    </div>
-                    <p className="text-[10px] text-yellow-700 mt-1">
-                        Базовая ставка от цены лота. Риелтор видит расчёт в карточке квартиры и сводку в профиле.
-                        Клиенту эта сумма не показывается. Ставка 0 полностью скрывает вознаграждение.
-                    </p>
                 </div>
 
                 {/* Согласие покупателя на обработку персональных данных */}

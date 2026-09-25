@@ -238,7 +238,16 @@ function collectJsonBlobs(html) {
   return blobs;
 }
 
-export function extractEmbeddedNews(html, listUrl) {
+// Текст новости бывает строкой с HTML или «богатым» JSON (блоки редактора)
+function richText(v, depth = 0) {
+  if (v === undefined || v === null || depth > 8) return '';
+  if (typeof v === 'string') return stripTags(v.replace(/<\/(p|div|li|h\d)>|<br\s*\/?>/gi, '\n'));
+  if (Array.isArray(v)) return v.map(x => richText(x, depth + 1)).filter(Boolean).join('\n\n');
+  if (typeof v === 'object') return richText(v.text ?? v.content ?? v.children ?? v.blocks ?? v.data ?? v.value ?? v.html, depth + 1);
+  return '';
+}
+
+function findNewsObjects(values) {
   const found = [];
   const seen = new WeakSet();
   const walk = (v, depth) => {
@@ -247,24 +256,106 @@ export function extractEmbeddedNews(html, listUrl) {
     if (looksLikeNews(v)) { found.push(v); return; }
     for (const child of Array.isArray(v) ? v : Object.values(v)) walk(child, depth + 1);
   };
-  for (const blob of collectJsonBlobs(html)) walk(blob, 0);
+  for (const v of values) walk(v, 0);
+  return found;
+}
 
+// Объекты-новости из любых данных (встроенных в страницу или из API сайта)
+export function newsFromData(values, listUrl) {
+  const origin = new URL(listUrl).origin + '/';
   const items = new Map();
-  for (const o of found) {
+  for (const o of findNewsObjects(values)) {
     const title = stripTags(pick(o, TITLE_KEYS));
     const date = dateFrom(pick(o, DATE_KEYS));
-    const rawText = pick(o, TEXT_KEYS);
-    const text = typeof rawText === 'string' ? stripTags(rawText.replace(/<\/(p|div|li|h\d)>|<br\s*\/?>/gi, '\n')) : '';
+    const text = richText(pick(o, TEXT_KEYS));
     const img = imageFrom(pick(o, IMAGE_KEYS));
     let link = '';
     const l = pick(o, ['url', 'link', 'href', 'path', 'uri']);
-    if (typeof l === 'string' && !/^https?:\/\/(?!([^/]*\.)?horoshogk\.ru)/i.test(l) && !/\.(jpe?g|png|webp|gif|pdf)$/i.test(l)) link = absUrl(l, listUrl);
+    if (typeof l === 'string' && !/^https?:\/\/(?!([^/]*\.)?horoshogk\.ru)/i.test(l) && !/\.(jpe?g|png|webp|gif|pdf)$/i.test(l)) link = absUrl(l, origin);
     const slug = pick(o, ['slug', 'code', 'alias']);
     if (!link && (typeof slug === 'string' || typeof slug === 'number')) link = `${listUrl.replace(/\/+$/, '')}/${slug}`;
     const key = link || `${listUrl}#${crypto.createHash('sha1').update(title + (date?.toISOString() || '')).digest('hex').slice(0, 12)}`;
-    if (!items.has(key)) items.set(key, { title, text, image_url: img ? absUrl(img, listUrl) : null, date, source_url: key, detail_url: link || null });
+    if (!items.has(key)) {
+      items.set(key, { title, text, image_url: img ? absUrl(img, origin) : null, date, source_url: key, detail_url: link || null, slug: slug ?? null, id: o.id ?? o._id ?? null });
+    }
   }
   return [...items.values()];
+}
+
+export function extractEmbeddedNews(html, listUrl) {
+  return newsFromData(collectJsonBlobs(html), listUrl);
+}
+
+// ---------------------------------------------------------------------------
+// SPA-сайты (horoshogk.ru — Vite + /api) отдают пустую страницу, а новости
+// грузят скриптом из API. Перебираем типичные адреса API и берём первый,
+// в котором нашлись новости. Точный адрес можно задать NEWS_API_URL.
+// ---------------------------------------------------------------------------
+
+const API_CANDIDATES = [
+  '/api/news', '/api/news?limit=100', '/api/news?per_page=100', '/api/news?pageSize=100',
+  '/api/news/list', '/api/v1/news', '/api/public/news', '/api/news/published',
+  '/api/posts?type=news', '/api/posts', '/api/articles', '/api/content/news',
+];
+
+async function fetchJson(url) {
+  const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/json' }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  const body = await res.text();
+  const type = res.headers.get('content-type') || '';
+  const trimmed = body.trim();
+  let json;
+  // SPA на неизвестный адрес отдаёт index.html со статусом 200 — это не данные
+  if (/json/i.test(type) || /^[[{]/.test(trimmed)) { try { json = JSON.parse(trimmed); } catch {} }
+  return { status: res.status, type, json, sample: trimmed.slice(0, 160).replace(/\s+/g, ' ') };
+}
+
+function withPage(url, page) {
+  const u = new URL(url);
+  u.searchParams.set('page', String(page));
+  return u.toString();
+}
+
+export async function fetchNewsFromApi(listUrl) {
+  const origin = new URL(listUrl).origin;
+  const tried = [];
+  const candidates = process.env.NEWS_API_URL ? [process.env.NEWS_API_URL] : API_CANDIDATES;
+  for (const path of candidates) {
+    const url = absUrl(path, origin + '/');
+    try {
+      const r = await fetchJson(url);
+      tried.push(`${path} → ${r.status} ${r.type.split(';')[0] || '?'} ${r.json ? 'JSON' : ''} ${r.sample.slice(0, 100)}`);
+      if (r.status !== 200 || !r.json) continue;
+      const items = new Map(newsFromData([r.json], listUrl).map(i => [i.source_url, i]));
+      if (!items.size) continue;
+      // Пагинация: добираем страницы, пока приходят новые новости
+      for (let page = 2; page <= MAX_LIST_PAGES; page++) {
+        const next = await fetchJson(withPage(url, page)).catch(() => null);
+        const more = next?.json ? newsFromData([next.json], listUrl).filter(i => !items.has(i.source_url)) : [];
+        if (!more.length) break;
+        more.forEach(i => items.set(i.source_url, i));
+      }
+      return { items: [...items.values()], apiUrl: url, tried };
+    } catch (e) {
+      tried.push(`${path} → ${e.message}`);
+    }
+  }
+  return { items: [], apiUrl: null, tried };
+}
+
+// Полный текст новости из API: /api/news/<slug> или /api/news/<id>
+async function fetchApiDetail(apiUrl, item) {
+  const base = new URL(apiUrl); base.search = '';
+  const root = base.toString().replace(/\/(list|published)\/?$/, '').replace(/\/+$/, '');
+  for (const key of [item.slug, item.id]) {
+    if (key === null || key === undefined || key === '') continue;
+    const r = await fetchJson(`${root}/${encodeURIComponent(key)}`).catch(() => null);
+    if (!r?.json) continue;
+    const [d] = newsFromData([r.json], 'https://x/news');
+    if (d?.text) return d;
+    const text = richText(r.json.content ?? r.json.body ?? r.json.text ?? r.json.data?.content);
+    if (text) return { text };
+  }
+  return null;
 }
 
 // Сводка того, что сервер увидел на странице ленты — чтобы подогнать разбор,
@@ -293,14 +384,24 @@ async function diagnoseScripts(html, url) {
   const srcs = [...html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map(m => absUrl(m[1], url))
     .filter(u => u && new URL(u).hostname.replace(/^www\./, '') === new URL(url).hostname.replace(/^www\./, '')).slice(0, 6);
   const found = new Set();
+  const snippets = [];
   for (const src of srcs) {
     try {
       const js = await fetchText(src);
       for (const m of js.matchAll(/["'`]((?:https?:\/\/[^"'`\s]+)?\/(?:api|wp-json|rest|graphql|bitrix\/services)[^"'`\s]{0,120})["'`]/g)) found.add(m[1]);
-      for (const m of js.matchAll(/["'`]([^"'`\s]{0,60}news[^"'`\s]{0,60})["'`]/gi)) if (m[1].includes('/')) found.add(m[1]);
+      for (const m of js.matchAll(/["'`]([^"'`\s]{0,60}news[^"'`\s]{0,60})["'`]/gi)) found.add(m[1]);
+      // Куски кода вокруг обращений к API — по ним видно, как собирается адрес
+      for (const re of [/["'`]\/api["'`]/g, /baseURL|VITE_API|apiUrl|API_URL/g, /["'`/]news["'`?/]/g]) {
+        let n = 0;
+        for (const m of js.matchAll(re)) {
+          if (n++ >= 4) break;
+          snippets.push(js.slice(Math.max(0, m.index - 120), m.index + 160).replace(/\s+/g, ' '));
+        }
+      }
     } catch {}
   }
-  return `\nAPI в бандлах (${srcs.length} файлов): ${[...found].slice(0, 40).join(' , ') || 'нет'}`;
+  return `\nAPI в бандлах (${srcs.length} файлов): ${[...found].slice(0, 40).join(' , ') || 'нет'}`
+    + `\nКод вокруг API:\n${[...new Set(snippets)].slice(0, 12).join('\n---\n')}`.slice(0, 5000);
 }
 
 async function insertNews(pool, a) {
@@ -340,15 +441,24 @@ export async function importSiteNews(pool, { listUrl = process.env.NEWS_SOURCE_U
     }
   }
 
+  // Пустая SPA-страница: новости берём из API сайта
+  let api = null;
+  if (!embedded.size && !articleLinks.size) {
+    api = await fetchNewsFromApi(listUrl);
+    for (const it of api.items) embedded.set(it.source_url, it);
+  }
+
   // Кандидаты: сначала встроенные данные (там уже есть дата и текст), затем ссылки
   const candidates = new Map();
   for (const it of embedded.values()) candidates.set(it.source_url, it);
   for (const l of articleLinks) if (!candidates.has(l)) candidates.set(l, { source_url: l, detail_url: l });
-  result.mode = embedded.size ? `данные страницы (${embedded.size})` : 'ссылки';
+  result.mode = api?.apiUrl ? `API ${api.apiUrl}` : embedded.size ? `данные страницы (${embedded.size})` : 'ссылки';
   result.found = candidates.size;
   if (!candidates.size) {
     const err = new Error(`На ${listUrl} не найдено новостей — нужна подгонка разбора под вёрстку сайта`);
-    err.diagnostics = diagnosePage(firstHtml, listUrl) + await diagnoseScripts(firstHtml, listUrl);
+    err.diagnostics = diagnosePage(firstHtml, listUrl)
+      + `\nОпрос API:\n${(api?.tried || []).join('\n')}`
+      + await diagnoseScripts(firstHtml, listUrl);
     throw err;
   }
 
@@ -362,8 +472,15 @@ export async function importSiteNews(pool, { listUrl = process.env.NEWS_SOURCE_U
     const c = candidates.get(key);
     try {
       let a = { ...c };
+      // Из API ленты часто приходит только анонс — полный текст из API новости
+      if (api?.apiUrl && (!c.text || c.text.length < 300)) {
+        const d = await fetchApiDetail(api.apiUrl, c).catch(() => null);
+        if (d?.text && d.text.length > (a.text || '').length) a.text = d.text;
+        a.image_url = a.image_url || d?.image_url || null;
+      }
       // Из ленты часто приходит только анонс — полный текст берём со страницы новости
-      if (c.detail_url && (!c.text || c.text.length < 300)) {
+      // (у SPA страница новости пустая, её не трогаем)
+      else if (c.detail_url && (!c.text || c.text.length < 300)) {
         try {
           const d = parseArticle(await fetchText(c.detail_url), c.detail_url);
           a = {

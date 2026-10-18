@@ -10,6 +10,7 @@ npm install
 npm run dev        # http://localhost:5180
 npm test           # тесты логики (Vitest)
 npm run build      # проверка типов + сборка
+npm run build:single  # один файл dist/sea-titans.html — открывается двойным кликом без сервера
 ```
 
 Параметры URL для проверки:

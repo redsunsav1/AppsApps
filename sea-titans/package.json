@@ -9,7 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:single": "npm run build && node tools/build-single.mjs"
   },
   "dependencies": {
     "bitecs": "^0.3.40",

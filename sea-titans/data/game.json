@@ -11,31 +11,52 @@
   "movement": {
     "flowFieldMinGroup": 6,
     "flowFieldsPerTick": 1,
-    "formationSpacing": 0.35,
-    "arriveDistance": 0.2,
-    "slowRadius": 1.2,
-    "accelerationTicks": 6,
+    "formationSpacing": 0.3,
+    "arriveDistance": 0.25,
     "losCheckInterval": 8,
     "flowToDirectDistance": 14,
-    "stuckFinishTicks": 30,
-    "stuckFinishDistance": 2.5,
-    "stuckRepathTicks": 100,
-    "stuckGiveUpTicks": 300,
-    "separationMargin": 0.06,
-    "turnSlowdownMin": 0.2,
-    "astarMaxNodes": 40000
+    "stuckFinishTicks": 20,
+    "stuckFinishDistance": 2.0,
+    "stuckRepathTicks": 60,
+    "stuckGiveUpTicks": 200,
+    "separationMargin": 0.05,
+    "astarMaxNodes": 20000
+  },
+  "economy": {
+    "startMetal": 400,
+    "unitCap": 60,
+    "queueMax": 5,
+    "depositAmount": 4000,
+    "depositReach": 0.9,
+    "dropoffReach": 0.7,
+    "harvesterResumeTicks": 60
+  },
+  "combat": {
+    "retargetInterval": 5,
+    "minDamage": 1,
+    "projectileMaxTicks": 60
+  },
+  "ai": {
+    "thinkInterval": 10,
+    "harvesters": 4,
+    "waveStart": 5,
+    "waveGrow": 2,
+    "waveMax": 18,
+    "defendRadius": 12,
+    "firstWaveTick": 1800,
+    "mix": {
+      "ws_scout": 1,
+      "ws_hunter": 3,
+      "ws_cruiser": 1.5
+    }
   },
   "camera": {
-    "scrollSpeed": 900,
-    "edgeScrollSpeed": 900,
-    "edgeScrollMargin": 14,
-    "zoomMin": 0.5,
-    "zoomMax": 2,
-    "zoomStep": 1.12
+    "scrollSpeed": 420,
+    "edgeScrollMargin": 10,
+    "targetWidth": 480
   },
-  "testMap": {
-    "width": 128,
-    "height": 128,
-    "seed": 1337
+  "map": {
+    "width": 72,
+    "height": 72
   }
 }

@@ -3,7 +3,8 @@ import { DX8, DY8, cellCenter, cellCoord } from '../map/grid';
 import { octile, smoothPath } from '../path/astar';
 import { NO_DIR, type FlowField } from '../path/flowfield';
 import { lineClearThick } from '../path/los';
-import { Mover, Position, Unit } from '../components';
+import { entityExists, hasComponent } from 'bitecs';
+import { Health, Mover, Position, Unit, Weapon } from '../components';
 import { NAV_DIRECT, NAV_FLOW, NAV_PATH, unitQuery, type Nav, type Order, type SimWorld } from '../world';
 
 /**
@@ -13,7 +14,6 @@ import { NAV_DIRECT, NAV_FLOW, NAV_PATH, unitQuery, type Nav, type Order, type S
 export function navigationSystem(w: SimWorld): void {
   const m = w.reg.game.movement;
   const arrive = toFixed(m.arriveDistance);
-  const slowR = toFixed(m.slowRadius);
   const finishDist = toFixed(m.stuckFinishDistance);
   const flowDirect = toFixed(m.flowToDirectDistance);
   w.wantX.clear(); w.wantY.clear(); w.wantSpeed.clear();
@@ -24,6 +24,14 @@ export function navigationSystem(w: SimWorld): void {
     const q = w.orders.get(e);
     if (!q || q.length === 0) continue;
     const order = q[0]!;
+    if (order.type === 'attack') {
+      // цель атаки движется: следуем за ней, путь перестраиваем раз в секунду
+      if (!entityExists(w.ecs, order.tgt) || !hasComponent(w.ecs, Health, order.tgt)) { finishOrder(w, e, q); continue; }
+      order.x = order.gx = Position.x[order.tgt]!;
+      order.y = order.gy = Position.y[order.tgt]!;
+      const old = w.nav.get(e);
+      if (old && w.tick - old.planned > w.reg.game.tickRate) w.nav.delete(e);
+    }
     let nav = w.nav.get(e);
     if (!nav) { nav = plan(w, e, order); w.nav.set(e, nav); }
 
@@ -41,10 +49,16 @@ export function navigationSystem(w: SimWorld): void {
     }
     const d = length(order.x - x, order.y - y);
 
-    // прогресс и застревание
-    if (d < nav.best - (Mover.speed[e]! >> 2)) { nav.best = d; nav.stuck = 0; } else nav.stuck++;
+    // прогресс и застревание; в бою (прошлый тик) не считаем — юнит стоит намеренно
+    const fighting = hasComponent(w.ecs, Weapon, e) && Weapon.engaged[e] === 1;
+    // напрямую — меряем приближение к цели; по маршруту путь может уводить в сторону, поэтому меряем само движение
+    const moved = length(x - nav.lx, y - nav.ly);
+    nav.lx = x; nav.ly = y;
+    if (fighting) { nav.best = d; nav.stuck = 0; }
+    else if (nav.mode !== NAV_DIRECT ? moved >= Mover.speed[e]! >> 1 : d < nav.best - (Mover.speed[e]! >> 2)) { nav.best = Math.min(nav.best, d); nav.stuck = 0; }
+    else nav.stuck++;
     const groupSpread = order.groupSize > 1 ? finishDist + (isqrtGroup(order.groupSize) * Mover.radius[e]!) : finishDist >> 1;
-    if (d <= arrive || (nav.stuck > m.stuckFinishTicks && d < groupSpread) || nav.stuck > m.stuckGiveUpTicks) {
+    if ((d <= arrive && order.type !== 'attack') || (nav.stuck > m.stuckFinishTicks && d < groupSpread) || nav.stuck > m.stuckGiveUpTicks) {
       finishOrder(w, e, q);
       continue;
     }
@@ -96,8 +110,8 @@ export function navigationSystem(w: SimWorld): void {
     const dx = tx - x, dy = ty - y;
     w.wantX.set(e, dx);
     w.wantY.set(e, dy);
-    let speed = Mover.speed[e]!;
-    if (final && d < slowR) speed = Math.max(speed >> 2, Math.trunc((speed * d) / slowR));
+    // 8-bit: никакого плавного торможения — полный ход до точки, последний шаг ровно в неё
+    const speed = final ? Math.min(Mover.speed[e]!, d) : Mover.speed[e]!;
     w.wantSpeed.set(e, speed);
   }
 }
@@ -109,15 +123,15 @@ function finishOrder(w: SimWorld, e: number, q: Order[]): void {
   w.nav.delete(e);
   if (done.type === 'patrol') {
     // обратный путь патруля идёт A*, у группы нет общей цели
-    q.push({ ...done, x: done.ox, y: done.oy, ox: done.x, oy: done.y, gx: done.ox, gy: done.oy, groupSize: 1 });
+    q.push({ ...done, x: done.ox, y: done.oy, ox: done.x, oy: done.y, gx: done.ox, gy: done.oy, groupSize: 1, tgt: -1 });
   }
 }
 
 function plan(w: SimWorld, e: number, order: Order): Nav {
   const x = Position.x[e]!, y = Position.y[e]!;
-  const base: Nav = { mode: NAV_DIRECT, pts: [], wp: 0, flowGoal: -1, best: length(order.x - x, order.y - y), stuck: 0, repathed: false };
+  const base: Nav = { mode: NAV_DIRECT, pts: [], wp: 0, flowGoal: -1, best: length(order.x - x, order.y - y), stuck: 0, repathed: false, planned: w.tick, lx: x, ly: y };
   if (lineClearThick(w.grid, x, y, order.x, order.y, Mover.radius[e]!)) return base;
-  if (order.groupSize >= w.reg.game.movement.flowFieldMinGroup) {
+  if (order.groupSize >= w.reg.game.movement.flowFieldMinGroup && order.type !== 'attack') {
     const cls = Mover.cls[e]!;
     const goal = w.grid.nearestPassable(cellCoord(order.gx, cls), cellCoord(order.gy, cls), 32, cls);
     // достижимость проверяется, когда поле будет построено (см. бюджет flowFieldsPerTick)
@@ -129,7 +143,7 @@ function plan(w: SimWorld, e: number, order: Order): Nav {
 function planPath(w: SimWorld, e: number, order: Order): Nav {
   const grid = w.grid;
   const x = Position.x[e]!, y = Position.y[e]!;
-  const nav: Nav = { mode: NAV_DIRECT, pts: [], wp: 0, flowGoal: -1, best: length(order.x - x, order.y - y), stuck: 0, repathed: false };
+  const nav: Nav = { mode: NAV_DIRECT, pts: [], wp: 0, flowGoal: -1, best: length(order.x - x, order.y - y), stuck: 0, repathed: false, planned: w.tick, lx: x, ly: y };
   const cls = Mover.cls[e]!;
   const sx = cellCoord(x, cls), sy = cellCoord(y, cls);
   let start = grid.inBounds(sx, sy) ? grid.idx(sx, sy) : -1;

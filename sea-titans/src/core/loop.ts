@@ -23,7 +23,8 @@ export class GameLoop {
   start(): void {
     this.last = performance.now();
     const frame = (now: number) => {
-      const dt = Math.min(now - this.last, 250);
+      // метка rAF бывает чуть раньше performance.now() на старте — отрицательный dt недопустим
+      const dt = Math.max(0, Math.min(now - this.last, 250));
       this.last = now;
       if (!this.paused) {
         this.acc += dt * this.speed;

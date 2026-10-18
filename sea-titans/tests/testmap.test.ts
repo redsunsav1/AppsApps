@@ -24,3 +24,17 @@ describe('тестовая карта', () => {
     expect(Buffer.from(a.biome).equals(Buffer.from(b.biome))).toBe(true);
   });
 });
+
+describe('месторождения', () => {
+  for (const seed of [1, 4242, 777, 31337]) {
+    it(`сид ${seed}: все месторождения и обе базы достижимы`, () => {
+      const { grid, spawns, deposits } = generateTestMap(72, 72, seed);
+      for (const cls of [0, 1]) {
+        const reach = grid.floodFill(spawns[0]!.x, spawns[0]!.y, cls);
+        expect(reach[grid.idx(spawns[1]!.x, spawns[1]!.y)], `класс ${cls}: база 2`).toBe(1);
+        if (cls === 0) for (const d of deposits) expect(reach[grid.idx(d.x, d.y)], `месторождение ${d.x},${d.y}`).toBe(1);
+      }
+      expect(deposits.length).toBeGreaterThanOrEqual(6);
+    });
+  }
+});

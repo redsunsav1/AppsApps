@@ -11,12 +11,15 @@
     "stop": "KeyX",
     "hold": "KeyH"
   },
+  "build": ["KeyQ", "KeyE", "KeyR", "KeyT"],
   "game": {
     "pause": "Pause",
     "pauseAlt": "Space",
     "speedUp": "Equal",
     "speedDown": "Minus",
     "debug": "F3",
-    "debugPaths": "F4"
+    "mute": "KeyM",
+    "help": "F1",
+    "home": "Home"
   }
 }

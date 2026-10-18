@@ -8,6 +8,8 @@ import { BIOME_INDEX, DX4, DY4, MapGrid } from './grid';
 export interface TestMap {
   grid: MapGrid;
   spawns: { x: number; y: number }[];
+  /** Месторождения металла: по два у каждой базы и спорные в центре. */
+  deposits: { x: number; y: number }[];
 }
 
 export function generateTestMap(width: number, height: number, seed: number): TestMap {
@@ -19,15 +21,26 @@ export function generateTestMap(width: number, height: number, seed: number): Te
   const volc = new ValueNoise(rng, 32);
   const gaps = new ValueNoise(rng, 32); // разрывы в хребтах = проходы
 
+  const sx = Math.round(width * 0.16);
   const spawns = [
-    { x: Math.round(width * 0.18), y: Math.round(height * 0.5) },
-    { x: Math.round(width * 0.82), y: Math.round(height * 0.5) },
+    { x: sx, y: Math.round(height * 0.5) },
+    { x: width - 1 - sx, y: Math.round(height * 0.5) },
   ];
-  const clearR = Math.max(8, Math.round(width * 0.08));
+  const cx = Math.floor(width / 2), cy = Math.floor(height / 2);
+  const deposits = [
+    ...spawns.flatMap((s) => {
+      const toward = s.x < cx ? 1 : -1;
+      return [{ x: s.x + toward, y: s.y - 7 }, { x: s.x + toward * 5, y: s.y + 7 }];
+    }),
+    { x: cx, y: cy - 12 }, { x: cx, y: cy + 12 },
+  ];
+  const clearR = Math.max(7, Math.round(width * 0.08));
 
   for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = grid.idx(x, y);
+    for (let xx = 0; xx < width; xx++) {
+      const i = grid.idx(xx, y);
+      // зеркальная симметрия слева-направо: стартовые условия честные
+      const x = Math.min(xx, width - 1 - xx);
       const d = depth.fbm(x / 34, y / 34, 4);
       const rn = ridge.fbm(x / 22, y / 22, 3);
       const r = 1 - Math.abs(2 * rn - 1); // гребни шума → хребты
@@ -36,7 +49,8 @@ export function generateTestMap(width: number, height: number, seed: number): Te
       const g = gaps.fbm(x / 9, y / 9, 2);
 
       let nearSpawn = false;
-      for (const s of spawns) if ((x - s.x) ** 2 + (y - s.y) ** 2 < clearR * clearR) nearSpawn = true;
+      for (const s of spawns) if ((xx - s.x) ** 2 + (y - s.y) ** 2 < clearR * clearR) nearSpawn = true;
+      for (const d of deposits) if ((xx - d.x) ** 2 + (y - d.y) ** 2 <= 5) nearSpawn = true;
 
       let biome = d < 0.3 ? BIOME_INDEX.abyss : d < 0.45 ? BIOME_INDEX.silt : BIOME_INDEX.sand;
       if (c > 0.68 && biome !== BIOME_INDEX.abyss) biome = BIOME_INDEX.coral;
@@ -55,8 +69,8 @@ export function generateTestMap(width: number, height: number, seed: number): Te
   }
 
   // Изолированные карманы заливаем скалой, чтобы все клетки были достижимы.
-  ensureConnected(grid, spawns);
-  return { grid, spawns };
+  ensureConnected(grid, [...spawns, ...deposits]);
+  return { grid, spawns, deposits };
 }
 
 /**
@@ -75,13 +89,20 @@ function connectClass(grid: MapGrid, spawns: { x: number; y: number }[], cls: nu
     const blocked = grid.blockedFor(cls);
     const reach = grid.floodFill(s0.x, s0.y, cls);
     let u = -1;
-    for (const s of spawns) if (!reach[grid.idx(s.x, s.y)]) { u = grid.idx(s.x, s.y); break; }
+    let required = false;
+    for (const s of spawns) if (!reach[grid.idx(s.x, s.y)]) { u = grid.idx(s.x, s.y); required = true; break; }
     if (u < 0) for (let i = 0; i < n; i++) if (!blocked[i] && !reach[i] && !skip[i]) { u = i; break; }
     if (u < 0) return;
     const comp = grid.floodFill(u % grid.width, (u / grid.width) | 0, cls);
+    if (required && !comp[u]) {
+      // сама точка непроходима для этого класса (узко) — расчищаем вокруг неё
+      for (let oy = 0; oy <= cls + 1; oy++) for (let ox = 0; ox <= cls + 1; ox++) clearTile(grid, (u % grid.width) + ox, ((u / grid.width) | 0) + oy);
+      grid.invalidateClasses();
+      continue;
+    }
     let size = 0;
     for (let i = 0; i < n; i++) size += comp[i]!;
-    if (size < 24) {
+    if (size < 24 && !required) {
       if (cls === 0) { for (let i = 0; i < n; i++) if (comp[i]) sealRock(grid, i); grid.invalidateClasses(); }
       else for (let i = 0; i < n; i++) if (comp[i]) skip[i] = 1; // крупным туда просто нельзя
       continue;
@@ -89,6 +110,12 @@ function connectClass(grid: MapGrid, spawns: { x: number; y: number }[], cls: nu
     carveToReach(grid, comp, reach, cls + 2);
     grid.invalidateClasses();
   }
+}
+
+function clearTile(grid: MapGrid, x: number, y: number): void {
+  if (!grid.inBounds(x, y)) return;
+  const i = grid.idx(x, y);
+  if (grid.blocked[i]) { grid.blocked[i] = 0; grid.biome[i] = BIOME_INDEX.silt; grid.height[i] = 0; }
 }
 
 function sealRock(grid: MapGrid, i: number): void {

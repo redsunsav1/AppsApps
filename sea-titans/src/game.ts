@@ -1,127 +1,176 @@
-import { entityExists } from 'bitecs';
+import { entityExists, hasComponent } from 'bitecs';
 import { toFixed } from './core/fixed';
 import type { Registry } from './data/registry';
-import type { Camera } from './render/camera';
-import type { EntityRenderer } from './render/entities';
-import type { HeightField, Iso } from './render/iso';
-import { Owner, Unit } from './sim/components';
-import { enqueue, type OrderType, type SimWorld } from './sim/world';
+import type { Fog } from './render/fog';
+import { FX_TO_PX, type Renderer } from './render/renderer';
+import { Building, Harvester, Owner, Position, Unit, Weapon } from './sim/components';
+import { buildingQuery, enqueue, nodeQuery, type OrderType, type SimWorld } from './sim/world';
+
+export interface Feedback {
+  ack(): void;
+  denied(): void;
+  select(): void;
+  marker(wx: number, wy: number, kind: 'move' | 'amove' | 'patrol' | 'attack' | 'harvest' | 'rally'): void;
+}
 
 /** Связка ввода с симуляцией: выделение, группы, выдача команд. Сам ничего не симулирует. */
 export class GameController {
   readonly selection = new Set<number>();
   private readonly groups = new Map<number, number[]>();
-  /** Режим ожидания цели после хоткея (атака-движение, патруль). */
-  pendingMode: OrderType | null = null;
-  onOrder: ((wx: number, wy: number, mode: OrderType) => void) | null = null;
+  pendingMode: Exclude<OrderType, 'attack'> | null = null;
 
   constructor(
     readonly sim: SimWorld,
     readonly reg: Registry,
-    private readonly camera: Camera,
-    private readonly iso: Iso,
-    private readonly heights: HeightField,
-    private readonly entities: EntityRenderer,
+    private readonly view: Renderer,
+    private readonly fog: Fog,
+    private readonly fb: Feedback,
     readonly player = 0,
   ) {}
 
-  /** Экран → тайлы с поправкой на высоту рельефа (2 итерации). */
-  screenToTile(sx: number, sy: number): [number, number] {
-    const [wx, wy] = this.camera.toWorld(sx, sy);
-    let [tx, ty] = this.iso.toTile(wx, wy);
-    for (let i = 0; i < 2; i++) {
-      const h = Math.max(0, this.heights.sample(tx, ty));
-      [tx, ty] = this.iso.toTile(wx, wy + h * this.iso.heightPx);
-    }
-    return [Math.max(0, Math.min(this.sim.grid.width - 0.01, tx)), Math.max(0, Math.min(this.sim.grid.h - 0.01, ty))];
-  }
-
   pruneSelection(): void {
-    for (const e of this.selection) if (!entityExists(this.sim.ecs, e)) this.selection.delete(e);
+    for (const e of this.selection) if (!entityExists(this.sim.ecs, e) || !hasComponent(this.sim.ecs, Unit, e)) this.selection.delete(e);
   }
 
   private own(e: number): boolean {
     return Owner.player[e] === this.player;
   }
 
-  private unitsOnScreen(): number[] {
-    const out: number[] = [];
-    for (const [e, p] of this.entities.bodyPos) {
-      const [sx, sy] = this.camera.toScreen(p.x, p.y);
-      if (sx >= 0 && sy >= 0 && sx <= this.camera.viewW && sy <= this.camera.viewH) out.push(e);
-    }
-    return out;
-  }
-
-  /** Ближайший юнит под курсором (сначала свои). */
-  pick(sx: number, sy: number): number | null {
-    let best: number | null = null;
-    let bestD = Infinity;
-    for (const [e, p] of this.entities.bodyPos) {
-      const [ex, ey] = this.camera.toScreen(p.x, p.y);
-      const r = Math.max(14, p.r * this.camera.zoom);
-      const d = Math.hypot(ex - sx, (ey - sy) * 1.4);
-      if (d > r) continue;
-      const score = d - (this.own(e) ? 1000 : 0);
-      if (score < bestD) { bestD = score; best = e; }
+  /** Юнит под курсором (сначала свои). */
+  pick(clientX: number, clientY: number): number | null {
+    const [wx, wy] = this.view.toWorld(clientX, clientY);
+    let best: number | null = null, bestD = Infinity;
+    for (const p of this.view.picks) {
+      const d = Math.hypot(p.x - wx, p.y - wy);
+      if (d > p.r + 2) continue;
+      const score = d - (this.own(p.e) ? 100 : 0);
+      if (score < bestD) { bestD = score; best = p.e; }
     }
     return best;
   }
 
-  clickSelect(sx: number, sy: number, add: boolean, double: boolean): void {
-    const e = this.pick(sx, sy);
+  clickSelect(clientX: number, clientY: number, add: boolean, double: boolean): void {
+    const e = this.pick(clientX, clientY);
     if (!add) this.selection.clear();
     if (e === null) return;
     if (double && this.own(e)) {
       const def = Unit.def[e];
-      for (const o of this.unitsOnScreen()) if (this.own(o) && Unit.def[o] === def) this.selection.add(o);
-      return;
-    }
-    if (add && this.selection.has(e)) this.selection.delete(e);
+      for (const p of this.view.picks) if (this.own(p.e) && Unit.def[p.e] === def) this.selection.add(p.e);
+    } else if (add && this.selection.has(e)) this.selection.delete(e);
     else this.selection.add(e);
+    this.fb.select();
   }
 
+  /** Рамка в координатах экрана. Здания в рамку не попадают, если в ней есть юниты. */
   boxSelect(x0: number, y0: number, x1: number, y1: number, add: boolean): void {
-    const [ax, bx] = [Math.min(x0, x1), Math.max(x0, x1)];
-    const [ay, by] = [Math.min(y0, y1), Math.max(y0, y1)];
+    const [ax, ay] = this.view.toWorld(Math.min(x0, x1), Math.min(y0, y1));
+    const [bx, by] = this.view.toWorld(Math.max(x0, x1), Math.max(y0, y1));
     if (!add) this.selection.clear();
-    for (const [e, p] of this.entities.bodyPos) {
-      if (!this.own(e)) continue;
-      const [sx, sy] = this.camera.toScreen(p.x, p.y);
-      if (sx >= ax && sx <= bx && sy >= ay && sy <= by) this.selection.add(e);
-    }
+    const hit = this.view.picks.filter((p) => this.own(p.e) && p.x >= ax && p.x <= bx && p.y >= ay && p.y <= by).map((p) => p.e);
+    const mobile = hit.filter((e) => !hasComponent(this.sim.ecs, Building, e));
+    for (const e of mobile.length ? mobile : hit) this.selection.add(e);
+    if (hit.length) this.fb.select();
   }
 
   private mine(): number[] {
-    return [...this.selection].filter((e) => this.own(e));
+    return [...this.selection].filter((e) => this.own(e) && entityExists(this.sim.ecs, e));
   }
 
-  order(sx: number, sy: number, mode: OrderType, queue: boolean): boolean {
-    const units = this.mine();
+  private mobile(): number[] {
+    return this.mine().filter((e) => !hasComponent(this.sim.ecs, Building, e));
+  }
+
+  /** ПКМ: враг — атака, кристаллы — добыча (для сборщиков), только база — точка сбора, иначе движение. */
+  rightClick(clientX: number, clientY: number, queue: boolean): void {
+    const [wx, wy] = this.view.toWorld(clientX, clientY);
+    const fx = toFixed(wx / 16), fy = toFixed(wy / 16);
+    const units = this.mobile();
+    const buildings = this.mine().filter((e) => hasComponent(this.sim.ecs, Building, e));
+    if (units.length === 0) {
+      for (const b of buildings) enqueue(this.sim, { type: 'rally', player: this.player, building: b, x: fx, y: fy });
+      if (buildings.length) { this.fb.marker(wx, wy, 'rally'); this.fb.ack(); }
+      return;
+    }
+    const target = this.pick(clientX, clientY);
+    if (target !== null && !this.own(target) && this.fog.isVisible(wx / 16, wy / 16)) {
+      const armed = units.filter((e) => hasComponent(this.sim.ecs, Weapon, e));
+      if (armed.length) {
+        enqueue(this.sim, { type: 'attack', player: this.player, units: armed, target, queue });
+        this.fb.marker(Position.x[target]! / FX_TO_PX, Position.y[target]! / FX_TO_PX, 'attack');
+        this.fb.ack();
+        return;
+      }
+    }
+    const node = this.nodeAt(wx, wy);
+    const harv = units.filter((e) => hasComponent(this.sim.ecs, Harvester, e));
+    if (node >= 0 && harv.length) {
+      enqueue(this.sim, { type: 'harvest', player: this.player, units: harv, node });
+      this.fb.marker(Position.x[node]! / FX_TO_PX, Position.y[node]! / FX_TO_PX, 'harvest');
+      const rest = units.filter((e) => !harv.includes(e));
+      if (rest.length) enqueue(this.sim, { type: 'move', player: this.player, units: rest, x: fx, y: fy, mode: 'move', queue });
+      this.fb.ack();
+      return;
+    }
+    this.order(clientX, clientY, 'move', queue);
+  }
+
+  order(clientX: number, clientY: number, mode: Exclude<OrderType, 'attack'>, queue: boolean): boolean {
+    const units = this.mobile();
     if (units.length === 0) return false;
-    const [tx, ty] = this.screenToTile(sx, sy);
-    enqueue(this.sim, { type: 'move', player: this.player, units, x: toFixed(tx), y: toFixed(ty), mode, queue });
-    this.onOrder?.(tx, ty, mode);
+    const [wx, wy] = this.view.toWorld(clientX, clientY);
+    enqueue(this.sim, { type: 'move', player: this.player, units, x: toFixed(wx / 16), y: toFixed(wy / 16), mode, queue });
+    this.fb.marker(wx, wy, mode);
+    this.fb.ack();
     return true;
   }
 
+  private nodeAt(wx: number, wy: number): number {
+    const nodes = nodeQuery(this.sim.ecs);
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i]!;
+      if (Math.hypot(Position.x[n]! / FX_TO_PX - wx, Position.y[n]! / FX_TO_PX - wy) <= 9) return n;
+    }
+    return -1;
+  }
+
   stop(): void {
-    const units = this.mine();
-    if (units.length) enqueue(this.sim, { type: 'stop', player: this.player, units });
+    const units = this.mobile();
+    if (units.length) { enqueue(this.sim, { type: 'stop', player: this.player, units }); this.fb.ack(); }
   }
 
   hold(): void {
-    const units = this.mine();
-    if (units.length) enqueue(this.sim, { type: 'hold', player: this.player, units });
+    const units = this.mobile();
+    if (units.length) { enqueue(this.sim, { type: 'hold', player: this.player, units }); this.fb.ack(); }
+  }
+
+  base(): number {
+    const bs = buildingQuery(this.sim.ecs);
+    for (let i = 0; i < bs.length; i++) if (Owner.player[bs[i]!] === this.player && this.sim.prod.has(bs[i]!)) return bs[i]!;
+    return -1;
+  }
+
+  /** Строить можно в любой момент: заказ уходит в свою базу, выделять её не нужно. */
+  produce(def: number): void {
+    const b = this.base();
+    if (b < 0) return;
+    const d = this.reg.units[def]!;
+    const p = this.sim.prod.get(b)!;
+    if (this.sim.players[this.player]!.metal < d.raw.cost || p.queue.length >= this.reg.game.economy.queueMax) { this.fb.denied(); return; }
+    enqueue(this.sim, { type: 'produce', player: this.player, building: b, def });
+    this.fb.ack();
+  }
+
+  cancel(): void {
+    const b = this.base();
+    if (b >= 0) enqueue(this.sim, { type: 'cancel', player: this.player, building: b });
   }
 
   assignGroup(n: number): void {
     this.groups.set(n, this.mine());
   }
 
-  /** Возвращает центр группы в тайлах, если группа не пуста. */
   recallGroup(n: number, add: boolean): number[] {
-    const g = (this.groups.get(n) ?? []).filter((e) => entityExists(this.sim.ecs, e));
+    const g = (this.groups.get(n) ?? []).filter((e) => entityExists(this.sim.ecs, e) && hasComponent(this.sim.ecs, Unit, e) && this.own(e));
     this.groups.set(n, g);
     if (!add) this.selection.clear();
     for (const e of g) this.selection.add(e);

@@ -1,32 +1,58 @@
 [
   {
+    "id": "ws_hq",
+    "name": "Командный центр",
+    "role": "база: строит лодки, принимает металл",
+    "kind": "building",
+    "cost": 0, "buildTime": 0,
+    "hp": 2600, "armor": 4,
+    "speed": 0, "radius": 1.1, "sight": 9, "layer": "low",
+    "sprite": "hq",
+    "weapon": { "damage": 14, "range": 6, "cooldown": 0.9, "projectileSpeed": 14, "splash": 0, "projectile": "pulse" },
+    "produces": ["ws_harvester", "ws_scout", "ws_hunter", "ws_cruiser"]
+  },
+  {
+    "id": "ws_harvester",
+    "name": "Сборщик",
+    "role": "добывает металл",
+    "kind": "harvester",
+    "cost": 100, "buildTime": 6,
+    "hp": 200, "armor": 2,
+    "speed": 3.0, "radius": 0.4, "sight": 5, "layer": "low",
+    "sprite": "harvester",
+    "harvest": { "capacity": 40, "rate": 8 }
+  },
+  {
     "id": "ws_scout",
-    "name": "Разведчик «Скат»",
-    "role": "быстрая разведка",
-    "tier": 1,
-    "hp": 140, "armor": 1, "armorType": "light",
-    "speed": 3.6, "turnRate": 300, "radius": 0.35,
-    "sight": 9, "layer": "high",
-    "sprite": "ws_scout"
+    "name": "Скат",
+    "role": "быстрый, пулемёт",
+    "kind": "unit",
+    "cost": 60, "buildTime": 4,
+    "hp": 100, "armor": 0,
+    "speed": 5.2, "radius": 0.32, "sight": 8, "layer": "high",
+    "sprite": "scout",
+    "weapon": { "damage": 7, "range": 3.5, "cooldown": 0.45, "projectileSpeed": 16, "splash": 0, "projectile": "pulse" }
   },
   {
     "id": "ws_hunter",
     "name": "Охотник",
-    "role": "универсальная подлодка",
-    "tier": 1,
-    "hp": 320, "armor": 3, "armorType": "medium",
-    "speed": 2.2, "turnRate": 180, "radius": 0.45,
-    "sight": 7, "layer": "mid",
-    "sprite": "ws_hunter"
+    "role": "торпеды",
+    "kind": "unit",
+    "cost": 120, "buildTime": 7,
+    "hp": 260, "armor": 2,
+    "speed": 3.6, "radius": 0.42, "sight": 7, "layer": "mid",
+    "sprite": "hunter",
+    "weapon": { "damage": 30, "range": 5.5, "cooldown": 1.5, "projectileSpeed": 9, "splash": 0, "projectile": "torpedo" }
   },
   {
     "id": "ws_cruiser",
-    "name": "Тяжёлый крейсер",
-    "role": "тяжёлая линия",
-    "tier": 2,
-    "hp": 900, "armor": 8, "armorType": "heavy",
-    "speed": 1.3, "turnRate": 90, "radius": 0.7,
-    "sight": 7, "layer": "low",
-    "sprite": "ws_cruiser"
+    "name": "Крейсер",
+    "role": "тяжёлый, урон по площади",
+    "kind": "unit",
+    "cost": 260, "buildTime": 12,
+    "hp": 760, "armor": 5,
+    "speed": 2.1, "radius": 0.62, "sight": 8, "layer": "low",
+    "sprite": "cruiser",
+    "weapon": { "damage": 55, "range": 7, "cooldown": 2.6, "projectileSpeed": 7, "splash": 1.3, "projectile": "shell" }
   }
 ]

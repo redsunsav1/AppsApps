@@ -1,53 +1,36 @@
-import type { RenderConfig } from '../data/schema';
-import type { Camera } from '../render/camera';
-import type { Iso } from '../render/iso';
-import { hexToRgb } from '../render/iso';
-import { Owner, Position } from '../sim/components';
-import { BIOMES, type MapGrid } from '../sim/map/grid';
-import { unitQuery, type SimWorld } from '../sim/world';
+import { hasComponent } from 'bitecs';
+import type { Fog } from '../render/fog';
+import { hexToRgb, pack } from '../render/pixel';
+import type { Renderer } from '../render/renderer';
+import type { Sprites } from '../render/sprites';
+import { Building, Owner, Position } from '../sim/components';
+import type { MapGrid } from '../sim/map/grid';
+import { nodeQuery, unitQuery, type SimWorld } from '../sim/world';
 
-/** Миникарта-ромб (как в изометрии), клик/перетаскивание — переход камеры. */
+/** Миникарта 1 пиксель = 1 тайл, увеличена CSS без сглаживания. Клик/перетаскивание — камера. */
 export class Minimap {
   readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
-  private readonly bg: HTMLCanvasElement;
-  private readonly size: number;
+  private readonly base: Uint32Array;
+  private readonly img: ImageData;
   private dragging = false;
 
-  constructor(
-    private readonly grid: MapGrid,
-    private readonly cfg: RenderConfig,
-    private readonly camera: Camera,
-    private readonly iso: Iso,
-    size = 196,
-  ) {
-    this.size = size;
+  constructor(private readonly grid: MapGrid, private readonly sprites: Sprites, private readonly fog: Fog, private readonly view: Renderer, private readonly player: number) {
     this.canvas = document.createElement('canvas');
-    this.canvas.width = this.canvas.height = size;
+    this.canvas.width = grid.width;
+    this.canvas.height = grid.h;
     this.canvas.className = 'minimap';
     this.ctx = this.canvas.getContext('2d')!;
-
-    // фон: тайлы сверху, затем рисуем повёрнутыми в ромб
-    this.bg = document.createElement('canvas');
-    this.bg.width = grid.width;
-    this.bg.height = grid.h;
-    const bctx = this.bg.getContext('2d')!;
-    const img = bctx.createImageData(grid.width, grid.h);
-    const colors = BIOMES.map((b) => hexToRgb(cfg.biomes[b]!.color));
-    for (let i = 0; i < grid.width * grid.h; i++) {
-      const c = colors[grid.biome[i]!]!;
-      const k = grid.blocked[i] ? 0.7 : 1.25;
-      img.data[i * 4] = Math.min(255, c[0] * 255 * k);
-      img.data[i * 4 + 1] = Math.min(255, c[1] * 255 * k);
-      img.data[i * 4 + 2] = Math.min(255, c[2] * 255 * k);
-      img.data[i * 4 + 3] = 255;
-    }
-    bctx.putImageData(img, 0, 0);
+    this.img = this.ctx.createImageData(grid.width, grid.h);
+    const C = sprites.colors;
+    const biome = [C.sand!, C.water!, C.coral!, C.rock!, C.ash!, C.deep!];
+    this.base = new Uint32Array(grid.width * grid.h);
+    for (let i = 0; i < this.base.length; i++) this.base[i] = pack(grid.blocked[i] ? C.rockLight! : biome[grid.biome[i]!]!);
 
     const go = (e: PointerEvent) => {
       const r = this.canvas.getBoundingClientRect();
-      const [tx, ty] = this.toTile(e.clientX - r.left, e.clientY - r.top);
-      this.camera.centerOn(this.iso.x(tx, ty), this.iso.y(tx, ty));
+      const tx = ((e.clientX - r.left) / r.width) * grid.width, ty = ((e.clientY - r.top) / r.height) * grid.h;
+      this.view.centerOn(tx * 16, ty * 16);
     };
     this.canvas.addEventListener('pointerdown', (e) => { e.stopPropagation(); this.dragging = true; go(e); });
     window.addEventListener('pointermove', (e) => { if (this.dragging) go(e); });
@@ -55,51 +38,37 @@ export class Minimap {
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
-  /** Тайл → точка миникарты. */
-  private toMini(tx: number, ty: number): [number, number] {
-    const s = this.size / (this.grid.width + this.grid.h);
-    return [this.size / 2 + (tx - ty) * s, (tx + ty) * s * 0.5 + this.size * 0.25];
-  }
-
-  private toTile(mx: number, my: number): [number, number] {
-    const s = this.size / (this.grid.width + this.grid.h);
-    const a = (mx - this.size / 2) / s;
-    const b = (my - this.size * 0.25) / (s * 0.5);
-    return [(a + b) / 2, (b - a) / 2];
-  }
-
-  draw(w: SimWorld): void {
-    const ctx = this.ctx;
-    const n = this.size;
-    ctx.clearRect(0, 0, n, n);
-    const s = n / (this.grid.width + this.grid.h);
-    // матрица тайл→мини: x' = (tx-ty)s + n/2, y' = (tx+ty)s/2 + n/4
-    ctx.save();
-    ctx.setTransform(s, s * 0.5, -s, s * 0.5, n / 2, n * 0.25);
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(this.bg, 0, 0);
-    ctx.restore();
-
-    const ents = unitQuery(w.ecs);
+  draw(sim: SimWorld): void {
+    const px = new Uint32Array(this.img.data.buffer);
+    const black = pack([0, 0, 0]);
+    for (let i = 0; i < px.length; i++) {
+      if (!this.fog.explored[i]) px[i] = black;
+      else if (!this.fog.visible[i]) px[i] = ((this.base[i]! >> 1) & 0x7f7f7f7f) | 0xff000000;
+      else px[i] = this.base[i]!;
+    }
+    const W = this.grid.width;
+    const put = (x: number, y: number, c: number) => { if (x >= 0 && y >= 0 && x < W && y < this.grid.h) px[y * W + x] = c; };
+    const metal = pack(this.sprites.colors.metal!);
+    const nodes = nodeQuery(sim.ecs);
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i]!;
+      const x = Math.floor(Position.x[n]! / 1024), y = Math.floor(Position.y[n]! / 1024);
+      if (this.fog.explored[y * W + x]) put(x, y, metal);
+    }
+    const ents = unitQuery(sim.ecs);
     for (let i = 0; i < ents.length; i++) {
       const e = ents[i]!;
-      const [x, y] = this.toMini(Position.x[e]! / 1024, Position.y[e]! / 1024);
-      ctx.fillStyle = this.cfg.teamColors[Owner.player[e]!] ?? '#fff';
-      ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+      const x = Math.floor(Position.x[e]! / 1024), y = Math.floor(Position.y[e]! / 1024);
+      if (Owner.player[e] !== this.player && !this.fog.visible[y * W + x]) continue;
+      const c = pack(hexToRgb(sim.reg.palette.teams[Owner.player[e]!]!.main));
+      put(x, y, c);
+      if (hasComponent(sim.ecs, Building, e)) { put(x + 1, y, c); put(x, y + 1, c); put(x + 1, y + 1, c); put(x - 1, y, c); put(x, y - 1, c); }
     }
-
-    // рамка видимой области
-    const corners = [[0, 0], [this.camera.viewW, 0], [this.camera.viewW, this.camera.viewH], [0, this.camera.viewH]] as const;
-    ctx.strokeStyle = 'rgba(220,255,255,0.85)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    corners.forEach(([sx, sy], i) => {
-      const [wx, wy] = this.camera.toWorld(sx, sy);
-      const [tx, ty] = this.iso.toTile(wx, wy);
-      const [mx, my] = this.toMini(tx, ty);
-      if (i) ctx.lineTo(mx, my); else ctx.moveTo(mx, my);
-    });
-    ctx.closePath();
-    ctx.stroke();
+    this.ctx.putImageData(this.img, 0, 0);
+    // рамка камеры
+    const v = this.view;
+    this.ctx.strokeStyle = '#f4f4e8';
+    this.ctx.lineWidth = 1;
+    this.ctx.strokeRect(Math.round(v.camX / 16) + 0.5, Math.round((v.camY + v.insetTop) / 16) + 0.5, Math.round(v.bw / 16), Math.round((v.bh - v.insetTop - v.insetBottom) / 16));
   }
 }

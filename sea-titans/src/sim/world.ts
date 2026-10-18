@@ -53,6 +53,11 @@ export interface Projectile {
   kind: number;
   ttl: number;
   homing: boolean;
+  /** Кто стрелял (индекс юнита в реестре) — для бонусов урона и вида снаряда. */
+  def: number;
+  /** Точка вылета — для дуги снаряда в рендере. */
+  sx: number;
+  sy: number;
 }
 
 export interface Producer {
@@ -75,10 +80,10 @@ export interface PlayerState {
 export type SimEvent =
   | { t: 'shot'; x: number; y: number; kind: number; owner: number }
   | { t: 'hit'; x: number; y: number; kind: number; splash: number }
-  | { t: 'death'; x: number; y: number; r: number; owner: number; building: boolean }
+  | { t: 'death'; x: number; y: number; r: number; owner: number; building: boolean; def: number; angle: number }
   | { t: 'built'; owner: number; def: number }
   | { t: 'deposit'; owner: number; amount: number }
-  | { t: 'alert'; owner: number; x: number; y: number }
+  | { t: 'alert'; owner: number; x: number; y: number; def: number }
   | { t: 'win'; player: number };
 
 export interface SimWorld {

@@ -90,6 +90,7 @@ function fire(w: SimWorld, e: number, tgt: number, wp: NonNullable<SimWorld['reg
     x: sx, y: sy, tx: Position.x[tgt]!, ty: Position.y[tgt]!, tgt,
     speed: wp.speed, damage: wp.damage, splash: wp.splash, owner: Owner.player[e]!, kind: wp.kind,
     ttl: w.reg.game.combat.projectileMaxTicks, homing: wp.splash === 0,
+    def: Unit.def[e]!, sx, sy,
   });
   Weapon.cd[e] = wp.cooldown;
   emit(w, { t: 'shot', x: sx, y: sy, kind: wp.kind, owner: Owner.player[e]! });
@@ -123,11 +124,17 @@ function explode(w: SimWorld, p: SimWorld['projectiles'][number]): void {
   if (p.splash > 0) {
     w.spatial.query(p.x, p.y, p.splash + ONE, (o) => {
       if (Owner.player[o] === p.owner || !alive(w, o)) return;
-      if (length(Position.x[o]! - p.x, Position.y[o]! - p.y) <= p.splash + Mover.radius[o]!) damage(w, o, p.damage);
+      if (length(Position.x[o]! - p.x, Position.y[o]! - p.y) <= p.splash + Mover.radius[o]!) damage(w, o, withBonus(w, p.def, o, p.damage));
     });
   } else if (alive(w, p.tgt) && length(Position.x[p.tgt]! - p.x, Position.y[p.tgt]! - p.y) <= Mover.radius[p.tgt]! + (ONE >> 2)) {
-    damage(w, p.tgt, p.damage);
+    damage(w, p.tgt, withBonus(w, p.def, p.tgt, p.damage));
   }
+}
+
+/** Роли: множитель урона по типу цели (сборщик / лодка / здание). */
+function withBonus(w: SimWorld, attacker: number, target: number, dmg: number): number {
+  const k = w.reg.units[Unit.def[target]!]!.kind;
+  return Math.trunc((dmg * w.reg.units[attacker]!.bonus[k]!) / 100);
 }
 
 export function damage(w: SimWorld, e: number, amount: number): void {
@@ -137,7 +144,7 @@ export function damage(w: SimWorld, e: number, amount: number): void {
   const ps = w.players[owner];
   if (ps && w.tick - ps.lastAlert > w.reg.game.tickRate * 10) {
     ps.lastAlert = w.tick;
-    emit(w, { t: 'alert', owner, x: Position.x[e]!, y: Position.y[e]! });
+    emit(w, { t: 'alert', owner, x: Position.x[e]!, y: Position.y[e]!, def: Unit.def[e]! });
   }
   if (Health.hp[e]! <= 0) w.dead.add(e);
 }

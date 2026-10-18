@@ -1,7 +1,8 @@
 import { z } from 'zod';
 
 export const LayerSchema = z.enum(['low', 'mid', 'high']);
-export const ProjectileKindSchema = z.enum(['pulse', 'torpedo', 'shell']);
+export const ProjectileKindSchema = z.enum(['pulse', 'torpedo', 'shell', 'plasma']);
+export const KindSchema = z.enum(['unit', 'harvester', 'building']);
 
 export const WeaponSchema = z.object({
   damage: z.number().positive(),
@@ -16,7 +17,13 @@ export const UnitDefSchema = z.object({
   id: z.string().regex(/^[a-z0-9_]+$/),
   name: z.string(),
   role: z.string(),
-  kind: z.enum(['unit', 'harvester', 'building']),
+  description: z.string(),
+  icon: z.enum(['base', 'econ', 'recon', 'fleet', 'siege']),
+  strong: z.array(KindSchema),
+  weak: z.array(KindSchema),
+  kind: KindSchema,
+  /** Множители урона по типу цели: роли юнитов. */
+  bonus: z.record(KindSchema, z.number().positive()).optional(),
   cost: z.number().int().min(0),
   buildTime: z.number().min(0),
   hp: z.number().positive(),
@@ -108,3 +115,23 @@ export const AssetEntrySchema = z.object({
 export const AssetManifestSchema = z.record(z.string(), AssetEntrySchema);
 export type AssetManifest = z.infer<typeof AssetManifestSchema>;
 export type AssetEntry = z.infer<typeof AssetEntrySchema>;
+
+const PilotLookSchema = z.object({
+  skin: Hex, hair: Hex, eyes: Hex, gear: Hex,
+  hairStyle: z.enum(['short', 'long', 'ponytail', 'mohawk', 'bald']),
+  helmet: z.enum(['cap', 'hardhat', 'headset', 'diver', 'officer', 'mask', 'none']),
+  mustache: z.boolean(), beard: z.boolean(), scar: z.boolean(), eyepatch: z.boolean(), goggles: z.boolean(),
+});
+export const PilotSchema = z.object({
+  name: z.string(),
+  rank: z.string(),
+  look: PilotLookSchema,
+  lines: z.object({
+    select: z.array(z.string()).min(1), move: z.array(z.string()).min(1), attack: z.array(z.string()).min(1),
+    hurt: z.array(z.string()).min(1), built: z.array(z.string()).min(1),
+  }),
+});
+export type Pilot = z.infer<typeof PilotSchema>;
+export type PilotLook = z.infer<typeof PilotLookSchema>;
+export const PilotsSchema = z.object({ teams: z.array(z.record(z.string(), PilotSchema)).min(2) });
+export type Pilots = z.infer<typeof PilotsSchema>;

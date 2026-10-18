@@ -3,16 +3,18 @@ import hotkeysJson from '../../data/hotkeys.json';
 import wsUnitsJson from '../../data/factions/white_sharks/units.json';
 import paletteJson from '../../data/render/palette.json';
 import manifestJson from '../../assets/manifest.json';
+import pilotsJson from '../../data/pilots.json';
 import { tilesPerSecToTick, toFixed } from '../core/fixed';
 import {
-  AssetManifestSchema, GameConfigSchema, HotkeysSchema, PaletteSchema, UnitDefSchema,
-  type AssetManifest, type GameConfig, type Hotkeys, type Palette, type UnitDefRaw,
+  AssetManifestSchema, GameConfigSchema, HotkeysSchema, PaletteSchema, PilotsSchema, UnitDefSchema,
+  type AssetManifest, type GameConfig, type Hotkeys, type Palette, type Pilots, type UnitDefRaw,
 } from './schema';
 import { z } from 'zod';
 import { sizeClassOf } from '../sim/map/grid';
 
 export const LAYERS = ['low', 'mid', 'high'] as const;
-export const PROJECTILES = ['pulse', 'torpedo', 'shell'] as const;
+export const PROJECTILES = ['pulse', 'torpedo', 'shell', 'plasma'] as const;
+export const KINDS = ['unit', 'harvester', 'building'] as const;
 
 /** Оружие в единицах симуляции. */
 export interface WeaponDef {
@@ -38,6 +40,9 @@ export interface UnitDef {
   /** Тиков на одну единицу металла при добыче. */
   harvestTicksPerUnit: number;
   produces: number[];
+  /** Множитель урона ×100 по индексу KINDS. */
+  bonus: number[];
+  kind: number;
 }
 
 export interface Registry {
@@ -45,18 +50,20 @@ export interface Registry {
   hotkeys: Hotkeys;
   palette: Palette;
   manifest: AssetManifest;
+  pilots: Pilots;
   units: UnitDef[];
   unitById: Map<string, UnitDef>;
 }
 
 export function buildRegistry(raw: {
-  game: unknown; hotkeys: unknown; palette: unknown; manifest: unknown; units: unknown[];
+  game: unknown; hotkeys: unknown; palette: unknown; manifest: unknown; units: unknown[]; pilots: unknown;
 }): Registry {
   const game = GameConfigSchema.parse(raw.game);
   const hotkeys = HotkeysSchema.parse(raw.hotkeys);
   const palette = PaletteSchema.parse(raw.palette);
   const manifest = AssetManifestSchema.parse(raw.manifest);
   const unitsRaw = z.array(UnitDefSchema).parse(raw.units);
+  const pilots = PilotsSchema.parse(raw.pilots);
   const tr = game.tickRate;
 
   const units: UnitDef[] = unitsRaw.map((u, index) => ({
@@ -78,6 +85,8 @@ export function buildRegistry(raw: {
     } : null,
     harvestTicksPerUnit: u.harvest ? Math.max(1, Math.round(tr / u.harvest.rate)) : 0,
     produces: [],
+    bonus: KINDS.map((k) => Math.round((u.bonus?.[k] ?? 1) * 100)),
+    kind: KINDS.indexOf(u.kind),
   }));
   const unitById = new Map(units.map((u) => [u.raw.id, u]));
   if (unitById.size !== units.length) throw new Error('Дублирующиеся id юнитов в конфигах');
@@ -89,9 +98,10 @@ export function buildRegistry(raw: {
       return d.index;
     });
   }
+  pilots.teams.forEach((t, i) => { for (const u of units) if (!t[u.raw.id]) throw new Error(`pilots.json: у команды ${i} нет пилота для ${u.raw.id}`); });
   for (const id of Object.keys(game.ai.mix)) if (!unitById.has(id)) throw new Error(`ai.mix: неизвестный юнит ${id}`);
   if (game.defaultSpeedIndex >= game.speedSteps.length) throw new Error('defaultSpeedIndex вне speedSteps');
-  return { game, hotkeys, palette, manifest, units, unitById };
+  return { game, hotkeys, palette, manifest, pilots, units, unitById };
 }
 
 let cached: Registry | null = null;
@@ -99,7 +109,7 @@ let cached: Registry | null = null;
 /** Реестр из встроенных JSON (Vite и Vitest импортируют их напрямую). */
 export function loadRegistry(): Registry {
   cached ??= buildRegistry({
-    game: gameJson, hotkeys: hotkeysJson, palette: paletteJson, manifest: manifestJson, units: [...wsUnitsJson],
+    game: gameJson, hotkeys: hotkeysJson, palette: paletteJson, manifest: manifestJson, units: [...wsUnitsJson], pilots: pilotsJson,
   });
   return cached;
 }

@@ -87,3 +87,45 @@ button i { font-style: normal; color: var(--hazard); }
   .bbtn .name { display: none; }
   .cmds { display: none; }
 }
+
+/* --- версия 3: портреты, карточки, подсказки --- */
+.gem { display: inline-block; width: 8px; height: 10px; margin-right: 6px; vertical-align: -1px; background: linear-gradient(135deg, #fff 0 25%, #c0f0ff 25% 55%, #6a9ad8 55%); clip-path: polygon(50% 0, 100% 40%, 50% 100%, 0 40%); }
+.bottom { height: 178px; }
+.mm { height: 158px; }
+.minimap { max-height: 150px; max-width: 150px; width: 150px; height: 150px; }
+.pilotbox { width: 176px; flex: none; }
+.pilot { display: flex; flex-direction: column; gap: 6px; height: 100%; }
+.pilot .screen { width: 104px; height: 104px; padding: 4px; align-self: flex-start; background: #000; }
+.pilot canvas { width: 96px; height: 96px; image-rendering: pixelated; display: block; }
+.pilot .who { min-width: 0; }
+.pilot .who b { display: block; font-size: 8px; color: var(--hazard); line-height: 1.5; }
+.pilot .who b span { display: block; color: var(--foam); }
+.pilot .say { font-size: 8px; color: var(--white); line-height: 1.6; min-height: 26px; }
+.pilot.empty .screen { opacity: 0.25; }
+.radiobox { top: 46px; left: 12px; padding: 10px; width: 300px; }
+.radiobox .pilot { flex-direction: row; align-items: flex-start; gap: 10px; }
+.radiobox .pilot .screen { width: 72px; height: 72px; }
+.radiobox .pilot canvas { width: 64px; height: 64px; }
+.info { font-size: 8px; line-height: 1.7; }
+.info .empty { margin-top: 30px; text-align: center; }
+.card .title { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+.card .title b { font-size: 10px; color: var(--white); }
+.card .tag { padding: 2px 6px; color: #000; font-size: 7px; }
+.tag-base { background: #8c96a8; } .tag-econ { background: #c0f0ff; } .tag-recon { background: #a6f0e8; } .tag-fleet { background: #3fa8ff; } .tag-siege { background: #ffb02e; }
+.card .desc { color: var(--glint); margin-bottom: 4px; }
+.card .stats { display: flex; flex-wrap: wrap; gap: 2px 14px; color: var(--foam); }
+.card .good { color: var(--green); margin-top: 3px; }
+.card .bad { color: var(--red); }
+.many { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-bottom: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--deep); padding: 3px 8px 3px 4px; }
+.chip canvas { image-rendering: pixelated; }
+.build { grid-template-columns: repeat(4, 96px); }
+.bbtn { height: 158px; padding-top: 10px; }
+.bbtn .icon { height: 40px; }
+.bbtn .role { position: absolute; top: 6px; left: 6px; image-rendering: pixelated; }
+.bbtn .hk { position: absolute; bottom: 14px; color: var(--hazard); }
+.bbtn .badge { font-size: 8px; }
+.cmds button { height: 76px; }
+.tip { position: fixed; width: 320px; padding: 12px 14px; font-size: 8px; line-height: 1.7; z-index: 5; }
+.tip .card .title b { font-size: 10px; }
+@media (max-width: 1100px) { .pilotbox { width: 112px; } .pilot .who { display: none; } }

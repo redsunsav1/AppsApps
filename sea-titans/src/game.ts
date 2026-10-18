@@ -7,7 +7,7 @@ import { Building, Harvester, Owner, Position, Unit, Weapon } from './sim/compon
 import { buildingQuery, enqueue, nodeQuery, type OrderType, type SimWorld } from './sim/world';
 
 export interface Feedback {
-  ack(): void;
+  ack(kind: 'move' | 'attack'): void;
   denied(): void;
   select(): void;
   marker(wx: number, wy: number, kind: 'move' | 'amove' | 'patrol' | 'attack' | 'harvest' | 'rally'): void;
@@ -88,7 +88,7 @@ export class GameController {
     const buildings = this.mine().filter((e) => hasComponent(this.sim.ecs, Building, e));
     if (units.length === 0) {
       for (const b of buildings) enqueue(this.sim, { type: 'rally', player: this.player, building: b, x: fx, y: fy });
-      if (buildings.length) { this.fb.marker(wx, wy, 'rally'); this.fb.ack(); }
+      if (buildings.length) { this.fb.marker(wx, wy, 'rally'); this.fb.ack('move'); }
       return;
     }
     const target = this.pick(clientX, clientY);
@@ -97,7 +97,7 @@ export class GameController {
       if (armed.length) {
         enqueue(this.sim, { type: 'attack', player: this.player, units: armed, target, queue });
         this.fb.marker(Position.x[target]! / FX_TO_PX, Position.y[target]! / FX_TO_PX, 'attack');
-        this.fb.ack();
+        this.fb.ack('attack');
         return;
       }
     }
@@ -108,7 +108,7 @@ export class GameController {
       this.fb.marker(Position.x[node]! / FX_TO_PX, Position.y[node]! / FX_TO_PX, 'harvest');
       const rest = units.filter((e) => !harv.includes(e));
       if (rest.length) enqueue(this.sim, { type: 'move', player: this.player, units: rest, x: fx, y: fy, mode: 'move', queue });
-      this.fb.ack();
+      this.fb.ack('move');
       return;
     }
     this.order(clientX, clientY, 'move', queue);
@@ -120,7 +120,7 @@ export class GameController {
     const [wx, wy] = this.view.toWorld(clientX, clientY);
     enqueue(this.sim, { type: 'move', player: this.player, units, x: toFixed(wx / 16), y: toFixed(wy / 16), mode, queue });
     this.fb.marker(wx, wy, mode);
-    this.fb.ack();
+    this.fb.ack(mode === 'move' ? 'move' : 'attack');
     return true;
   }
 
@@ -135,12 +135,12 @@ export class GameController {
 
   stop(): void {
     const units = this.mobile();
-    if (units.length) { enqueue(this.sim, { type: 'stop', player: this.player, units }); this.fb.ack(); }
+    if (units.length) { enqueue(this.sim, { type: 'stop', player: this.player, units }); this.fb.ack('move'); }
   }
 
   hold(): void {
     const units = this.mobile();
-    if (units.length) { enqueue(this.sim, { type: 'hold', player: this.player, units }); this.fb.ack(); }
+    if (units.length) { enqueue(this.sim, { type: 'hold', player: this.player, units }); this.fb.ack('move'); }
   }
 
   base(): number {
@@ -157,7 +157,6 @@ export class GameController {
     const p = this.sim.prod.get(b)!;
     if (this.sim.players[this.player]!.metal < d.raw.cost || p.queue.length >= this.reg.game.economy.queueMax) { this.fb.denied(); return; }
     enqueue(this.sim, { type: 'produce', player: this.player, building: b, def });
-    this.fb.ack();
   }
 
   cancel(): void {

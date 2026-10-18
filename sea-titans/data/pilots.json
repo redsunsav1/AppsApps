@@ -1,0 +1,58 @@
+{
+  "teams": [
+    {
+      "ws_hq": {
+        "name": "Адмирал Верес", "rank": "командование",
+        "look": { "skin": "#e0b090", "hair": "#d8d8d8", "hairStyle": "short", "eyes": "#3a6ab0", "helmet": "cap", "gear": "#2a4a80", "mustache": true, "scar": false, "beard": false, "eyepatch": false, "goggles": false },
+        "lines": { "select": ["Командный центр на связи.", "Флот ждёт приказа.", "Металл — это жизнь."], "move": ["Точка сбора принята."], "attack": ["Огонь по готовности."], "hurt": ["База под огнём!", "Нас долбят, нужна помощь!"], "built": ["Новая лодка на воде."] }
+      },
+      "ws_harvester": {
+        "name": "Бригадир Зуев", "rank": "сборщик",
+        "look": { "skin": "#c89070", "hair": "#6a4020", "hairStyle": "short", "eyes": "#5a3a20", "helmet": "hardhat", "gear": "#c09020", "mustache": false, "scar": false, "beard": true, "eyepatch": false, "goggles": true },
+        "lines": { "select": ["Сборщик слушает.", "Клешни в порядке!", "Где копать?"], "move": ["Еду.", "Понял, перегоняю.", "Сейчас буду."], "attack": ["Я не воевать сюда пришёл!"], "hurt": ["Меня бьют, я безоружен!", "Прикройте сборщика!"], "built": ["Сборщик готов к работе!"] }
+      },
+      "ws_scout": {
+        "name": "Лейтенант Мия «Искра»", "rank": "разведка",
+        "look": { "skin": "#f0c8a8", "hair": "#e05030", "hairStyle": "ponytail", "eyes": "#30a060", "helmet": "headset", "gear": "#3fa8ff", "mustache": false, "scar": false, "beard": false, "eyepatch": false, "goggles": false },
+        "lines": { "select": ["Искра на связи!", "Быстрее меня никого.", "Куда летим?"], "move": ["Уже там!", "Полный вперёд!", "Ветер в плавниках!"], "attack": ["Захожу на цель!", "Поджарю их сборщиков!"], "hurt": ["Обшивка горит!", "Мне тут жарко!"], "built": ["Скат готов, погнали!"] }
+      },
+      "ws_hunter": {
+        "name": "Капитан Орлов", "rank": "торпедист",
+        "look": { "skin": "#d8a880", "hair": "#2a2a30", "hairStyle": "short", "eyes": "#604020", "helmet": "diver", "gear": "#1c5cb0", "mustache": false, "scar": true, "beard": false, "eyepatch": false, "goggles": false },
+        "lines": { "select": ["Охотник слушает.", "Торпеды заряжены.", "Жду цель."], "move": ["Принял, курс задан.", "Выдвигаюсь.", "Есть!"], "attack": ["Торпеды пошли!", "Цель захвачена!", "Отправлю их на дно."], "hurt": ["Пробоина, держимся!", "Нас задело!"], "built": ["Охотник в строю."] }
+      },
+      "ws_cruiser": {
+        "name": "Коммодор Бранд", "rank": "артиллерия",
+        "look": { "skin": "#8a5a40", "hair": "#1a1a1a", "hairStyle": "bald", "eyes": "#3a2a20", "helmet": "officer", "gear": "#4a5a70", "mustache": false, "scar": false, "beard": true, "eyepatch": false, "goggles": false },
+        "lines": { "select": ["Крейсер. Говорите.", "Главный калибр готов.", "Медленно, зато надёжно."], "move": ["Разворачиваю махину.", "Курс принят."], "attack": ["Главный калибр — огонь!", "Снесём их базу."], "hurt": ["Броня держит. Пока.", "Попадание в корму!"], "built": ["Крейсер спущен на воду."] }
+      }
+    },
+    {
+      "ws_hq": {
+        "name": "Матриарх Скрежет", "rank": "логово",
+        "look": { "skin": "#9a8aa0", "hair": "#402040", "hairStyle": "long", "eyes": "#ff3030", "helmet": "mask", "gear": "#601818", "mustache": false, "scar": true, "beard": false, "eyepatch": false, "goggles": false },
+        "lines": { "select": ["Логово видит всё."], "move": ["Сюда."], "attack": ["Раздавить."], "hurt": ["Логово ранено!"], "built": ["Ещё одно щупальце."] }
+      },
+      "ws_harvester": {
+        "name": "Чернорабочий №7", "rank": "сборщик",
+        "look": { "skin": "#8a9a80", "hair": "#303030", "hairStyle": "bald", "eyes": "#e0e040", "helmet": "mask", "gear": "#503020", "mustache": false, "scar": false, "beard": false, "eyepatch": false, "goggles": true },
+        "lines": { "select": ["...копаю."], "move": ["Иду."], "attack": ["Не моя работа."], "hurt": ["Помогите!"], "built": ["Работаю."] }
+      },
+      "ws_scout": {
+        "name": "Жало", "rank": "налётчик",
+        "look": { "skin": "#b0a0b8", "hair": "#c0c0c0", "hairStyle": "mohawk", "eyes": "#ff4040", "helmet": "none", "gear": "#a01c1c", "mustache": false, "scar": true, "beard": false, "eyepatch": true, "goggles": false },
+        "lines": { "select": ["Жало здесь."], "move": ["Хе-хе."], "attack": ["Ужалю!"], "hurt": ["Аргх!"], "built": ["Жало на охоте."] }
+      },
+      "ws_hunter": {
+        "name": "Клешня", "rank": "торпедист",
+        "look": { "skin": "#a09098", "hair": "#202020", "hairStyle": "short", "eyes": "#ff6020", "helmet": "diver", "gear": "#801818", "mustache": true, "scar": false, "beard": false, "eyepatch": false, "goggles": false },
+        "lines": { "select": ["Клешня."], "move": ["Плыву."], "attack": ["Торпеды!"], "hurt": ["Пробоина!"], "built": ["Клешня готова."] }
+      },
+      "ws_cruiser": {
+        "name": "Кракен", "rank": "осада",
+        "look": { "skin": "#706070", "hair": "#101010", "hairStyle": "bald", "eyes": "#ff2020", "helmet": "mask", "gear": "#3a1010", "mustache": false, "scar": true, "beard": true, "eyepatch": false, "goggles": false },
+        "lines": { "select": ["Кракен проснулся."], "move": ["Медленно..."], "attack": ["Утоплю!"], "hurt": ["Царапина."], "built": ["Кракен в воде."] }
+      }
+    }
+  ]
+}

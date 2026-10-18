@@ -51,9 +51,9 @@
     }
   },
   "camera": {
-    "scrollSpeed": 420,
+    "scrollSpeed": 520,
     "edgeScrollMargin": 10,
-    "targetWidth": 480
+    "targetWidth": 640
   },
   "map": {
     "width": 72,

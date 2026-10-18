@@ -1,6 +1,6 @@
 import { entityExists, hasComponent } from 'bitecs';
 import { ONE, fcos, fsin, fatan2, length, tileCenter, toFixed } from '../../core/fixed';
-import { Building, Harvester, Mover, Owner, Position, ResourceNode, Unit } from '../components';
+import { Building, Facing, Harvester, Mover, Owner, Position, ResourceNode, Unit } from '../components';
 import { clearOrders } from '../commands';
 import { buildingQuery, despawn, emit, harvesterQuery, nodeQuery, spawnUnit, unitQuery, type SimWorld } from '../world';
 
@@ -147,7 +147,7 @@ export function deathSystem(w: SimWorld): void {
   for (const e of dead) {
     if (!entityExists(w.ecs, e)) continue;
     const building = hasComponent(w.ecs, Building, e);
-    emit(w, { t: 'death', x: Position.x[e]!, y: Position.y[e]!, r: Mover.radius[e]!, owner: Owner.player[e]!, building });
+    emit(w, { t: 'death', x: Position.x[e]!, y: Position.y[e]!, r: Mover.radius[e]!, owner: Owner.player[e]!, building, def: Unit.def[e]!, angle: Facing.angle[e]! });
     despawn(w, e);
   }
   if (w.winner >= 0) return;

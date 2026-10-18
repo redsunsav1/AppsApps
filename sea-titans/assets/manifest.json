@@ -1,0 +1,5 @@
+{
+  "ws_scout":   { "source": "procedural:sub", "params": { "length": 0.8, "width": 0.22, "tower": 0.3 },  "directions": 16, "anchor": [0.5, 0.5], "teamMask": true },
+  "ws_hunter":  { "source": "procedural:sub", "params": { "length": 1.05, "width": 0.3, "tower": 0.45 }, "directions": 16, "anchor": [0.5, 0.5], "teamMask": true },
+  "ws_cruiser": { "source": "procedural:sub", "params": { "length": 1.6, "width": 0.48, "tower": 0.7 },  "directions": 16, "anchor": [0.5, 0.5], "teamMask": true }
+}

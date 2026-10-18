@@ -1,0 +1,22 @@
+{
+  "camera": {
+    "up": ["KeyW", "ArrowUp"],
+    "down": ["KeyS", "ArrowDown"],
+    "left": ["KeyA", "ArrowLeft"],
+    "right": ["KeyD", "ArrowRight"]
+  },
+  "commands": {
+    "attackMove": "KeyF",
+    "patrol": "KeyP",
+    "stop": "KeyX",
+    "hold": "KeyH"
+  },
+  "game": {
+    "pause": "Pause",
+    "pauseAlt": "Space",
+    "speedUp": "Equal",
+    "speedDown": "Minus",
+    "debug": "F3",
+    "debugPaths": "F4"
+  }
+}

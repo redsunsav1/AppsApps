@@ -1,0 +1,32 @@
+[
+  {
+    "id": "ws_scout",
+    "name": "Разведчик «Скат»",
+    "role": "быстрая разведка",
+    "tier": 1,
+    "hp": 140, "armor": 1, "armorType": "light",
+    "speed": 3.6, "turnRate": 300, "radius": 0.35,
+    "sight": 9, "layer": "high",
+    "sprite": "ws_scout"
+  },
+  {
+    "id": "ws_hunter",
+    "name": "Охотник",
+    "role": "универсальная подлодка",
+    "tier": 1,
+    "hp": 320, "armor": 3, "armorType": "medium",
+    "speed": 2.2, "turnRate": 180, "radius": 0.45,
+    "sight": 7, "layer": "mid",
+    "sprite": "ws_hunter"
+  },
+  {
+    "id": "ws_cruiser",
+    "name": "Тяжёлый крейсер",
+    "role": "тяжёлая линия",
+    "tier": 2,
+    "hp": 900, "armor": 8, "armorType": "heavy",
+    "speed": 1.3, "turnRate": 90, "radius": 0.7,
+    "sight": 7, "layer": "low",
+    "sprite": "ws_cruiser"
+  }
+]

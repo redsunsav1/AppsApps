@@ -1,0 +1,15 @@
+{
+  "tileWidth": 64,
+  "tileHeight": 32,
+  "heightPixels": 20,
+  "layerHeightPixels": { "low": 10, "mid": 22, "high": 36 },
+  "biomes": {
+    "sand":     { "color": "#6f8f8a", "caustics": 1.0 },
+    "silt":     { "color": "#3f5f66", "caustics": 0.8 },
+    "coral":    { "color": "#7a5d77", "caustics": 0.9 },
+    "rock":     { "color": "#5b6670", "caustics": 0.6 },
+    "volcanic": { "color": "#3a2e30", "caustics": 0.4 },
+    "abyss":    { "color": "#0e1d2b", "caustics": 0.1 }
+  },
+  "teamColors": ["#3fb7ff", "#ff5a4a", "#7dff6a", "#ffd23f"]
+}

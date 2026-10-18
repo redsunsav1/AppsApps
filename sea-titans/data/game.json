@@ -1,0 +1,41 @@
+{
+  "tickRate": 20,
+  "speedSteps": [
+    0.5,
+    1,
+    1.5,
+    2,
+    3
+  ],
+  "defaultSpeedIndex": 1,
+  "movement": {
+    "flowFieldMinGroup": 6,
+    "flowFieldsPerTick": 1,
+    "formationSpacing": 0.35,
+    "arriveDistance": 0.2,
+    "slowRadius": 1.2,
+    "accelerationTicks": 6,
+    "losCheckInterval": 8,
+    "flowToDirectDistance": 14,
+    "stuckFinishTicks": 30,
+    "stuckFinishDistance": 2.5,
+    "stuckRepathTicks": 100,
+    "stuckGiveUpTicks": 300,
+    "separationMargin": 0.06,
+    "turnSlowdownMin": 0.2,
+    "astarMaxNodes": 40000
+  },
+  "camera": {
+    "scrollSpeed": 900,
+    "edgeScrollSpeed": 900,
+    "edgeScrollMargin": 14,
+    "zoomMin": 0.5,
+    "zoomMax": 2,
+    "zoomStep": 1.12
+  },
+  "testMap": {
+    "width": 128,
+    "height": 128,
+    "seed": 1337
+  }
+}

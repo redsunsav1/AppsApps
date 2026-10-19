@@ -1,0 +1,25 @@
+{
+  "name": "sea-titans",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Морские титаны: Разлом — личная фанатская RTS",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build:single": "npm run build && node tools/build-single.mjs"
+  },
+  "dependencies": {
+    "bitecs": "^0.3.40",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.4",
+    "vitest": "^3.2.7"
+  }
+}

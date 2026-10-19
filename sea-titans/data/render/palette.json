@@ -1,0 +1,56 @@
+{
+  "tile": 16,
+  "colors": {
+    "black": "#000000",
+    "ink": "#0b0f2a",
+    "deep": "#13254f",
+    "water": "#1d4b7a",
+    "shallow": "#2f7fa8",
+    "foam": "#5fc3d6",
+    "glint": "#a6f0e8",
+    "white": "#f4f4e8",
+    "sand": "#7c7454",
+    "sandDark": "#57503c",
+    "sandLight": "#a49a70",
+    "coral": "#b8406b",
+    "coralLight": "#e8789a",
+    "rock": "#5d5d78",
+    "rockDark": "#3b3b4f",
+    "rockLight": "#9a9ab5",
+    "lava": "#e84a1a",
+    "ember": "#ffb02e",
+    "ash": "#2e2630",
+    "metal": "#c0f0ff",
+    "metalDark": "#6a9ad8",
+    "hull": "#8c96a8",
+    "hullDark": "#4a5268",
+    "hullLight": "#c8d0dc",
+    "brass": "#c8a040",
+    "hazard": "#f0c020",
+    "select": "#5cff5c",
+    "hpMid": "#ffe04a",
+    "hpLow": "#ff4a3a"
+  },
+  "teams": [
+    {
+      "main": "#3fa8ff",
+      "dark": "#1c5cb0",
+      "name": "Белые Акулы"
+    },
+    {
+      "main": "#ff4a3a",
+      "dark": "#a01c1c",
+      "name": "Чёрные Осьминоги"
+    },
+    {
+      "main": "#5cff5c",
+      "dark": "#1c8a2a",
+      "name": "Зелёные"
+    },
+    {
+      "main": "#ffd23f",
+      "dark": "#a07a10",
+      "name": "Жёлтые"
+    }
+  ]
+}

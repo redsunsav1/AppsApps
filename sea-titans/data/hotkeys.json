@@ -1,0 +1,25 @@
+{
+  "camera": {
+    "up": ["KeyW", "ArrowUp"],
+    "down": ["KeyS", "ArrowDown"],
+    "left": ["KeyA", "ArrowLeft"],
+    "right": ["KeyD", "ArrowRight"]
+  },
+  "commands": {
+    "attackMove": "KeyF",
+    "patrol": "KeyP",
+    "stop": "KeyX",
+    "hold": "KeyH"
+  },
+  "build": ["KeyQ", "KeyE", "KeyR", "KeyT"],
+  "game": {
+    "pause": "Pause",
+    "pauseAlt": "Space",
+    "speedUp": "Equal",
+    "speedDown": "Minus",
+    "debug": "F3",
+    "mute": "KeyM",
+    "help": "F1",
+    "home": "Home"
+  }
+}

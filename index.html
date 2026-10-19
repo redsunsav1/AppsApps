@@ -32,7 +32,46 @@
   <noscript><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet"></noscript>
 </head>
 <body>
-  <div id="root"></div>
+  <!-- Пока бандл не запустился, в #root виден экран загрузки. React заменит его
+       при монтировании. Если скрипт не загрузился или упал (сеть, VPN, старый
+       WebView), вместо белого экрана человек увидит причину. -->
+  <div id="root">
+    <div id="boot" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:24px;box-sizing:border-box;background:#F5F0E8;color:#433830;font-family:-apple-system,system-ui,sans-serif;text-align:center">
+      <div style="font-size:40px;margin-bottom:12px">🏠</div>
+      <div style="font-weight:700;font-size:18px;margin-bottom:6px">Клуб Партнёров</div>
+      <div id="boot-msg" style="font-size:14px;color:#8a7f75">Загрузка...</div>
+      <div id="boot-err" style="display:none;margin-top:16px;font-size:11px;font-family:monospace;color:#b42318;word-break:break-all;max-width:360px"></div>
+      <button id="boot-retry" onclick="location.reload()" style="display:none;margin-top:16px;padding:12px 20px;border:0;border-radius:12px;background:#433830;color:#fff;font-weight:700;font-size:14px">Попробовать снова</button>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var errors = [];
+      function show(msg) {
+        var boot = document.getElementById('boot');
+        if (!boot) return; // приложение уже запустилось
+        document.getElementById('boot-msg').textContent = msg;
+        document.getElementById('boot-retry').style.display = 'inline-block';
+        if (errors.length) {
+          var el = document.getElementById('boot-err');
+          el.textContent = errors.slice(0, 3).join(' | ') + ' · ' + navigator.userAgent;
+          el.style.display = 'block';
+        }
+      }
+      window.addEventListener('error', function (e) {
+        var t = e.target, url = t && (t.src || t.href);
+        errors.push(url ? 'не загрузилось: ' + url : (e.message || 'ошибка скрипта'));
+        // Шрифты и сторонние скрипты не мешают запуску — их только запоминаем.
+        // Сразу показываем ошибку, если упал или не скачался наш бандл.
+        if (!url || url.indexOf(location.origin + '/assets/') === 0) {
+          show('Приложение не запустилось. Сделайте скриншот и отправьте администратору.');
+        }
+      }, true);
+      setTimeout(function () {
+        show('Приложение долго загружается. Проверьте интернет, отключите VPN и нажмите «Попробовать снова».');
+      }, 15000);
+    })();
+  </script>
   <script type="module" src="/index.tsx"></script>
 
   <!-- Register Service Worker -->

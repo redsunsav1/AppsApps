@@ -2514,11 +2514,8 @@ app.post('/api/max-webhook', async (req, res) => {
 
       if (updateType === 'bot_started' || text === '/start' || text === 'start') {
         const userId = getMaxUpdateUserId(update);
-        await sendMaxMessage(
-          userId,
-          `Добро пожаловать в Клуб Партнёров!\n\nОткройте мини-приложение кнопкой ниже или через кнопку mini-app в чате.\n${getMaxMiniAppLink()}`,
-          buildMaxStartKeyboard()
-        );
+        const firstName = update?.user?.first_name || update?.user?.name || update?.message?.sender?.first_name || update?.message?.sender?.name || '';
+        await sendMaxMessage(userId, buildWelcomeText(firstName), buildMaxStartKeyboard());
       }
     }
   } catch (e) {
@@ -2892,24 +2889,105 @@ app.post('/api/applications/:userId/reject', async (req, res) => {
 // Приветствие по /start. Раньше Telegram-вебхук обрабатывал только нажатия кнопок,
 // поэтому человек, пришедший по пригласительной ссылке и нажавший «Запустить»,
 // не получал в ответ ничего и не понимал, что делать дальше.
+// Документы оператора: тексты политики и условий живут у оператора, поэтому
+// ссылки задаются переменными окружения. Пока ссылки нет — строка не выводится,
+// чтобы не отправлять человека на несуществующую страницу.
+function getLegalLinks() {
+  const links = [];
+  if (process.env.PRIVACY_POLICY_URL) links.push({ title: 'политикой обработки персональных данных', label: 'Политика обработки персональных данных', url: process.env.PRIVACY_POLICY_URL });
+  if (process.env.TERMS_URL) links.push({ title: 'условиями участия в клубе', label: 'Условия участия в клубе', url: process.env.TERMS_URL });
+  return links;
+}
+
+const escapeHtml = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// Приветствие одно для Telegram и MAX: что даёт приложение, как получить доступ
+// и с какими документами человек соглашается, продолжая работу.
+function buildWelcomeText(firstName) {
+  const name = firstName ? `, ${escapeHtml(firstName)}` : '';
+  const legal = getLegalLinks();
+  const legalLine = legal.length
+    ? `\n\nПродолжая, вы соглашаетесь с ${legal.map(l => `<a href="${escapeHtml(l.url)}">${l.title}</a>`).join(' и ')}.`
+    : '';
+  return `👋 <b>Здравствуйте${name}!</b>\n\n` +
+    `«Клуб Партнёров» — официальное приложение ГК «Хорошо» для риелторов и агентств недвижимости.\n\n` +
+    `<b>Что внутри</b>\n` +
+    `• шахматки объектов с ценами и статусами напрямую от застройщика\n` +
+    `• бронирование квартиры в пару нажатий\n` +
+    `• статусы ваших броней и сделок\n` +
+    `• ипотечный калькулятор и карточки квартир для клиентов\n` +
+    `• бонусы за сделки и активность\n\n` +
+    `<b>Как начать</b>\n` +
+    `Откройте приложение кнопкой ниже и заполните короткую заявку. После проверки мы откроем доступ.` +
+    legalLine;
+}
+
+// Блок «Что умеет этот бот?» — его видят все до нажатия «Старт». Держим его
+// в коде, чтобы ссылки на документы обновлялись вместе с переменными окружения,
+// а не правились вручную в BotFather. Картинку блока по-прежнему ставит BotFather.
+async function syncTelegramBotProfile() {
+  const token = process.env.BOT_TOKEN;
+  if (!token || process.env.TELEGRAM_SYNC_BOT_PROFILE === 'off') return;
+  const legal = getLegalLinks();
+  const description =
+    'Официальное приложение ГК «Хорошо» для риелторов и агентств: шахматки с актуальными ценами, ' +
+    'бронирование квартир, статусы сделок и бонусы за продажи.' +
+    (legal.length ? '\n\n' + legal.map(l => `${l.label}: ${l.url}`).join('\n') : '');
+  const shortDescription = 'Приложение для партнёров ГК «Хорошо»: шахматки, брони, сделки и бонусы';
+  const api = async (method, body) => {
+    const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}), signal: AbortSignal.timeout(8000),
+    });
+    return r.json();
+  };
+  try {
+    const current = await api('getMyDescription');
+    if (current?.result?.description !== description) {
+      const res = await api('setMyDescription', { description });
+      console.log('🤖 Описание бота:', res.ok ? 'обновлено' : res.description);
+    }
+    const currentShort = await api('getMyShortDescription');
+    if (currentShort?.result?.short_description !== shortDescription) {
+      await api('setMyShortDescription', { short_description: shortDescription });
+    }
+  } catch (e) { console.warn('🤖 Описание бота не обновлено:', e.message); }
+}
+
+// Картинка приветствия (WELCOME_IMAGE_URL). Подпись к фото ограничена 1024
+// символами — приветствие в неё укладывается. Если фото не ушло, шлём текстом.
+async function sendTelegramWelcome(chatId, text, keyboard) {
+  const token = process.env.BOT_TOKEN;
+  const image = process.env.WELCOME_IMAGE_URL;
+  if (token && image) {
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, photo: image, caption: text, parse_mode: 'HTML',
+          reply_markup: JSON.stringify({ inline_keyboard: keyboard }) }),
+      });
+      const result = await r.json();
+      if (result.ok) return result;
+      console.warn('[welcome] фото не отправилось:', result.description);
+    } catch (e) { console.warn('[welcome] фото не отправилось:', e.message); }
+  }
+  return notifyUserTelegram(chatId, text, keyboard);
+}
+
 async function handleTelegramStart(message) {
   const chatId = message?.chat?.id;
   if (!chatId) return;
-  const name = message.from?.first_name ? `, ${message.from.first_name}` : '';
-  const text =
-    `👋 <b>Здравствуйте${name}!</b>\n\n` +
-    `Это «Клуб Партнёров» — закрытое приложение для риелторов: шахматки объектов, бронирование квартир и партнёрские бонусы.\n\n` +
-    `Нажмите кнопку ниже, чтобы открыть приложение и заполнить короткую заявку. Мы рассмотрим её и откроем доступ.`;
+  const text = buildWelcomeText(message.from?.first_name);
 
   // Сначала пробуем кнопку мини-аппа — она открывает приложение прямо внутри
   // Telegram. Если бот так не настроен, Telegram вернёт ошибку, и мы повторим
   // обычной ссылкой, чтобы приглашение сработало в любом случае.
-  const viaMiniApp = await notifyUserTelegram(chatId, text, [[
+  const viaMiniApp = await sendTelegramWelcome(chatId, text, [[
     { text: '🏠 Открыть приложение', web_app: { url: getAppUrl() } },
   ]]);
   if (!viaMiniApp?.ok) {
     console.warn('[invite] web_app-кнопка не прошла, шлём обычную ссылку:', viaMiniApp?.description || '');
-    await notifyUserTelegram(chatId, text, getAppOpenKeyboard());
+    await sendTelegramWelcome(chatId, text, getAppOpenKeyboard());
   }
 }
 
@@ -4967,6 +5045,7 @@ async function reportSchemaHealth() {
 initDb().then(() => {
   reportSchemaHealth();
   registerWebhook();
+  syncTelegramBotProfile();
   // Регистрируем MAX webhook (no-op если MAX_ENABLED != 'true')
   if (isMaxEnabled()) {
     registerMaxWebhook().catch(e => console.error('[MAX] webhook reg error:', e?.message || e));

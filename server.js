@@ -1263,6 +1263,32 @@ const initDb = async () => {
       );
       console.log('🎯 Миссия all_projects: 2 ЖК, считаются сделки');
     }
+
+    // Ипотечные программы на октябрь 2026 (Астрахань, новостройки). С 1.10.2026
+    // семейная ипотека зависит от числа детей, единой ставки 6% больше нет.
+    // Разово: старые программы выключаем (история не теряется), новые заводим.
+    // Дальше ставки ведёт админ; повторно миграция не сработает — отметка в app_settings.
+    const MORTGAGE_UPDATE_KEY = 'mortgage_programs_2026_10_astrakhan';
+    const mortgageDone = await pool.query('SELECT 1 FROM app_settings WHERE key = $1', [MORTGAGE_UPDATE_KEY]);
+    if (mortgageDone.rows.length === 0) {
+      await withTransaction(async (client) => {
+        await client.query('UPDATE mortgage_programs SET is_active = FALSE WHERE is_active = TRUE');
+        await client.query(`INSERT INTO mortgage_programs (name, rate, min_payment, max_term, description) VALUES
+          ('Семейная, 1 ребёнок',  10, 20, 30, 'Ребёнок до 7 лет. Кредит до 6 млн ₽, льготная ставка первые 15 лет'),
+          ('Семейная, 2 детей',     8, 20, 30, 'Младший ребёнок до 7 лет. Кредит до 8 млн ₽, льготная ставка первые 15 лет'),
+          ('Семейная, 3 детей',     6, 20, 30, 'Младший ребёнок до 7 лет. Кредит до 10 млн ₽, льготная ставка первые 15 лет'),
+          ('Семейная, 4 детей',     4, 20, 30, 'Младший ребёнок до 7 лет. Кредит до 10 млн ₽, льготная ставка первые 15 лет'),
+          ('Семейная, 5+ детей',    2, 20, 30, 'Младший ребёнок до 7 лет. Кредит до 10 млн ₽, льготная ставка первые 15 лет'),
+          ('IT-ипотека',            6, 20, 30, 'Сотрудник аккредитованной IT-компании, доход от 90 тыс. ₽. Кредит до 9 млн ₽'),
+          ('Рыночная',             21, 20, 30, 'Без господдержки. Средняя ставка по новостройкам, октябрь 2026')`);
+        await client.query(
+          `INSERT INTO app_settings (key, value) VALUES ($1, $2)
+           ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+          [MORTGAGE_UPDATE_KEY, new Date().toISOString()]
+        );
+      });
+      console.log('🏦 Ипотечные программы обновлены на октябрь 2026');
+    }
     const demoTelegramIds = [999000001, 999000002];
     if (process.env.SEED_DEMO_DATA !== 'true') {
       await withTransaction(async (client) => {

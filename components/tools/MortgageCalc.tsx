@@ -12,9 +12,11 @@ interface MortgageCalcProps {
 
 // Default fallbacks if no programs passed
 const DEFAULT_PROGRAMS: MortgageProgram[] = [
-    { id: 'def1', name: 'Семейная', rate: 6 },
-    { id: 'def2', name: 'IT ипотека', rate: 5 },
-    { id: 'def3', name: 'Базовая', rate: 21 }
+    { id: 'def1', name: 'Семейная, 1 ребёнок', rate: 10 },
+    { id: 'def2', name: 'Семейная, 2 детей', rate: 8 },
+    { id: 'def3', name: 'Семейная, 3 детей', rate: 6 },
+    { id: 'def4', name: 'IT-ипотека', rate: 6 },
+    { id: 'def5', name: 'Рыночная', rate: 21 }
 ];
 
 const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, programs, onClose, embedded = false }) => {

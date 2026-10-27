@@ -1238,11 +1238,30 @@ const initDb = async () => {
         ('bookings_10',      'Десять броней',         'Забронируйте 10 квартир',                      1000, 'SILVER', 10, 'booking',  'trophy',    3),
         ('bookings_25',      'Четверть сотни',        'Забронируйте 25 квартир',                      5,    'GOLD',   25, 'booking',  'crown',     4),
         ('multi_project',    'Мультипроект',          'Забронируйте квартиры в 2 разных ЖК',          300,  'SILVER', 2,  'explore',  'map',       5),
-        ('all_projects',     'Покоритель всех ЖК',   'Забронируйте квартиры во всех 3 ЖК',           5,    'GOLD',   3,  'explore',  'globe',     6),
+        ('all_projects',     'Покоритель всех ЖК',   'Продайте квартиры в 2 разных ЖК',              5,    'GOLD',   2,  'explore',  'globe',     6),
         ('profile_complete', 'Визитка заполнена',     'Заполните все поля профиля при регистрации',    100,  'SILVER', 1,  'profile',  'user',      7),
         ('login_streak_7',   'Неделя активности',     'Заходите в приложение 7 дней подряд',           300,  'SILVER', 7,  'loyalty',  'flame',     8),
         ('login_streak_30',  'Месяц верности',        'Заходите в приложение 30 дней подряд',          3,    'GOLD',   30, 'loyalty',  'fire',      9)
       ON CONFLICT (code) DO NOTHING`);
+    }
+    // В продаже остались два ЖК, а миссия просила «во всех 3» — выполнить её стало
+    // невозможно. Теперь это сделки (не брони) в 2 разных ЖК, чтобы не повторять
+    // «Мультипроект». Прогресс пересчитываем сразу: иначе старое число броней
+    // засчиталось бы как продажи при следующем входе.
+    const allProjectsFix = await pool.query(
+      `UPDATE missions SET description = 'Продайте квартиры в 2 разных ЖК', target_count = 2
+       WHERE code = 'all_projects' AND target_count = 3 RETURNING id`
+    );
+    if (allProjectsFix.rows.length > 0) {
+      await pool.query(
+        `UPDATE user_missions um SET progress = (
+           SELECT count(DISTINCT b.project_id) FROM bookings b
+           WHERE b.user_id = um.user_id AND b.stage = 'COMPLETE'
+         )
+         WHERE um.mission_id = $1 AND NOT um.completed`,
+        [allProjectsFix.rows[0].id]
+      );
+      console.log('🎯 Миссия all_projects: 2 ЖК, считаются сделки');
     }
     const demoTelegramIds = [999000001, 999000002];
     if (process.env.SEED_DEMO_DATA !== 'true') {
@@ -4176,9 +4195,15 @@ async function checkMissions(userId, trigger) {
         newProgress = parseInt(countRes.rows[0].count);
       }
 
-      if (['multi_project', 'all_projects'].includes(m.code) && (trigger === 'booking' || trigger === 'init')) {
+      if (m.code === 'multi_project' && (trigger === 'booking' || trigger === 'init')) {
         const projRes = await pool.query("SELECT count(DISTINCT project_id) FROM bookings WHERE user_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'", [userId]);
         newProgress = parseInt(projRes.rows[0].count);
+      }
+
+      // Покоритель всех ЖК — считаются только подтверждённые сделки
+      if (m.code === 'all_projects' && (trigger === 'booking' || trigger === 'init')) {
+        const dealRes = await pool.query("SELECT count(DISTINCT project_id) FROM bookings WHERE user_id = $1 AND stage = 'COMPLETE'", [userId]);
+        newProgress = parseInt(dealRes.rows[0].count);
       }
 
       if (m.code === 'profile_complete' && (trigger === 'register' || trigger === 'init')) {

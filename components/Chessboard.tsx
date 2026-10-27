@@ -9,7 +9,7 @@ import ConstructionProgress from './ConstructionProgress';
 import BuyerLinkPanel from './BuyerLinkPanel';
 import {
     UnitFilter, EMPTY_FILTER, isFilterActive, matchesFilter,
-    buildGridLayout, availableRoomOptions, roomLabel, roomShort, formatPriceShort,
+    buildGridLayout, availableRoomOptions, roomLabel, roomShort,
 } from '../utils/chessboard';
 import {
     CardAgent, renderUnitCard, shareUnitCard, buildUnitText,
@@ -632,7 +632,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                                 </div>
 
                                                 <div className="text-right shrink-0">
-                                                    <div className="text-sm font-black text-brand-black">{formatPriceShort(unit.price)}</div>
+                                                    <div className="text-sm font-black text-brand-black">{unit.price > 0 ? formatPrice(unit.price) : '—'}</div>
                                                     <div className={`text-[10px] font-bold mt-0.5 ${
                                                         unit.status === 'FREE' ? 'text-green-600'
                                                             : unit.status === 'BOOKED' ? 'text-brand-gold' : 'text-brand-grey'

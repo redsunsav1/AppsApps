@@ -179,8 +179,3 @@ export function availableRoomOptions(units: ChessUnit[]): number[] {
   return [...set].sort((a, b) => a - b);
 }
 
-export function formatPriceShort(price: number): string {
-  if (!price || price <= 0) return '—';
-  const millions = price / 1_000_000;
-  return `${millions.toFixed(millions >= 10 ? 0 : 1).replace('.', ',')} млн`;
-}

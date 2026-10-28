@@ -12,6 +12,7 @@ import { importSiteNews } from './server/newsImport.js';
 import { renderPrivacyPolicy, missingPolicyVars } from './server/privacyPolicy.js';
 import { ensureGoldSchema, addGold, voidGoldEntry, goldSummary, goldHistory, GOLD_HOLD_DAYS } from './server/gold.js';
 import { verifyDealInAmo } from './server/dealVerification.js';
+import { ensurePrizeSchema, seedPrizeCatalog, publicProduct } from './server/prizes.js';
 
 // =============================================
 // MAX Messenger Platform Adapter (inline)
@@ -969,6 +970,8 @@ const initDb = async () => {
     await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP;');
     await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS review_note TEXT;');
     await ensureGoldSchema(pool);
+    await ensurePrizeSchema(pool);
+    await seedPrizeCatalog(pool);
     await pool.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS project_name TEXT;');
     await pool.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS progress INT DEFAULT 0;');
     await pool.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS checklist JSONB;');
@@ -3215,7 +3218,7 @@ app.put('/api/news/:id', async (req, res) => {
 app.get('/api/products', async (req, res) => {
   try {
     const result = await pool.query("SELECT * FROM products WHERE is_active = TRUE ORDER BY currency DESC, price ASC");
-    res.json(result.rows);
+    res.json(await isAdminRequest(req) ? result.rows : result.rows.map(publicProduct));
   } catch (e) { res.status(500).json({ error: 'DB Error' }); }
 });
 
@@ -3230,8 +3233,8 @@ app.post('/api/products', async (req, res) => {
   try {
     if (await isAdminRequest(req)) {
       const { title, price, currency, image_url } = req.body;
-      await pool.query('INSERT INTO products (title, price, currency, image_url, stock) VALUES ($1, $2, $3, $4, $5)',
-        [title, price, currency || 'SILVER', image_url, parseStock(req.body.stock)]);
+      await pool.query('INSERT INTO products (title, price, currency, image_url, stock, is_teaser) VALUES ($1, $2, $3, $4, $5, $6)',
+        [title, price, currency || 'SILVER', image_url, parseStock(req.body.stock), req.body.is_teaser === true]);
       res.json({ success: true });
     } else res.status(403).json({ error: 'Forbidden' });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
@@ -3241,8 +3244,8 @@ app.put('/api/products/:id', async (req, res) => {
   try {
     if (await isAdminRequest(req)) {
       const { title, price, currency, image_url } = req.body;
-      await pool.query('UPDATE products SET title = $1, price = $2, currency = $3, image_url = $4, stock = $5 WHERE id = $6',
-        [title, price, currency || 'SILVER', image_url, parseStock(req.body.stock), req.params.id]);
+      await pool.query('UPDATE products SET title = $1, price = $2, currency = $3, image_url = $4, stock = $5, is_teaser = $6 WHERE id = $7',
+        [title, price, currency || 'SILVER', image_url, parseStock(req.body.stock), req.body.is_teaser === true, req.params.id]);
       res.json({ success: true });
     } else res.status(403).json({ error: 'Forbidden' });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
@@ -3274,6 +3277,7 @@ app.post('/api/buy', rateLimitByUser(900000, 30), async (req, res) => {
       // получит один человек, а не все, кто нажал одновременно.
       const product = (await client.query('SELECT * FROM products WHERE id = $1 AND is_active = TRUE FOR UPDATE', [productId])).rows[0];
       if (!user || !product) throw { status: 404, msg: 'Товар недоступен' };
+      if (product.is_teaser) throw { status: 409, msg: 'Этот приз ещё не открыт' };
       if (product.stock !== null && product.stock <= 0) throw { status: 409, msg: 'Этот приз уже забрали' };
 
       let order;

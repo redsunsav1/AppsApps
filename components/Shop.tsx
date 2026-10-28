@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Lock, Clock, CheckCircle2, XCircle, Gift, ShieldCheck } from 'lucide-react';
+import { Lock, Clock, CheckCircle2, XCircle, Gift, ShieldCheck, Sparkles } from 'lucide-react';
 import { getAuthData } from '../utils/auth';
 import { confirmDialog, alertDialog } from '../utils/dialog';
 
@@ -18,6 +18,7 @@ interface Product {
   currency: 'GOLD' | 'SILVER';
   image_url?: string | null;
   stock: number | null;
+  is_teaser?: boolean;
 }
 
 interface Order {
@@ -97,7 +98,10 @@ const Marketplace: React.FC<MarketplaceProps> = ({ userSilver, userGold, silver:
   }, [orders]);
 
   const sorted = useMemo(
-    () => [...products].sort((a, b) => (a.currency !== b.currency ? (a.currency === 'GOLD' ? -1 : 1) : b.price - a.price)),
+    () => [...products].sort((a, b) =>
+      a.is_teaser !== b.is_teaser ? (a.is_teaser ? -1 : 1)
+        : a.currency !== b.currency ? (a.currency === 'GOLD' ? -1 : 1)
+        : b.price - a.price),
     [products],
   );
 
@@ -165,6 +169,21 @@ const Marketplace: React.FC<MarketplaceProps> = ({ userSilver, userGold, silver:
           <div className="col-span-2 text-center py-10 text-brand-grey text-sm">Призов пока нет</div>
         )}
         {sorted.map((p) => {
+          if (p.is_teaser) return (
+            <div key={p.id} className="col-span-2 relative h-40 rounded-2xl overflow-hidden shadow-sm border border-[#C5B191]">
+              {p.image_url && <img src={p.image_url} alt="" className="absolute inset-0 w-full h-full object-cover scale-110 blur-md" />}
+              <div className="absolute inset-0 bg-gradient-to-t from-brand-black/80 via-brand-black/30 to-transparent" />
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-4">
+                <div className="w-11 h-11 rounded-full bg-brand-black/60 border border-brand-gold/50 flex items-center justify-center mb-2">
+                  <Lock size={18} className="text-brand-gold" />
+                </div>
+                <div className="flex items-center gap-1.5 text-brand-gold font-bold text-lg">
+                  <Sparkles size={16} /> {p.title}
+                </div>
+                <div className="text-white/80 text-xs mt-1">Скоро откроем. Копите золото</div>
+              </div>
+            </div>
+          );
           const isGold = p.currency === 'GOLD';
           const balance = isGold ? availableGold : silver;
           const soldOut = p.stock !== null && p.stock <= 0;
@@ -195,7 +214,7 @@ const Marketplace: React.FC<MarketplaceProps> = ({ userSilver, userGold, silver:
                 </span>
               )}
               <div className={`h-24 rounded-xl mb-3 flex items-center justify-center overflow-hidden ${isGold ? 'bg-white/20' : 'bg-brand-cream'}`}>
-                {p.image_url && p.image_url.startsWith('http') ? (
+                {p.image_url && /^(https?:\/\/|\/)/.test(p.image_url) ? (
                   <img src={p.image_url} alt={p.title} className="w-full h-full object-cover rounded-xl" />
                 ) : (
                   <Gift size={36} className="text-brand-black/40" />

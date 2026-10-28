@@ -125,6 +125,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [editingProductId, setEditingProductId] = useState<number | null>(null);
   const [shopProducts, setShopProducts] = useState<any[]>([]);
   const [shopStock, setShopStock] = useState<string>('');
+  const [shopTeaser, setShopTeaser] = useState(false);
   const [prizeOrders, setPrizeOrders] = useState<any[]>([]);
   const [rejectFor, setRejectFor] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState('');
@@ -255,7 +256,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   };
 
   const fetchShopProducts = () => {
-    fetch('/api/products').then(r => r.json()).then(d => setShopProducts(Array.isArray(d) ? d : [])).catch(() => {});
+    fetch('/api/products', { headers: { 'x-init-data': getAuthData() } }).then(r => r.json()).then(d => setShopProducts(Array.isArray(d) ? d : [])).catch(() => {});
     fetchPrizeOrders();
   };
 
@@ -604,7 +605,8 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                 price: Number(shopPrice),
                 currency: shopCurrency,
                 image_url: shopImage,
-                stock: shopStock
+                stock: shopStock,
+                is_teaser: shopTeaser
             })
         });
         showToast(editingProductId ? 'Товар обновлён!' : 'Товар добавлен!', 'success');
@@ -620,11 +622,12 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     setShopCurrency(p.currency);
     setShopImage(p.image_url || '');
     setShopStock(p.stock === null || p.stock === undefined ? '' : String(p.stock));
+    setShopTeaser(!!p.is_teaser);
   };
 
   const resetShopForm = () => {
     setEditingProductId(null);
-    setShopTitle(''); setShopPrice(0); setShopCurrency('SILVER'); setShopImage(''); setShopStock('');
+    setShopTitle(''); setShopPrice(0); setShopCurrency('SILVER'); setShopImage(''); setShopStock(''); setShopTeaser(false);
   };
 
   const handleCreateQuest = async () => {
@@ -943,6 +946,10 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                 </div>
                 <input placeholder="Ссылка на фото" value={shopImage} onChange={e => setShopImage(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
                 <input type="number" min={0} placeholder="Сколько штук (пусто — без ограничения)" value={shopStock} onChange={e => setShopStock(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
+                <label className="flex items-start gap-2 text-sm text-black bg-gray-50 border rounded-lg p-3">
+                    <input type="checkbox" checked={shopTeaser} onChange={e => setShopTeaser(e.target.checked)} className="mt-0.5" />
+                    <span>Скрытый супер-приз<span className="block text-[11px] text-gray-400">Партнёры видят размытое фото и «Скоро откроем», без названия и цены. Купить нельзя. Когда снимете галочку, поставьте настоящее фото.</span></span>
+                </label>
                 <div className="flex gap-2">
                     <button onClick={handleSubmitProduct} disabled={loading} className="flex-1 bg-emerald-600 text-white p-3 rounded-lg font-bold shadow-md">
                         {loading ? '...' : editingProductId ? 'Сохранить' : 'Добавить товар'}
@@ -960,7 +967,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                             {shopProducts.map(p => (
                                 <div key={p.id} className="flex items-center justify-between bg-gray-50 p-3 rounded-lg">
                                     <div className="flex-1 min-w-0">
-                                        <div className="font-bold text-black text-sm truncate">{p.title}</div>
+                                        <div className="font-bold text-black text-sm truncate">{p.is_teaser && '🔒 '}{p.title}</div>
                                         <div className="text-[10px] text-gray-400">{p.price} {p.currency === 'GOLD' ? 'Gold' : 'Silver'} · {p.stock === null || p.stock === undefined ? 'без ограничения' : `осталось ${p.stock}`}</div>
                                     </div>
                                     <div className="flex gap-1 ml-2">

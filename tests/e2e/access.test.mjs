@@ -69,8 +69,15 @@ const cb = (fromId) => fetch(`${process.env.TEST_BASE_URL || 'http://127.0.0.1:1
   body: JSON.stringify({ callback_query: { id: 'x', from: { id: fromId }, data: 'approve_4' } }),
 });
 r = await cb(1003);
-check('чужое нажатие «одобрить» отклоняется', r.status === 403, r.status);
+check('чужое нажатие «одобрить» отклоняется (отвечаем 200, чтобы не стопорить очередь Telegram)', r.status === 200, r.status);
 check('статус заявки не изменился', (await q('SELECT approval_status FROM users WHERE id = 4'))[0].approval_status === 'pending');
+
+// --- /start отвечает всегда, даже если вебхук пришёл без секрета
+r = await fetch(`${process.env.TEST_BASE_URL || 'http://127.0.0.1:18090'}/api/telegram-webhook`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ message: { message_id: 1, chat: { id: 1003 }, from: { id: 1003 }, text: '/start' } }),
+});
+check('сообщение /start принимается (200)', r.status === 200, r.status);
 
 // --- Страницы правил
 for (const path of ['/legal/privacy-policy.html', '/legal/marketing-consent.html', '/legal/prize-rules.html', '/legal/terms.html']) {

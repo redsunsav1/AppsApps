@@ -1021,7 +1021,18 @@ async function registerWebhook() {
     });
     const result = await resp.json();
     console.log('🔗 Webhook:', result.ok ? 'registered' : result.description);
-  } catch (e) { console.error('Webhook error:', e.message); }
+    if (!result.ok) notifyAdmin(`⚠️ <b>Вебхук Telegram не зарегистрирован</b>\n\n${escapeHtml(result.description || 'без описания')}`).catch(() => {});
+    return result.ok;
+  } catch (e) { console.error('Webhook error:', e.message); return false; }
+}
+
+// Обновление пришло без нашего секрета — значит, регистрация вебхука при старте
+// не дошла до Telegram. Пробуем ещё раз, но не чаще раза в 10 минут.
+let lastWebhookRepair = 0;
+function repairWebhookRegistration() {
+  if (Date.now() - lastWebhookRepair < 10 * 60 * 1000) return;
+  lastWebhookRepair = Date.now();
+  registerWebhook().catch(() => {});
 }
 
 // =============================================
@@ -3369,12 +3380,16 @@ async function handleTelegramStart(message) {
 
 app.post('/api/telegram-webhook', async (req, res) => {
   try {
-    // Без WEBHOOK_URL сервер сам вебхук не регистрирует, и Telegram шлёт обновления
-    // без секрета, — тогда проверку пропускаем, иначе бот перестал бы отвечать.
+    // Секрет нужен только кнопкам админа: поддельный /start безвреден, а отказ на
+    // обычное сообщение застопорил бы всю очередь — Telegram доставляет обновления
+    // по одному и повторяет отклонённое, пока оно не пройдёт. Поэтому на сообщения
+    // всегда отвечаем 200, а без секрета — заодно перерегистрируем вебхук.
+    // Без WEBHOOK_URL сервер вебхук не регистрирует, и проверять нечего.
     const webhookSecret = process.env.WEBHOOK_URL ? telegramWebhookSecret() : null;
-    if (webhookSecret && !safeEqual(req.get('X-Telegram-Bot-Api-Secret-Token') || '', webhookSecret)) {
-      console.warn('[Telegram] webhook rejected: missing or invalid secret');
-      return res.sendStatus(403);
+    const secretOk = !webhookSecret || safeEqual(req.get('X-Telegram-Bot-Api-Secret-Token') || '', webhookSecret);
+    if (!secretOk) {
+      console.warn('[Telegram] update without valid secret — re-registering webhook');
+      repairWebhookRegistration();
     }
     const message = req.body?.message;
     const messageText = (message?.text || '').trim().toLowerCase();
@@ -3386,6 +3401,10 @@ app.post('/api/telegram-webhook', async (req, res) => {
 
     const callback = req.body?.callback_query;
     if (!callback) return res.sendStatus(200);
+    if (!secretOk) {
+      console.warn('[Telegram] admin callback without valid secret ignored');
+      return res.sendStatus(200);
+    }
     // Кнопки «одобрить/отклонить» может нажимать только админ: из ADMIN_TELEGRAM_ID
     // или пользователь с is_admin, привязанный к этому Telegram-аккаунту.
     const fromId = String(callback.from?.id || '');
@@ -3393,7 +3412,7 @@ app.post('/api/telegram-webhook', async (req, res) => {
     const fromUser = !isEnvAdmin && fromId ? await findUserByIdentity('telegram', fromId).catch(() => null) : null;
     if (!isEnvAdmin && !fromUser?.is_admin) {
       console.warn('[Telegram] admin callback rejected:', fromId);
-      return res.sendStatus(403);
+      return res.sendStatus(200);
     }
     const data = callback.data;
     const [action, userIdStr] = data.split('_');

@@ -10,6 +10,7 @@ import multer from 'multer';
 import nodemailer from 'nodemailer';
 import { importSiteNews } from './server/newsImport.js';
 import { renderPrivacyPolicy, missingPolicyVars } from './server/privacyPolicy.js';
+import { renderMarketingConsent, renderPrizeRules, renderClubTerms } from './server/legalPages.js';
 import { ensureGoldSchema, addGold, voidGoldEntry, goldSummary, goldHistory, GOLD_HOLD_DAYS } from './server/gold.js';
 import { verifyDealInAmo } from './server/dealVerification.js';
 import { ensurePrizeSchema, seedPrizeCatalog, publicProduct } from './server/prizes.js';
@@ -261,6 +262,15 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const { Pool } = pg;
 
+// Аварийные выключатели. Загрузка документов уже защищена согласием самого покупателя,
+// а рассылки уходят только тем, кто отдельно согласился на рекламу, поэтому по умолчанию
+// оба включены: выкатка не должна молча останавливать брони. Выключаются значением 'false'.
+const DOCUMENT_UPLOAD_ENABLED = process.env.ENABLE_DOCUMENT_UPLOAD !== 'false';
+const MARKETING_BROADCASTS_ENABLED = process.env.ENABLE_MARKETING_BROADCASTS !== 'false';
+const PD_CONSENT_VERSION = process.env.PD_CONSENT_VERSION || '2026-10-28';
+const MARKETING_CONSENT_VERSION = process.env.MARKETING_CONSENT_VERSION || '2026-10-28';
+const LEADERBOARD_CONSENT_VERSION = process.env.LEADERBOARD_CONSENT_VERSION || '2026-10-28';
+
 // Доверяем reverse proxy Amvera — req.ip берётся из X-Forwarded-For,
 // иначе все клиенты за прокси выглядят как один IP и попадают в общий rate-limit
 app.set('trust proxy', true);
@@ -276,6 +286,15 @@ const upload = multer({
     cb(new Error('Недопустимый тип файла. Разрешены: фото, PDF, Word.'));
   },
 });
+
+function requireDocumentUploadEnabled(req, res, next) {
+  if (!DOCUMENT_UPLOAD_ENABLED) {
+    return res.status(503).json({
+      error: 'Загрузка документов временно отключена до настройки прямого согласия покупателя и защищённого хранения',
+    });
+  }
+  next();
+}
 
 // CORS: по умолчанию разрешаем только собственные домены приложения и локальную разработку.
 const DEFAULT_ALLOWED_ORIGINS = [
@@ -318,6 +337,37 @@ app.use((req, res, next) => {
 
 app.use(compression({ level: 6 }));
 app.use(express.json({ limit: '5mb' }));
+
+function readCookie(req, name) {
+  const raw = String(req.get('cookie') || '');
+  for (const part of raw.split(';')) {
+    const [key, ...value] = part.trim().split('=');
+    if (key === name) return decodeURIComponent(value.join('='));
+  }
+  return '';
+}
+
+function setPwaSessionCookie(res, token) {
+  if (!token) return;
+  res.cookie('kp_session', token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV !== 'development',
+    sameSite: 'strict',
+    path: '/',
+    maxAge: 30 * 24 * 60 * 60 * 1000,
+  });
+}
+
+// Existing handlers read initData from body/header. For PWA sessions the bearer
+// token is kept in an HttpOnly cookie, so it is injected server-side only.
+app.use((req, res, next) => {
+  const session = readCookie(req, 'kp_session');
+  if (session) {
+    if (req.body && typeof req.body === 'object' && !req.body.initData) req.body.initData = session;
+    if (!req.pwaSessionToken) req.pwaSessionToken = session;
+  }
+  next();
+});
 // Статика: кэш 7 дней для ассетов, 0 для index.html (всегда свежий)
 app.use(express.static(path.join(__dirname, 'dist'), {
   maxAge: '7d',
@@ -369,6 +419,34 @@ function rateLimitByUser(windowMs, maxReq) {
     if (e.c > maxReq) return res.status(429).json({ error: 'Слишком много запросов. Попробуйте позже.' });
     next();
   };
+}
+
+// Лимит на вход: считаем по учётным данным (initData / PWA-токен), а не по IP.
+// Целое агентство может сидеть за одним Wi-Fi (50+ человек на одном адресе),
+// и IP-лимит 30 входов за 15 минут запирал бы весь офис. IP-потолок оставлен
+// щедрым — только против явного мусорного трафика.
+function rateLimitAuth(windowMs, perUser, perIp) {
+  return (req, res, next) => {
+    const now = Date.now();
+    const over = (key, max) => {
+      let e = rlMap.get(key);
+      if (!e || now - e.s > windowMs) { e = { s: now, c: 0 }; rlMap.set(key, e); }
+      e.c++;
+      return e.c > max;
+    };
+    const cred = req.body?.initData || req.body?.token || req.get('x-init-data') || req.pwaSessionToken || '';
+    const tooMany = over('ip:' + (req.ip || '0') + req.path, perIp)
+      || (cred && over('a:' + crypto.createHash('sha256').update(String(cred)).digest('hex').slice(0, 16) + req.path, perUser));
+    if (tooMany) return res.status(429).json({ error: 'Слишком много запросов. Попробуйте позже.' });
+    next();
+  };
+}
+
+function hashComplianceValue(value) {
+  if (!value) return null;
+  const secret = process.env.CONSENT_AUDIT_SECRET || process.env.ADMIN_SECRET || process.env.BOT_TOKEN;
+  if (!secret) return null;
+  return crypto.createHmac('sha256', secret).update(String(value)).digest('hex');
 }
 
 // PostgreSQL Pool
@@ -916,6 +994,15 @@ function normalizePhone(phone) {
 // =============================================
 // WEBHOOK REGISTRATION
 // =============================================
+// Секрет вебхука: Telegram присылает его в заголовке каждого обновления, и чужой
+// POST на /api/telegram-webhook (например, поддельное «одобрить заявку») отсекается.
+// Если переменная не задана, секрет выводится из токена бота — он и так есть только у нас.
+function telegramWebhookSecret() {
+  if (process.env.TELEGRAM_WEBHOOK_SECRET) return process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (!process.env.BOT_TOKEN) return null;
+  return crypto.createHash('sha256').update('tg-webhook:' + process.env.BOT_TOKEN).digest('hex');
+}
+
 async function registerWebhook() {
   const BOT_TOKEN = process.env.BOT_TOKEN;
   const WEBHOOK_URL = process.env.WEBHOOK_URL;
@@ -929,6 +1016,7 @@ async function registerWebhook() {
       body: JSON.stringify({
         url: `${WEBHOOK_URL}/api/telegram-webhook`,
         allowed_updates: ['message', 'callback_query'],
+        secret_token: telegramWebhookSecret(),
       })
     });
     const result = await resp.json();
@@ -1013,6 +1101,15 @@ const initDb = async () => {
     // 152-ФЗ: согласия на обработку ПДн
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_pd BOOLEAN DEFAULT FALSE;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_pd_at TIMESTAMP;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_pd_version TEXT;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_pd_ip_hash TEXT;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_pd_user_agent TEXT;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS marketing_consent BOOLEAN DEFAULT FALSE;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS marketing_consent_at TIMESTAMP;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS marketing_consent_version TEXT;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS leaderboard_consent BOOLEAN DEFAULT FALSE;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS leaderboard_consent_at TIMESTAMP;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS leaderboard_consent_version TEXT;');
     // Согласие покупателя на обработку ПДн. Раньше галочку ставил риелтор —
     // то есть согласие давал не тот человек. Теперь фиксируем факт от самого
     // покупателя: когда, с какого адреса и под какой редакцией текста.
@@ -2168,9 +2265,118 @@ cron.schedule('*/15 * * * *', async () => {
   } catch (e) { console.error('AmoCRM retry cron error:', e.message); }
 });
 
+// Минимизация данных: брошенные входы без согласия не должны копиться годами.
+//
+// Удаление необратимо, поэтому правила намеренно узкие. Под чистку попадает только
+// пустая оболочка: человек открыл приложение, не дошёл до формы и больше не вернулся.
+// Всё, что хоть отдалённо похоже на живого партнёра, остаётся:
+//   * заявка в любом статусе (approval_status <> 'none') — висящие заявки не трогаем;
+//   * любые брони — там лежит amocrm_lead_id, и отдел продаж видит сделку в amoCRM;
+//   * заказы, записи на события, выполненные квесты и миссии;
+//   * заполненные телефон/компания/фамилия, ненулевые балансы, XP, сделки;
+//   * выданный pwa_token — значит вход уже работал;
+//   * админы.
+//
+// Отдельная защита от исторических данных: у пользователей, заведённых до появления
+// колонки consent_pd, она равна FALSE просто потому, что её тогда не было. Поэтому
+// чистка не смотрит на записи старше PRIVACY_CLEANUP_NOT_BEFORE.
+//
+// По умолчанию режим сухого прогона: считаем и пишем в лог, но ничего не удаляем.
+// Включается только явным PRIVACY_CLEANUP_ENABLED=true после проверки логов.
+const PRIVACY_CLEANUP_ENABLED = process.env.PRIVACY_CLEANUP_ENABLED === 'true';
+const PRIVACY_CLEANUP_NOT_BEFORE = process.env.PRIVACY_CLEANUP_NOT_BEFORE || '2026-09-19';
+const PRIVACY_CLEANUP_MAX_BATCH = Math.max(1, parseInt(process.env.PRIVACY_CLEANUP_MAX_BATCH || '25', 10) || 25);
+
+async function findAbandonedRegistrations(client) {
+  const result = await client.query(`
+    SELECT u.id FROM users u
+    WHERE COALESCE(u.consent_pd, FALSE) = FALSE
+      AND COALESCE(u.is_registered, FALSE) = FALSE
+      AND COALESCE(u.is_admin, FALSE) = FALSE
+      AND COALESCE(u.can_manage_bookings, FALSE) = FALSE
+      AND COALESCE(u.approval_status, 'none') = 'none'
+      AND u.pwa_token IS NULL
+      AND u.phone IS NULL
+      AND u.company IS NULL
+      AND u.last_name IS NULL
+      AND COALESCE(u.balance, 0) = 0
+      AND COALESCE(u.gold_balance, 0) = 0
+      AND COALESCE(u.xp_points, 0) = 0
+      AND COALESCE(u.deals_closed, 0) = 0
+      AND u.created_at < NOW() - INTERVAL '24 hours'
+      AND u.created_at >= $1::timestamp
+      AND NOT EXISTS (SELECT 1 FROM bookings b WHERE b.user_id = u.id)
+      AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)
+      AND NOT EXISTS (SELECT 1 FROM event_registrations er WHERE er.user_id = u.id)
+      AND NOT EXISTS (SELECT 1 FROM quest_completions qc WHERE qc.user_id = u.id)
+      AND NOT EXISTS (
+        SELECT 1 FROM user_missions um
+        WHERE um.user_id = u.id
+          AND (COALESCE(um.progress, 0) > 0 OR COALESCE(um.completed, FALSE) OR COALESCE(um.rewarded, FALSE))
+      )
+    ORDER BY u.created_at
+  `, [PRIVACY_CLEANUP_NOT_BEFORE]);
+  return result.rows.map(row => row.id);
+}
+
+cron.schedule('17 3 * * *', async () => {
+  try {
+    await withTransaction(async (client) => {
+      const ids = await findAbandonedRegistrations(client);
+      if (!ids.length) return;
+
+      if (!PRIVACY_CLEANUP_ENABLED) {
+        console.log(`Privacy cleanup [dry-run]: ${ids.length} кандидатов, удаление выключено ` +
+          `(PRIVACY_CLEANUP_ENABLED != true). ID: ${ids.slice(0, 50).join(', ')}`);
+        return;
+      }
+
+      // Если кандидатов внезапно много — это почти наверняка ошибка в условиях
+      // или сдвинутый NOT_BEFORE. Лучше не удалить ничего и разобраться руками.
+      if (ids.length > PRIVACY_CLEANUP_MAX_BATCH) {
+        console.error(`Privacy cleanup ОСТАНОВЛЕН: кандидатов ${ids.length} > лимита ${PRIVACY_CLEANUP_MAX_BATCH}. ` +
+          `Ничего не удалено, проверьте PRIVACY_CLEANUP_NOT_BEFORE и условия отбора.`);
+        return;
+      }
+
+      // Пустые заготовки миссий создаются автоматически при первом входе и держат
+      // внешний ключ на users. Реальный прогресс сюда не попадает — он отсеян выше.
+      await client.query('DELETE FROM user_missions WHERE user_id = ANY($1::int[])', [ids]);
+      await client.query('DELETE FROM account_link_codes WHERE user_id = ANY($1::int[])', [ids]);
+      await client.query('DELETE FROM user_identities WHERE user_id = ANY($1::int[])', [ids]);
+      await client.query('DELETE FROM users WHERE id = ANY($1::int[])', [ids]);
+      console.log(`Privacy cleanup: удалено ${ids.length} брошенных входов (ID: ${ids.join(', ')})`);
+    });
+  } catch (e) {
+    console.error('Privacy cleanup error:', e.message);
+  }
+});
+
 // =============================================
 // HEALTH CHECK
 // =============================================
+app.get('/api/compliance/status', (req, res) => {
+  const operatorConfigured = Boolean(
+    process.env.PD_OPERATOR_NAME &&
+    process.env.PD_OPERATOR_ADDRESS &&
+    process.env.PD_CONTACT_EMAIL
+  );
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    documentUploadEnabled: DOCUMENT_UPLOAD_ENABLED && operatorConfigured,
+    marketingBroadcastsEnabled: MARKETING_BROADCASTS_ENABLED && operatorConfigured,
+    operatorConfigured,
+    pdConsentVersion: PD_CONSENT_VERSION,
+    marketingConsentVersion: MARKETING_CONSENT_VERSION,
+    leaderboardConsentVersion: LEADERBOARD_CONSENT_VERSION,
+    operator: operatorConfigured ? {
+      name: process.env.PD_OPERATOR_NAME,
+      address: process.env.PD_OPERATOR_ADDRESS,
+      email: process.env.PD_CONTACT_EMAIL,
+    } : null,
+  });
+});
+
 app.get('/api/ping', async (req, res) => {
   // Внешний мониторинг (UptimeRobot и т.п.) смотрит на HTTP-код:
   // 200 — всё живо, 503 — база недоступна. Детали — для ручной диагностики.
@@ -2208,7 +2414,7 @@ app.get('/api/test-notify', async (req, res) => {
 // =============================================
 // API: АВТОРИЗАЦИЯ
 // =============================================
-app.post('/api/auth', rateLimit(900000, 30), async (req, res) => {
+app.post('/api/auth', rateLimitAuth(900000, 30, 1000), async (req, res) => {
   const { initData } = req.body;
   if (!initData) return res.status(400).json({ error: 'No data' });
   try {
@@ -2216,7 +2422,7 @@ app.post('/api/auth', rateLimit(900000, 30), async (req, res) => {
     if (!tgUser) return res.status(401).json({ error: 'Invalid initData signature' });
     let existing = await findUserByIdentity('telegram', tgUser.id);
     if (!existing) {
-      const created = await pool.query('INSERT INTO users (telegram_id, username, first_name, gold_balance, balance) VALUES ($1, $2, $3, 0, 0) RETURNING *', [tgUser.id, tgUser.username, tgUser.first_name]);
+      const created = await pool.query('INSERT INTO users (telegram_id, gold_balance, balance) VALUES ($1, 0, 0) RETURNING *', [tgUser.id]);
       existing = created.rows[0];
     }
     // Держим таблицу идентичностей в актуальном состоянии на каждом входе
@@ -2229,7 +2435,13 @@ app.post('/api/auth', rateLimit(900000, 30), async (req, res) => {
       user.platform = 'telegram';
     }
     // Генерировать PWA-токен если его нет
-    user.pwa_token = await ensurePwaToken(user);
+    if (user.consent_pd || user.is_registered) user.pwa_token = await ensurePwaToken(user);
+    // Имя из подписанного initData используется для текущего экрана, но до
+    // согласия не записывается в постоянную базу.
+    if (!user.consent_pd && !user.is_registered) {
+      user.first_name = tgUser.first_name || '';
+      user.username = tgUser.username || null;
+    }
     const today = new Date().toISOString().slice(0, 10);
     const lastLogin = user.last_login_date ? new Date(user.last_login_date).toISOString().slice(0, 10) : null;
     if (lastLogin !== today) {
@@ -2242,6 +2454,7 @@ app.post('/api/auth', rateLimit(900000, 30), async (req, res) => {
       checkMissions(user.id, 'login').catch(() => {});
     }
     if (user) user.avatar_url = avatarPath(user);
+    setPwaSessionCookie(res, user.pwa_token);
     res.json({ user });
   } catch (e) {
     console.error('Auth error:', e);
@@ -2252,7 +2465,7 @@ app.post('/api/auth', rateLimit(900000, 30), async (req, res) => {
 // =============================================
 // API: АВТОРИЗАЦИЯ ПО PWA-ТОКЕНУ
 // =============================================
-app.post('/api/auth/token', rateLimit(900000, 30), async (req, res) => {
+app.post('/api/auth/token', rateLimitAuth(900000, 30, 1000), async (req, res) => {
   const { token } = req.body;
   if (!token) return res.status(400).json({ error: 'No token' });
   try {
@@ -2274,9 +2487,27 @@ app.post('/api/auth/token', rateLimit(900000, 30), async (req, res) => {
       checkMissions(user.id, 'login').catch(() => {});
     }
     if (user) user.avatar_url = avatarPath(user);
+    setPwaSessionCookie(res, user.pwa_token);
     res.json({ user });
   } catch (e) {
     console.error('Token auth error:', e);
+    res.status(500).json({ error: 'Auth error' });
+  }
+});
+
+app.get('/api/auth/session', rateLimitAuth(900000, 60, 1000), async (req, res) => {
+  const token = req.pwaSessionToken || readCookie(req, 'kp_session');
+  if (!token) return res.status(401).json({ error: 'No session' });
+  try {
+    const result = await pool.query('SELECT * FROM users WHERE pwa_token = $1', [token]);
+    if (!result.rows.length) return res.status(401).json({ error: 'Invalid session' });
+    const user = result.rows[0];
+    if (isPwaTokenIdle(user)) return res.status(401).json({ error: 'Session expired' });
+    touchPwaToken(user);
+    user.avatar_url = avatarPath(user);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ user });
+  } catch (e) {
     res.status(500).json({ error: 'Auth error' });
   }
 });
@@ -2286,7 +2517,7 @@ app.post('/api/auth/token', rateLimit(900000, 30), async (req, res) => {
 // =============================================
 // Зеркало /api/auth, но валидирует MAX initData и работает с колонкой max_id.
 // Endpoint возвращает 503 если MAX_ENABLED != 'true' — это безопасный no-op.
-app.post('/api/auth/max', rateLimit(900000, 30), async (req, res) => {
+app.post('/api/auth/max', rateLimitAuth(900000, 30, 1000), async (req, res) => {
   if (!isMaxEnabled()) {
     return res.status(503).json({ error: 'MAX platform отключена. Установите MAX_ENABLED=true.' });
   }
@@ -2301,9 +2532,9 @@ app.post('/api/auth/max', rateLimit(900000, 30), async (req, res) => {
     let existing = await findUserByIdentity('max', maxUser.id);
     if (!existing) {
       const created = await pool.query(
-        `INSERT INTO users (max_id, username, first_name, platform, gold_balance, balance, is_admin, is_registered)
-         VALUES ($1, $2, $3, 'max', 0, 0, $4, $4) RETURNING *`,
-        [maxUser.id, maxUser.username || null, maxUser.first_name || '', isAdminMaxId]
+        `INSERT INTO users (max_id, platform, gold_balance, balance, is_admin, is_registered)
+         VALUES ($1, 'max', 0, 0, $2, $2) RETURNING *`,
+        [maxUser.id, isAdminMaxId]
       );
       existing = created.rows[0];
     } else if (isAdminMaxId && !existing.is_admin) {
@@ -2321,7 +2552,11 @@ app.post('/api/auth/max', rateLimit(900000, 30), async (req, res) => {
     }
 
     // Генерировать PWA-токен если нет (универсальный, единая логика с Telegram)
-    user.pwa_token = await ensurePwaToken(user);
+    if (user.consent_pd || user.is_registered) user.pwa_token = await ensurePwaToken(user);
+    if (!user.consent_pd && !user.is_registered) {
+      user.first_name = maxUser.first_name || '';
+      user.username = maxUser.username || null;
+    }
 
     // Серия входов (единая логика с Telegram)
     const today = new Date().toISOString().slice(0, 10);
@@ -2335,6 +2570,7 @@ app.post('/api/auth/max', rateLimit(900000, 30), async (req, res) => {
       checkMissions(user.id, 'login').catch(() => {});
     }
     if (user) user.avatar_url = avatarPath(user);
+    setPwaSessionCookie(res, user.pwa_token);
     res.json({ user });
   } catch (e) {
     console.error('[MAX] Auth error:', e);
@@ -2551,13 +2787,14 @@ async function mergeUserIdentity(client, target, source) {
 // Принимает обновления от MAX (новые сообщения, callback'и).
 // На старте просто логируем — обработка событий по мере необходимости.
 app.post('/api/max-webhook', async (req, res) => {
-  // Всегда отвечаем 200 быстро, чтобы MAX не ретраил
-  res.status(200).json({ ok: true });
-  if (!isMaxEnabled()) return;
+  if (!isMaxEnabled()) return res.sendStatus(404);
+  // Подпись проверяем, когда секрет задан (он же передаётся MAX при подписке).
   if (process.env.MAX_WEBHOOK_SECRET && req.get('X-Max-Bot-Api-Secret') !== process.env.MAX_WEBHOOK_SECRET) {
     console.warn('[MAX] webhook secret mismatch');
-    return;
+    return res.sendStatus(403);
   }
+  // Подпись проверена; отвечаем быстро, дальнейшая обработка не содержит файлов.
+  res.status(200).json({ ok: true });
   try {
     const updates = Array.isArray(req.body?.updates) ? req.body.updates : [req.body];
     for (const update of updates) {
@@ -2616,17 +2853,28 @@ app.post('/api/avatar', async (req, res) => {
 // отдельно и кэширует. В ответе только изображение, без имён и телефонов.
 function avatarPath(userRow) {
   if (!userRow?.avatar_url) return null;
-  // Внешние URL (если появятся) отдаём как есть
-  if (!String(userRow.avatar_url).startsWith('data:')) return userRow.avatar_url;
-  // Версия в query — чтобы после смены фото кэш браузера не показывал старое
+  const secret = process.env.AVATAR_SIGNING_SECRET || process.env.ADMIN_SECRET || process.env.BOT_TOKEN;
+  if (!secret) return null;
+  const exp = Math.floor(Date.now() / 1000) + 3600;
+  const sig = crypto.createHmac('sha256', secret).update(`${userRow.id}:${exp}`).digest('hex');
   const v = crypto.createHash('sha1').update(String(userRow.avatar_url)).digest('hex').slice(0, 8);
-  return `/api/avatar/${userRow.id}?v=${v}`;
+  return `/api/avatar/${userRow.id}?v=${v}&exp=${exp}&sig=${sig}`;
 }
 
 app.get('/api/avatar/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).end();
+    const secret = process.env.AVATAR_SIGNING_SECRET || process.env.ADMIN_SECRET || process.env.BOT_TOKEN;
+    const exp = Number(req.query.exp);
+    const supplied = String(req.query.sig || '');
+    if (!secret || !Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000) || !/^[a-f0-9]{64}$/.test(supplied)) {
+      return res.status(403).end();
+    }
+    const expected = crypto.createHmac('sha256', secret).update(`${id}:${exp}`).digest('hex');
+    if (!crypto.timingSafeEqual(Buffer.from(supplied, 'hex'), Buffer.from(expected, 'hex'))) {
+      return res.status(403).end();
+    }
     const r = await pool.query('SELECT avatar_url FROM users WHERE id = $1', [id]);
     const data = r.rows[0]?.avatar_url;
     if (!data) return res.status(404).end();
@@ -2636,7 +2884,7 @@ app.get('/api/avatar/:id', async (req, res) => {
     const mime = match[1] || 'image/jpeg';
     const buf = match[2] ? Buffer.from(match[3], 'base64') : Buffer.from(decodeURIComponent(match[3]), 'utf8');
     res.setHeader('Content-Type', mime);
-    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Cache-Control', 'private, max-age=900');
     res.send(buf);
   } catch (e) { res.status(500).end(); }
 });
@@ -2645,7 +2893,10 @@ app.get('/api/avatar/:id', async (req, res) => {
 // РЕГИСТРАЦИЯ С МОДЕРАЦИЕЙ
 // =============================================
 app.post('/api/register', rateLimitByUser(900000, 15), async (req, res) => {
-  const { initData, firstName, lastName, companyType, company, phone, consentPd, contactResponse } = req.body;
+  const {
+    initData, firstName, lastName, companyType, company, phone, consentPd,
+    consentMarketing = false, consentLeaderboard = false, contactResponse,
+  } = req.body;
   try {
     const authUser = await resolveDbUser(initData);
     if (!authUser) return res.status(401).json({ error: 'Invalid signature' });
@@ -2710,6 +2961,15 @@ app.post('/api/register', rateLimitByUser(900000, 15), async (req, res) => {
             is_registered = CASE WHEN $7::boolean THEN TRUE ELSE is_registered END,
             consent_pd = TRUE,
             consent_pd_at = NOW(),
+            consent_pd_version = $11,
+            consent_pd_ip_hash = $12,
+            consent_pd_user_agent = $13,
+            marketing_consent = $14,
+            marketing_consent_at = CASE WHEN $14::boolean THEN NOW() ELSE NULL END,
+            marketing_consent_version = CASE WHEN $14::boolean THEN $15 ELSE NULL END,
+            leaderboard_consent = $16,
+            leaderboard_consent_at = CASE WHEN $16::boolean THEN NOW() ELSE NULL END,
+            leaderboard_consent_version = CASE WHEN $16::boolean THEN $17 ELSE NULL END,
             platform = $8,
             phone_verified_at = CASE WHEN $10::boolean THEN NOW() ELSE NULL END,
             phone_verified_source = CASE WHEN $10::boolean THEN 'telegram_contact' ELSE NULL END
@@ -2726,6 +2986,13 @@ app.post('/api/register', rateLimitByUser(900000, 15), async (req, res) => {
         authUser._platform || current.platform || 'telegram',
         current.id,
         !!verifiedPhone,
+        PD_CONSENT_VERSION,
+        hashComplianceValue(req.ip),
+        String(req.get('user-agent') || '').slice(0, 500),
+        consentMarketing === true,
+        MARKETING_CONSENT_VERSION,
+        consentLeaderboard === true,
+        LEADERBOARD_CONSENT_VERSION,
       ]);
 
       return {
@@ -2739,6 +3006,11 @@ app.post('/api/register', rateLimitByUser(900000, 15), async (req, res) => {
     });
 
     const userId = registrationResult.user.id;
+    if (!registrationResult.user.pwa_token) {
+      const token = crypto.randomBytes(32).toString('hex');
+      await pool.query('UPDATE users SET pwa_token = $1, pwa_token_used_at = NOW() WHERE id = $2', [token, userId]);
+      registrationResult.user.pwa_token = token;
+    }
     const platform = authUser._platform || 'telegram';
     const typeLabel = companyType === 'ip' ? 'ИП' : 'Агентство';
     const platformLabel = platform === 'max' ? '🟣 MAX' : '✈️ Telegram';
@@ -2778,6 +3050,32 @@ app.post('/api/register', rateLimitByUser(900000, 15), async (req, res) => {
     console.error('Register error:', e);
     if (e.status) return res.status(e.status).json({ error: e.msg });
     res.status(500).json({ error: 'Error' });
+  }
+});
+
+// Отдельное управление рекламным согласием. Отказ применяется немедленно и
+// не влияет на сервисные уведомления о собственной заявке/брони.
+app.post('/api/privacy/preferences', async (req, res) => {
+  try {
+    const user = await resolveDbUser(req.body?.initData);
+    if (!user) return res.status(401).json({ error: 'Invalid signature' });
+    const marketing = req.body?.marketing === true;
+    const leaderboard = req.body?.leaderboard === true;
+    await pool.query(`
+      UPDATE users SET
+        marketing_consent = $1,
+        marketing_consent_at = CASE WHEN $1 THEN NOW() ELSE NULL END,
+        marketing_consent_version = CASE WHEN $1 THEN $3 ELSE NULL END,
+        leaderboard_consent = $2,
+        leaderboard_consent_at = CASE WHEN $2 THEN NOW() ELSE NULL END,
+        leaderboard_consent_version = CASE WHEN $2 THEN $4 ELSE NULL END
+      WHERE id = $5
+    `, [marketing, leaderboard, MARKETING_CONSENT_VERSION, LEADERBOARD_CONSENT_VERSION, user.id]);
+    logAudit(user, 'privacy.preferences_change', 'user', user.id, { marketing, leaderboard });
+    res.json({ success: true, marketing, leaderboard });
+  } catch (e) {
+    console.error('Privacy preferences error:', e);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
@@ -2976,7 +3274,8 @@ function getLegalLinks() {
   const links = [];
   const policyUrl = process.env.PRIVACY_POLICY_URL || getOwnPrivacyPolicyUrl();
   if (policyUrl) links.push({ title: 'политикой обработки персональных данных', label: 'Политика обработки персональных данных', url: policyUrl });
-  if (process.env.TERMS_URL) links.push({ title: 'условиями участия в клубе', label: 'Условия участия в клубе', url: process.env.TERMS_URL });
+  const termsUrl = process.env.TERMS_URL || (policyUrl && !process.env.PRIVACY_POLICY_URL ? policyUrl.replace(/privacy-policy\.html$/, 'terms.html') : null);
+  if (termsUrl) links.push({ title: 'условиями участия в клубе', label: 'Условия участия в клубе', url: termsUrl });
   return links;
 }
 
@@ -3074,6 +3373,13 @@ async function handleTelegramStart(message) {
 
 app.post('/api/telegram-webhook', async (req, res) => {
   try {
+    // Без WEBHOOK_URL сервер сам вебхук не регистрирует, и Telegram шлёт обновления
+    // без секрета, — тогда проверку пропускаем, иначе бот перестал бы отвечать.
+    const webhookSecret = process.env.WEBHOOK_URL ? telegramWebhookSecret() : null;
+    if (webhookSecret && !safeEqual(req.get('X-Telegram-Bot-Api-Secret-Token') || '', webhookSecret)) {
+      console.warn('[Telegram] webhook rejected: missing or invalid secret');
+      return res.sendStatus(403);
+    }
     const message = req.body?.message;
     const messageText = (message?.text || '').trim().toLowerCase();
     if (messageText === '/start' || messageText === 'start') {
@@ -3084,6 +3390,15 @@ app.post('/api/telegram-webhook', async (req, res) => {
 
     const callback = req.body?.callback_query;
     if (!callback) return res.sendStatus(200);
+    // Кнопки «одобрить/отклонить» может нажимать только админ: из ADMIN_TELEGRAM_ID
+    // или пользователь с is_admin, привязанный к этому Telegram-аккаунту.
+    const fromId = String(callback.from?.id || '');
+    const isEnvAdmin = !!process.env.ADMIN_TELEGRAM_ID && fromId === String(process.env.ADMIN_TELEGRAM_ID);
+    const fromUser = !isEnvAdmin && fromId ? await findUserByIdentity('telegram', fromId).catch(() => null) : null;
+    if (!isEnvAdmin && !fromUser?.is_admin) {
+      console.warn('[Telegram] admin callback rejected:', fromId);
+      return res.sendStatus(403);
+    }
     const data = callback.data;
     const [action, userIdStr] = data.split('_');
     const userId = parseInt(userIdStr);
@@ -3121,7 +3436,7 @@ app.post('/api/telegram-webhook', async (req, res) => {
 // =============================================
 // API: НОВОСТИ
 // =============================================
-app.get('/api/news', async (req, res) => {
+app.get('/api/news', requireRegisteredRequest, async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM news ORDER BY created_at DESC');
     res.json(result.rows);
@@ -3133,7 +3448,9 @@ app.post('/api/news', async (req, res) => {
     if (await isAdminRequest(req)) {
       const { title, text, image_url, video_url, project_name, progress, checklist } = req.body;
       await pool.query('INSERT INTO news (title, text, image_url, video_url, project_name, progress, checklist) VALUES ($1, $2, $3, $4, $5, $6, $7)', [title, text, image_url, video_url, project_name, progress, JSON.stringify(checklist)]);
-      const usersRes = await pool.query('SELECT telegram_id, max_id, platform FROM users WHERE is_registered = TRUE');
+      const usersRes = MARKETING_BROADCASTS_ENABLED
+        ? await pool.query('SELECT telegram_id, max_id, platform FROM users WHERE is_registered = TRUE AND marketing_consent = TRUE')
+        : { rows: [] };
       const projectLabel = project_name ? ` (${project_name})` : '';
       const newsText = `📰 <b>Новая новость${projectLabel}</b>\n\n${title}\n\n${(text || '').slice(0, 150)}${(text || '').length > 150 ? '...' : ''}`;
       // Рассылка идёт в фоне с паузами — ответ админу не ждёт её завершения
@@ -3215,7 +3532,7 @@ app.put('/api/news/:id', async (req, res) => {
 // =============================================
 // API: МАГАЗИН
 // =============================================
-app.get('/api/products', async (req, res) => {
+app.get('/api/products', requireRegisteredRequest, async (req, res) => {
   try {
     const result = await pool.query("SELECT * FROM products WHERE is_active = TRUE ORDER BY currency DESC, price ASC");
     res.json(await isAdminRequest(req) ? result.rows : result.rows.map(publicProduct));
@@ -3435,6 +3752,22 @@ app.post('/api/admin/gold/history', async (req, res) => {
     const [summary, history] = await Promise.all([goldSummary(pool, userId), goldHistory(pool, userId)]);
     res.json({ summary, history, holdDays: GOLD_HOLD_DAYS });
   } catch (e) { console.error('Gold history error:', e); res.status(500).json({ error: 'Server error' }); }
+});
+
+// Кто из партнёров держит золото «на проверке» (перенесённое старое или замороженное
+// вручную): чтобы разобрать всех разом, а не открывать каждого в «Базе».
+app.post('/api/admin/gold/unverified', async (req, res) => {
+  try {
+    if (!await adminActor(req)) return res.status(403).json({ error: 'Forbidden' });
+    const result = await pool.query(`
+      SELECT u.id, u.first_name, u.last_name, u.company, u.deals_closed,
+             SUM(g.delta)::int AS amount, COUNT(*)::int AS entries
+      FROM gold_ledger g JOIN users u ON u.id = g.user_id
+      WHERE g.voided_at IS NULL AND g.delta > 0 AND g.available_at IS NULL
+      GROUP BY u.id ORDER BY amount DESC, u.id
+    `);
+    res.json(result.rows);
+  } catch (e) { console.error('Unverified gold error:', e); res.status(500).json({ error: 'Server error' }); }
 });
 
 // Разморозить начисление досрочно (после ручной проверки)
@@ -3764,11 +4097,11 @@ app.post('/api/admin/users', async (req, res) => {
     const result = await pool.query(
       `SELECT id, telegram_id, max_id, platform, username, first_name, last_name, company, company_type, phone,
               is_registered, is_admin, can_manage_bookings, approval_status, balance, gold_balance, xp_points, deals_closed,
-              CASE WHEN avatar_url IS NOT NULL THEN '/api/avatar/' || id || '?v=' || substr(md5(avatar_url), 1, 8) ELSE NULL END AS avatar_url,
+              avatar_url,
               created_at
        FROM users ORDER BY created_at DESC`
     );
-    res.json(result.rows);
+    res.json(result.rows.map(row => ({ ...row, avatar_url: avatarPath(row) })));
   } catch (e) { console.error('Admin users error:', e); res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -3837,6 +4170,8 @@ app.delete('/api/admin/users/:id', async (req, res) => {
       await client.query('DELETE FROM bookings WHERE user_id = $1', [userId]);
       await client.query('DELETE FROM orders WHERE user_id = $1', [userId]);
       await client.query('DELETE FROM event_registrations WHERE user_id = $1', [userId]);
+      await client.query('DELETE FROM account_link_codes WHERE user_id = $1', [userId]);
+      await client.query('DELETE FROM user_identities WHERE user_id = $1', [userId]);
       // Удаляем пользователя
       await client.query('DELETE FROM users WHERE id = $1', [userId]);
     });
@@ -3911,7 +4246,10 @@ app.get('/api/leaderboard', requireRegisteredRequest, async (req, res) => {
         ? `AND b.created_at >= date_trunc('month', CURRENT_DATE)`
         : `AND b.created_at >= date_trunc('quarter', CURRENT_DATE)`;
       const result = await pool.query(`
-        SELECT u.id, u.telegram_id, u.first_name as name, u.last_name, u.company,
+        SELECT u.id,
+          CASE WHEN u.leaderboard_consent THEN u.first_name ELSE 'Партнёр #' || u.id END as name,
+          CASE WHEN u.leaderboard_consent THEN u.last_name ELSE NULL END as last_name,
+          CASE WHEN u.leaderboard_consent THEN u.company ELSE NULL END as company,
           COUNT(b.id)::int as deals, u.xp_points as xp
         FROM users u
         LEFT JOIN bookings b ON b.user_id = u.id AND b.stage = 'COMPLETE' ${dateFilter}
@@ -3923,7 +4261,10 @@ app.get('/api/leaderboard', requireRegisteredRequest, async (req, res) => {
       res.json(result.rows);
     } else {
       const result = await pool.query(`
-        SELECT id, telegram_id, first_name as name, last_name, company,
+        SELECT id,
+          CASE WHEN leaderboard_consent THEN first_name ELSE 'Партнёр #' || id END as name,
+          CASE WHEN leaderboard_consent THEN last_name ELSE NULL END as last_name,
+          CASE WHEN leaderboard_consent THEN company ELSE NULL END as company,
           deals_closed as deals, xp_points as xp
         FROM users WHERE is_registered = TRUE
         ORDER BY deals_closed DESC, xp_points DESC LIMIT 50
@@ -3936,10 +4277,11 @@ app.get('/api/leaderboard', requireRegisteredRequest, async (req, res) => {
 // =============================================
 // API: КВЕСТЫ
 // =============================================
-app.get('/api/quests', async (req, res) => {
+app.get('/api/quests', requireRegisteredRequest, async (req, res) => {
   try {
-    const { userId } = req.query;
-    if (!userId) {
+    const requestedUserId = req.query.userId;
+    const userId = req.authUser?.is_admin && requestedUserId ? requestedUserId : req.authUser?.id;
+    if (req.authUser?.is_admin && !requestedUserId) {
       const result = await pool.query('SELECT * FROM quests WHERE is_active = TRUE ORDER BY type');
       return res.json(result.rows.map(q => ({ ...q, isCompleted: false })));
     }
@@ -4077,7 +4419,7 @@ function safeAmoFileName(file, fallbackPrefix = 'file') {
 }
 
 function isAmoCRMFileUploadEnabled() {
-  return process.env.AMOCRM_ATTACH_FILES !== 'false';
+  return process.env.AMOCRM_ATTACH_FILES !== 'false' && DOCUMENT_UPLOAD_ENABLED;
 }
 
 function resolveAmoUrl(url, baseUrl) {
@@ -4458,15 +4800,19 @@ app.post('/api/events', async (req, res) => {
         await pool.query('INSERT INTO event_invitations (event_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [eventId, uid]);
       }
     }
-    const recipientsRes = is_private
+    const recipientsRes = !MARKETING_BROADCASTS_ENABLED
+      ? { rows: [] }
+      : is_private
       ? await pool.query(
           `SELECT telegram_id, max_id, platform FROM users
-           WHERE id = ANY($1::int[]) AND is_registered = TRUE AND approval_status = 'approved'`,
+           WHERE id = ANY($1::int[]) AND is_registered = TRUE AND approval_status = 'approved'
+             AND marketing_consent = TRUE`,
           [Array.isArray(invited_user_ids) ? invited_user_ids : []]
         )
       : await pool.query(
           `SELECT telegram_id, max_id, platform FROM users
-           WHERE is_registered = TRUE AND approval_status = 'approved'`
+           WHERE is_registered = TRUE AND approval_status = 'approved'
+             AND marketing_consent = TRUE`
         );
     const eventDate = new Date(date).toLocaleDateString('ru-RU');
     const eventText = `📅 <b>Новое событие</b>\n\n<b>${title}</b>\n${description ? `${description}\n` : ''}📍 ${eventDate}${time ? ` в ${time}` : ''}\n👥 Мест: ${spots_total || 30}`;
@@ -4552,7 +4898,7 @@ app.post('/api/events/:id/unregister', async (req, res) => {
 // =============================================
 
 // Список активных программ (публичный)
-app.get('/api/mortgage-programs', async (req, res) => {
+app.get('/api/mortgage-programs', requireRegisteredRequest, async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM mortgage_programs WHERE is_active = TRUE ORDER BY rate ASC');
     res.json(result.rows);
@@ -5013,8 +5359,13 @@ app.post('/api/consent/:token/passport', rateLimit(3600000, 10), upload.single('
 });
 
 // Шаг 1: Загрузка паспорта → квартира BOOKED
-app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, res) => {
+app.post('/api/bookings/:id/passport', requireDocumentUploadEnabled, upload.single('passport'), async (req, res) => {
   try {
+    if (!DOCUMENT_UPLOAD_ENABLED) {
+      return res.status(503).json({
+        error: 'Загрузка документов временно отключена до настройки прямого согласия покупателя и защищённого хранения',
+      });
+    }
     const { initData, buyerName, buyerPhone, consentTransfer } = req.body;
     const dbUser = await resolveDbUser(initData);
     if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
@@ -5025,11 +5376,14 @@ app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, re
 
     if (dbUser.id !== booking.user_id) return res.status(403).json({ error: 'Not your booking' });
     if (booking.passport_sent) return res.status(400).json({ error: 'Паспорт уже отправлен' });
-    // Согласие на обработку даёт покупатель, а не риелтор. Без зафиксированного
-    // согласия отправка документа не допускается ни с какой стороны.
+    // Согласие на обработку даёт покупатель, а не риелтор.
     if (!booking.buyer_consent) {
       return res.status(403).json({ error: 'Покупатель ещё не подтвердил согласие. Отправьте ему ссылку.' });
     }
+    if (!(consentTransfer === 'true' || consentTransfer === true)) {
+      return res.status(400).json({ error: 'Не подтверждено законное основание передачи документов покупателя' });
+    }
+    if (!req.file) return res.status(400).json({ error: 'Файл паспорта не выбран' });
 
     const unitRes = await pool.query('SELECT * FROM units WHERE id = $1', [booking.unit_id]);
     const unit = unitRes.rows[0] || {};
@@ -5094,8 +5448,11 @@ app.post('/api/bookings/:id/passport', upload.single('passport'), async (req, re
 });
 
 // Шаг 2: Загрузка пакета документов для ипотеки
-app.post('/api/bookings/:id/documents', upload.array('documents', 10), async (req, res) => {
+app.post('/api/bookings/:id/documents', requireDocumentUploadEnabled, upload.array('documents', 10), async (req, res) => {
   try {
+    if (!DOCUMENT_UPLOAD_ENABLED) {
+      return res.status(503).json({ error: 'Загрузка документов временно отключена' });
+    }
     const { initData } = req.body;
     const dbUser = await resolveDbUser(initData);
     if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
@@ -5395,6 +5752,21 @@ app.post('/api/bookings/cancel', async (req, res) => {
 // =============================================
 app.get(['/legal/privacy-policy.html', '/legal/privacy-policy', '/privacy'], (req, res) => {
   const { status, html } = renderPrivacyPolicy();
+  res.status(status).type('html').setHeader('Cache-Control', 'no-cache').send(html);
+});
+
+app.get(['/legal/marketing-consent.html', '/legal/marketing-consent'], (req, res) => {
+  const { status, html } = renderMarketingConsent();
+  res.status(status).type('html').setHeader('Cache-Control', 'no-cache').send(html);
+});
+
+app.get(['/legal/prize-rules.html', '/legal/prize-rules'], (req, res) => {
+  const { status, html } = renderPrizeRules(process.env, { holdDays: GOLD_HOLD_DAYS });
+  res.status(status).type('html').setHeader('Cache-Control', 'no-cache').send(html);
+});
+
+app.get(['/legal/terms.html', '/legal/terms', '/terms'], (req, res) => {
+  const { status, html } = renderClubTerms(process.env, { bookingHoldHours: BOOKING_HOLD_HOURS });
   res.status(status).type('html').setHeader('Cache-Control', 'no-cache').send(html);
 });
 

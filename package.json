@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node tests/unit/dealVerification.test.mjs",
+    "test:e2e": "bash tests/e2e/run.sh"
   },
   "dependencies": {
     "@twa-dev/sdk": "^8.0.2",

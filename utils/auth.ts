@@ -107,10 +107,16 @@ export function initMaxBridge(): void {
   }
 }
 
-// --- Cookie helpers (cookies общие между Safari и standalone PWA на iOS) ---
+// PWA-сессия. Основная защита — HttpOnly-cookie kp_session, которую ставит сервер
+// и которую JS прочитать не может. Эти клиентские хранилища нужны только для того,
+// чтобы приложение пережило перезапуск (iOS «На экран Домой») и не потеряло вход.
+// Флаг Secure ставим только на https: на http://localhost браузер отбросил бы cookie
+// целиком и локальная разработка осталась бы без авторизации.
 function setCookie(name: string, value: string, days: number = 365) {
   const expires = new Date(Date.now() + days * 864e5).toUTCString();
-  document.cookie = `${name}=${encodeURIComponent(value)};expires=${expires};path=/;SameSite=Lax`;
+  const isSecure = typeof location !== 'undefined' && location.protocol === 'https:';
+  document.cookie =
+    `${name}=${encodeURIComponent(value)};expires=${expires};path=/;SameSite=Lax${isSecure ? ';Secure' : ''}`;
 }
 
 function getCookie(name: string): string | null {
@@ -140,31 +146,42 @@ export function getAuthData(): string {
     const maxData = getMaxInitData();
     if (maxData) return maxData;
   } catch {}
-  // 3. PWA: localStorage → cookie
-  try {
-    const ls = localStorage.getItem(PWA_TOKEN_KEY);
-    if (ls) return ls;
-  } catch {}
-  return getCookie(PWA_TOKEN_KEY) || '';
+  // 3. PWA-токен
+  return readStoredToken() || '';
+}
+
+// Читаем токен из всех хранилищ по убыванию свежести и тут же восстанавливаем
+// остальные. Токен из URL убран, поэтому потерянное здесь значение вернуть
+// неоткуда — пользователю пришлось бы просить новую пригласительную ссылку.
+// Поэтому ничего не удаляем, а только дозаполняем.
+function readStoredToken(): string | null {
+  let token: string | null = null;
+  try { token = sessionStorage.getItem(PWA_TOKEN_KEY); } catch {}
+  if (!token) {
+    try { token = getCookie(PWA_TOKEN_KEY); } catch {}
+  }
+  if (!token) {
+    // Сборки до сентября 2026 хранили токен только здесь.
+    try { token = localStorage.getItem(PWA_TOKEN_KEY); } catch {}
+  }
+  if (token) persistToken(token);
+  return token;
+}
+
+function persistToken(token: string) {
+  try { sessionStorage.setItem(PWA_TOKEN_KEY, token); } catch {}
+  try { if (getCookie(PWA_TOKEN_KEY) !== token) setCookie(PWA_TOKEN_KEY, token); } catch {}
+  // localStorage — единственное хранилище, переживающее перезапуск standalone-PWA
+  // на iOS, когда cookie уже подрезана ITP. Оставляем его как последний рубеж.
+  try { if (localStorage.getItem(PWA_TOKEN_KEY) !== token) localStorage.setItem(PWA_TOKEN_KEY, token); } catch {}
 }
 
 export function savePwaToken(token: string) {
-  if (token) {
-    try { localStorage.setItem(PWA_TOKEN_KEY, token); } catch {}
-    try { setCookie(PWA_TOKEN_KEY, token); } catch {}
-  }
+  if (token) persistToken(token);
 }
 
 export function getPwaToken(): string | null {
-  // Пробуем localStorage, потом cookie
-  try {
-    const ls = localStorage.getItem(PWA_TOKEN_KEY);
-    if (ls) return ls;
-  } catch {}
-  try {
-    return getCookie(PWA_TOKEN_KEY);
-  } catch {}
-  return null;
+  return readStoredToken();
 }
 
 export function isTelegramEnv(): boolean {

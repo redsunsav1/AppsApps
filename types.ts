@@ -25,6 +25,8 @@ export interface UserProfile {
   approval_status?: 'none' | 'pending' | 'approved' | 'rejected';
   last_name?: string;
   company_type?: 'agency' | 'ip';
+  marketing_consent?: boolean;
+  leaderboard_consent?: boolean;
 }
 
 export interface ProjectStat {

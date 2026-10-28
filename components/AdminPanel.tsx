@@ -1,8 +1,34 @@
 import { useState, useEffect } from 'react';
 import { getAuthData, getAdminPin, saveAdminPin, clearAdminPin } from '../utils/auth';
 import { confirmDialog } from '../utils/dialog';
-import { Newspaper, Building2, Link, ShoppingBag, Zap, Trash2, UserCheck, Users, Calendar, Calculator, Edit3, X, Phone, Send, ChevronRight, Database, ArrowLeft, Clock } from 'lucide-react';
+import { Newspaper, Building2, Link, ShoppingBag, Zap, Trash2, UserCheck, Users, Calendar, Calculator, Edit3, X, Phone, Send, ChevronRight, Database, ArrowLeft, Clock, ScrollText } from 'lucide-react';
 import { showToast } from '../utils/toast';
+
+const AUDIT_LABELS: Record<string, string> = {
+  'booking.create': 'Бронь создана',
+  'booking.complete': 'Сделка подтверждена',
+  'booking.revoke': 'Сделка отозвана',
+  'booking.cancel_by_admin': 'Бронь снята админом',
+  'booking.cancel_by_agent': 'Бронь снята риелтором',
+  'booking.consent_link_issued': 'Ссылка на согласие выдана',
+  'booking.buyer_consent_given': 'Покупатель дал согласие',
+  'booking.passport_upload': 'Паспорт отправлен',
+  'booking.passport_upload_by_buyer': 'Паспорт загрузил покупатель',
+  'booking.documents_upload': 'Документы отправлены',
+  'booking.amocrm_retry_success': 'Бронь дошла до amoCRM',
+  'order.create': 'Заявка на приз',
+  'order.approve': 'Заявка на приз одобрена',
+  'order.reject': 'Заявка на приз отклонена',
+  'gold.release': 'Золото разморожено',
+  'gold.void': 'Золото аннулировано',
+  'user.roles_change': 'Права изменены',
+  'user.delete': 'Пользователь удалён',
+  'user.clear_all': 'Пользователи очищены',
+  'admin.grant_via_secret': 'Выданы права админа',
+  'admin.grant_via_secret_failed': 'Неудачная попытка стать админом',
+  'admin.pin_failed': 'Неверный PIN админки',
+  'privacy.preferences_change': 'Изменены согласия',
+};
 import { getRank } from '../types';
 
 interface AdminPanelProps {
@@ -55,7 +81,7 @@ interface MortgageProgramItem {
 }
 
 export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) => {
-  const [activeTab, setActiveTab] = useState<'news' | 'import' | 'shop' | 'quests' | 'applications' | 'users' | 'events' | 'mortgage' | 'projects' | 'база'>('news');
+  const [activeTab, setActiveTab] = useState<'news' | 'import' | 'shop' | 'quests' | 'applications' | 'users' | 'events' | 'mortgage' | 'projects' | 'база' | 'журнал'>('news');
 
   // PIN-гейт: если на сервере задан ADMIN_PIN, админка открывается только после
   // ввода PIN. Сам PIN уходит в заголовке x-admin-pin (перехватчик в utils/auth).
@@ -127,6 +153,10 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [shopStock, setShopStock] = useState<string>('');
   const [shopTeaser, setShopTeaser] = useState(false);
   const [prizeOrders, setPrizeOrders] = useState<any[]>([]);
+  const [unverifiedGold, setUnverifiedGold] = useState<any[]>([]);
+  const [auditRows, setAuditRows] = useState<any[]>([]);
+  const [auditAction, setAuditAction] = useState('');
+  const [auditHasMore, setAuditHasMore] = useState(false);
   const [rejectFor, setRejectFor] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState('');
 
@@ -223,6 +253,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     if (activeTab === 'projects') fetchProjects();
     if (activeTab === 'база') fetchBazaUsers();
     if (activeTab === 'shop') fetchShopProducts();
+    if (activeTab === 'журнал') fetchAudit(auditAction, false);
   }, [activeTab, pinState]);
 
   useEffect(() => {
@@ -258,6 +289,33 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const fetchShopProducts = () => {
     fetch('/api/products', { headers: { 'x-init-data': getAuthData() } }).then(r => r.json()).then(d => setShopProducts(Array.isArray(d) ? d : [])).catch(() => {});
     fetchPrizeOrders();
+    fetchUnverifiedGold();
+  };
+
+  const fetchUnverifiedGold = () => {
+    fetch('/api/admin/gold/unverified', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: getAuthData() }),
+    }).then(r => r.json()).then(d => setUnverifiedGold(Array.isArray(d) ? d : [])).catch(() => {});
+  };
+
+  // Открывает партнёра в «Базе» из сводки непроверенного золота.
+  const openPartnerInBaza = (row: any) => {
+    setActiveTab('база');
+    openProfile(bazaUsers.find((u: any) => u.id === row.id) || row);
+  };
+
+  const AUDIT_PAGE = 50;
+  const fetchAudit = (action: string, append: boolean) => {
+    const offset = append ? auditRows.length : 0;
+    fetch('/api/admin/audit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: getAuthData(), action: action || undefined, limit: AUDIT_PAGE, offset }),
+    }).then(r => r.json()).then(d => {
+      const rows = Array.isArray(d) ? d : [];
+      setAuditRows(prev => append ? [...prev, ...rows] : rows);
+      setAuditHasMore(rows.length === AUDIT_PAGE);
+    }).catch(() => {});
   };
 
   const fetchPrizeOrders = () => {
@@ -430,7 +488,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   };
 
   const fetchQuests = () => {
-    fetch('/api/quests')
+    fetch('/api/quests', { headers: { 'x-init-data': getAuthData() } })
       .then(res => res.json())
       .then(data => setQuestsList(data))
       .catch(e => console.error('Quests fetch error:', e));
@@ -484,7 +542,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   };
 
   const fetchMortgagePrograms = () => {
-    fetch('/api/mortgage-programs')
+    fetch('/api/mortgage-programs', { headers: { 'x-init-data': getAuthData() } })
       .then(res => res.json())
       .then(data => setMortgageList(Array.isArray(data) ? data : []))
       .catch(e => console.error('Mortgage fetch error:', e));
@@ -832,6 +890,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
             <button onClick={() => setActiveTab('mortgage')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'mortgage' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Calculator size={14}/> Ипотека</button>
             <button onClick={() => setActiveTab('projects')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'projects' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Building2 size={14}/> Проекты</button>
             <button onClick={() => setActiveTab('база')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'база' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><Database size={14}/> База</button>
+            <button onClick={() => setActiveTab('журнал')} className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 transition-all whitespace-nowrap ${activeTab === 'журнал' ? 'bg-white shadow text-black' : 'text-gray-400'}`}><ScrollText size={14}/> Журнал</button>
         </div>
 
         <div className="flex-1 overflow-y-auto custom-scrollbar px-5 pt-3 pb-5" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 1rem)' }}>
@@ -894,8 +953,72 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
             </div>
         )}
 
+        {activeTab === 'журнал' && (
+            <div className="flex flex-col gap-3 animate-fade-in">
+                <select
+                    value={auditAction}
+                    onChange={e => { setAuditAction(e.target.value); fetchAudit(e.target.value, false); }}
+                    className="p-3 border rounded-lg w-full text-black bg-gray-50 text-sm"
+                >
+                    <option value="">Все действия</option>
+                    <option value="booking.">Брони и сделки</option>
+                    <option value="order.">Заявки на призы</option>
+                    <option value="gold.">Золото</option>
+                    <option value="user.">Пользователи</option>
+                    <option value="admin.">Доступ к админке</option>
+                    <option value="privacy.">Согласия</option>
+                </select>
+                {auditRows.length === 0 ? (
+                    <p className="text-gray-400 text-sm text-center py-6">Записей нет</p>
+                ) : (
+                    <div className="space-y-2">
+                        {auditRows.map((r: any) => {
+                            let details: any = r.details;
+                            if (typeof details === 'string') { try { details = JSON.parse(details); } catch {} }
+                            const detailText = details && typeof details === 'object'
+                                ? Object.entries(details).filter(([, v]) => v !== null && v !== '' && v !== undefined).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ')
+                                : '';
+                            return (
+                                <div key={r.id} className="bg-gray-50 p-3 rounded-lg">
+                                    <div className="flex justify-between gap-2">
+                                        <span className="font-bold text-black text-xs">{AUDIT_LABELS[r.action] || r.action}</span>
+                                        <span className="text-[10px] text-gray-400 shrink-0">{new Date(r.created_at).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                                    </div>
+                                    <div className="text-[11px] text-gray-500 mt-0.5">
+                                        {r.actor_name || (r.actor_user_id ? `ID ${r.actor_user_id}` : 'система')}
+                                        {r.target_type && <> → {r.target_type} {r.target_id}</>}
+                                    </div>
+                                    {detailText && <div className="text-[10px] text-gray-400 mt-1 break-words">{detailText}</div>}
+                                </div>
+                            );
+                        })}
+                        {auditHasMore && (
+                            <button onClick={() => fetchAudit(auditAction, true)} className="w-full py-2 text-xs font-bold text-gray-500 bg-gray-100 rounded-lg">Показать ещё</button>
+                        )}
+                    </div>
+                )}
+            </div>
+        )}
+
         {activeTab === 'shop' && (
             <div className="flex flex-col gap-3 animate-fade-in">
+                {unverifiedGold.length > 0 && (
+                    <div className="bg-sky-50 border border-sky-200 rounded-xl p-3">
+                        <h4 className="font-bold text-black text-sm mb-1">Непроверенное золото ({unverifiedGold.length})</h4>
+                        <p className="text-[11px] text-gray-500 mb-2">Начислено до проверки сделок, тратить его нельзя. Откройте партнёра и разморозьте честное золото или аннулируйте накрученное.</p>
+                        <div className="space-y-1.5">
+                            {unverifiedGold.map((u: any) => (
+                                <button key={u.id} onClick={() => openPartnerInBaza(u)} className="w-full flex items-center justify-between bg-white p-2.5 rounded-lg text-left">
+                                    <span className="min-w-0">
+                                        <span className="block text-sm font-bold text-black truncate">{[u.first_name, u.last_name].filter(Boolean).join(' ') || `ID ${u.id}`}</span>
+                                        <span className="block text-[10px] text-gray-400 truncate">{u.company || 'без компании'} · сделок: {u.deals_closed || 0}</span>
+                                    </span>
+                                    <span className="flex items-center gap-1 shrink-0 text-sm font-bold text-amber-700">{u.amount} зол. <ChevronRight size={14} className="text-gray-300" /></span>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
                     <h4 className="font-bold text-black text-sm mb-1">Заявки на призы ({prizeOrders.length})</h4>
                     <p className="text-[11px] text-gray-500 mb-2">Перед одобрением откройте партнёра в «Базе» и посмотрите историю золота: за какие сделки оно начислено.</p>

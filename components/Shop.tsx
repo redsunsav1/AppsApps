@@ -155,6 +155,7 @@ const Marketplace: React.FC<MarketplaceProps> = ({ userSilver, userGold, silver:
         <div className="text-xs text-brand-grey leading-relaxed">
           Золото начисляется только за сделки, подтверждённые отделом продаж.
           {holdDays > 0 && <> Монета становится доступной через {holdDays} дней после подтверждения.</>}
+          {' '}<a href="/legal/prize-rules.html" target="_blank" rel="noreferrer" className="underline font-semibold text-brand-black">Правила акции</a>
           {lockedGold > 0 && (
             <div className="mt-2 font-bold text-brand-black">
               Ещё {lockedGold} {lockedGold === 1 ? 'монета' : 'монет'} на проверке

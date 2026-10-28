@@ -60,6 +60,8 @@ const App: React.FC = () => {
   const [regLastName, setRegLastName] = useState('');
   const [regCompanyType, setRegCompanyType] = useState<'agency' | 'ip'>('agency');
   const [consentPd, setConsentPd] = useState(false);
+  const [consentMarketing, setConsentMarketing] = useState(false);
+  const [consentLeaderboard, setConsentLeaderboard] = useState(false);
   const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
   const [approvalStatus, setApprovalStatus] = useState<string>('none');
   const [user, setUser] = useState<any>(null);
@@ -77,7 +79,7 @@ const App: React.FC = () => {
   const [mortgagePrograms, setMortgagePrograms] = useState<MortgageProgram[]>([]);
 
   const fetchMortgagePrograms = () => {
-    fetch('/api/mortgage-programs')
+    fetch('/api/mortgage-programs', { headers: protectedHeaders() })
       .then(res => res.json())
       .then(data => {
         const mapped: MortgageProgram[] = data.map((p: any) => ({
@@ -89,7 +91,7 @@ const App: React.FC = () => {
   };
 
   const fetchNews = () => {
-    fetch('/api/news')
+    fetch('/api/news', { headers: protectedHeaders() })
       .then(res => res.json())
       .then(data => {
         const mapped = data.map((item: any) => ({
@@ -111,7 +113,7 @@ const App: React.FC = () => {
 
   const fetchQuests = (dbUserId?: number) => {
     const url = dbUserId ? `/api/quests?userId=${dbUserId}` : '/api/quests';
-    fetch(url)
+    fetch(url, { headers: protectedHeaders() })
       .then(res => res.json())
       .then(data => {
         const mapped: DailyQuest[] = data.map((q: any) => ({
@@ -243,6 +245,8 @@ const App: React.FC = () => {
       approval_status: sUser.approval_status || 'none',
       last_name: sUser.last_name || '',
       company_type: sUser.company_type || 'agency',
+      marketing_consent: !!sUser.marketing_consent,
+      leaderboard_consent: !!sUser.leaderboard_consent,
     });
     if (sUser.first_name) setRegName(sUser.first_name);
     setApprovalStatus(sUser.approval_status || 'none');
@@ -250,8 +254,10 @@ const App: React.FC = () => {
     fetchMissions();
     fetchUnreadCount();
     if (sUser.is_admin || sUser.can_manage_bookings || (sUser.is_registered && sUser.approval_status === 'approved')) {
+      fetchNews();
       fetchStats();
       fetchProjects();
+      fetchMortgagePrograms();
     }
   };
 
@@ -272,18 +278,14 @@ const App: React.FC = () => {
         try { initMaxBridge(); } catch (e) { console.log('MAX init skipped:', e); }
       }
 
-    fetchNews();
-    fetchStats();
-    fetchProjects();
-    fetchMortgagePrograms();
-
     // Путь 0: ?token=xxx в URL → сохранить и авторизоваться через PWA-токен
     const urlParams = new URLSearchParams(window.location.search);
     const urlToken = urlParams.get('token');
     if (urlToken) {
       savePwaToken(urlToken);
       setPwaToken(urlToken);
-      // НЕ убираем токен из URL — iOS сохраняет URL при «На экран Домой»
+      // НЕ убираем токен из URL — iOS сохраняет URL при «На экран Домой», а у иконки
+      // своё хранилище, отдельное от Safari: без токена в адресе вход бы потерялся.
       fetch('/api/auth/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -458,6 +460,8 @@ const App: React.FC = () => {
         company: regCompany,
         phone: regPhone,
         consentPd: true,
+        consentMarketing,
+        consentLeaderboard,
         contactResponse: regContactResponse || undefined,
       }),
     })
@@ -726,6 +730,19 @@ const App: React.FC = () => {
               Я даю согласие на <button type="button" onClick={(e) => { e.preventDefault(); setShowPrivacyPolicy(true); }} className="text-yellow-700 underline font-semibold">обработку персональных данных</button> в соответствии с Федеральным законом №152-ФЗ
             </span>
           </label>
+          <label className="flex items-start gap-3 mt-2 cursor-pointer">
+            <input type="checkbox" checked={consentMarketing} onChange={e => setConsentMarketing(e.target.checked)} className="mt-1 w-5 h-5 rounded accent-yellow-600 shrink-0" />
+            <span className="text-xs text-gray-600 leading-relaxed">
+              Я отдельно соглашаюсь получать рекламные сообщения в Telegram или MAX. Согласие добровольное, его можно отозвать в настройках.
+              {' '}<a href="/legal/marketing-consent.html" target="_blank" rel="noreferrer" className="text-yellow-700 underline font-semibold">Условия рассылки</a>
+            </span>
+          </label>
+          <label className="flex items-start gap-3 mt-2 cursor-pointer">
+            <input type="checkbox" checked={consentLeaderboard} onChange={e => setConsentLeaderboard(e.target.checked)} className="mt-1 w-5 h-5 rounded accent-yellow-600 shrink-0" />
+            <span className="text-xs text-gray-600 leading-relaxed">
+              Разрешаю показывать моё имя и компанию другим участникам рейтинга. Без согласия результат будет обезличен.
+            </span>
+          </label>
           <button onClick={handleRegistration} disabled={isSubmitting || !regPhone || !regCompany || !regName || !consentPd} className="w-full py-4 bg-brand-black text-white rounded-xl font-bold text-lg mt-4 active:scale-95 transition-transform disabled:opacity-50 disabled:scale-100">{isSubmitting ? 'Отправка...' : 'Подать заявку'}</button>
         </div>
         {linkCodeBlock}
@@ -745,7 +762,7 @@ const App: React.FC = () => {
                 <p><b>8. Срок действия согласия</b><br/>Согласие действует с момента предоставления и до момента его отзыва субъектом персональных данных.</p>
               </div>
               <a href="/legal/privacy-policy.html" target="_blank" rel="noreferrer" className="block w-full py-3 bg-brand-light text-brand-black rounded-xl font-bold text-sm mt-4 text-center">Открыть полную политику</a>
-              <button onClick={() => setShowPrivacyPolicy(false)} className="w-full py-3 bg-brand-black text-white rounded-xl font-bold text-sm mt-2">Закрыть</button>
+              <button onClick={() => setShowPrivacyPolicy(false)} className="w-full py-3 bg-brand-black text-white rounded-xl font-bold text-sm mt-4">Закрыть</button>
             </div>
           </div>
         )}
@@ -797,7 +814,8 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-[100dvh] w-full max-w-md mx-auto bg-brand-cream relative shadow-2xl overflow-hidden text-brand-black">
       <PullToRefresh onRefresh={handlePullRefresh} className="flex-1 overflow-y-auto custom-scrollbar pb-24">
-        {activeTab === Tab.PROFILE && <Dashboard user={user} quests={quests} stats={stats} missions={missions} onClaimQuest={onClaimQuest} pwaToken={pwaToken} />}
+        {activeTab === Tab.PROFILE && <Dashboard user={user} quests={quests} stats={stats} missions={missions} onClaimQuest={onClaimQuest} pwaToken={pwaToken}
+          onConsentsChange={(c) => setUser((prev: any) => prev && ({ ...prev, marketing_consent: c.marketing, leaderboard_consent: c.leaderboard }))} />}
         {activeTab === Tab.CONTENT && <ContentHub news={news} isAdmin={user.is_admin} onEdit={handleOpenEdit} onRefresh={fetchNews} />}
         {activeTab === Tab.MARKET && <Marketplace userSilver={user.silverCoins} userGold={user.goldCoins} isAdmin={user.is_admin} />}
         {activeTab === Tab.SECTIONS && renderSectionsContent()}

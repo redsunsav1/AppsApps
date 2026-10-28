@@ -1,4 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
+import PrivacySettings from './PrivacySettings';
 import BookingChecklist from './BookingChecklist';
 import { UserProfile, DailyQuest, ProjectStat, getRank, Mission } from '../types';
 import { ChevronRight, ChevronDown, CheckCircle2, Phone, Send, MessageCircle, FileText, Camera, Target, Trophy, Key, Layers, Crown, MapPin, Globe, User, Flame, Download, Copy, Link2 } from 'lucide-react';
@@ -12,6 +13,7 @@ interface DashboardProps {
   missions: Mission[];
   onClaimQuest: (id: string) => void;
   pwaToken?: string;
+  onConsentsChange?: (next: { marketing: boolean; leaderboard: boolean }) => void;
 }
 
 const MISSION_ICONS: Record<string, React.ReactNode> = {
@@ -27,7 +29,7 @@ const MISSION_ICONS: Record<string, React.ReactNode> = {
   star: <Target size={18} />,
 };
 
-const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, onClaimQuest, pwaToken }) => {
+const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, onClaimQuest, pwaToken, onConsentsChange }) => {
   const progressPercent = (user.currentXP / user.nextLevelXP) * 100;
   const currentRank = getRank(user.dealsClosed);
 
@@ -434,6 +436,12 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
               </div>
           </div>
       </div>
+
+      {user.is_registered && user.approval_status === 'approved' && (
+        <div className="px-4 mt-4">
+          <PrivacySettings marketing={!!user.marketing_consent} leaderboard={!!user.leaderboard_consent} onChange={onConsentsChange} />
+        </div>
+      )}
     </div>
   );
 };

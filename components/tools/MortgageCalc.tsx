@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Calculator, X, Percent, Banknote, Calendar } from 'lucide-react';
 import { MortgageProgram } from '../../types';
+import { getAuthData } from '../../utils/auth';
 
 interface MortgageCalcProps {
   initialPrice?: number;
@@ -50,7 +51,7 @@ const MortgageCalc: React.FC<MortgageCalcProps> = ({ initialPrice = 5000000, pro
   // Fetch from API if no programs were passed as props
   useEffect(() => {
     if (!programs || programs.length === 0) {
-      fetch('/api/mortgage-programs')
+      fetch('/api/mortgage-programs', { headers: { 'x-init-data': getAuthData() } })
         .then(res => res.json())
         .then(data => {
           if (Array.isArray(data) && data.length > 0) {

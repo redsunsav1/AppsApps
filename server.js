@@ -13,6 +13,7 @@ import { renderPrivacyPolicy, missingPolicyVars } from './server/privacyPolicy.j
 import { renderMarketingConsent, renderPrizeRules, renderClubTerms } from './server/legalPages.js';
 import { ensureGoldSchema, addGold, voidGoldEntry, goldSummary, goldHistory, GOLD_HOLD_DAYS } from './server/gold.js';
 import { verifyDealInAmo } from './server/dealVerification.js';
+import { createPollingStatus, startTelegramPolling, startMaxPolling } from './server/botPolling.js';
 import { ensurePrizeSchema, seedPrizeCatalog, publicProduct } from './server/prizes.js';
 
 // =============================================
@@ -993,6 +994,14 @@ function normalizePhone(phone) {
 
 // =============================================
 // WEBHOOK REGISTRATION
+// Как бот получает сообщения: 'polling' (сервер сам забирает их у мессенджера) или
+// 'webhook' (мессенджер стучится к нам). По умолчанию polling: после переезда Amvera
+// серверы Telegram не могут до нас достучаться, а исходящие запросы проходят.
+const TELEGRAM_UPDATES_MODE = process.env.TELEGRAM_UPDATES === 'webhook' ? 'webhook' : 'polling';
+const MAX_UPDATES_MODE = process.env.MAX_UPDATES === 'webhook' ? 'webhook' : 'polling';
+const telegramPolling = createPollingStatus();
+const maxPolling = createPollingStatus();
+
 // =============================================
 // Секрет вебхука: Telegram присылает его в заголовке каждого обновления, и чужой
 // POST на /api/telegram-webhook (например, поддельное «одобрить заявку») отсекается.
@@ -2402,7 +2411,7 @@ app.get('/api/compliance/status', (req, res) => {
 // Диагностика бота для случаев «бот молчит»: спрашиваем у Telegram, куда он шлёт
 // обновления и с какой ошибкой, и показываем, что дошло до сервера.
 let telegramStatusCache = { at: 0, data: null };
-app.get('/api/telegram/status', async (req, res) => {
+app.get(['/api/telegram/status', '/api/bot/status'], async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   if (Date.now() - telegramStatusCache.at < 15000 && telegramStatusCache.data) return res.json(telegramStatusCache.data);
   const token = process.env.BOT_TOKEN;
@@ -2422,14 +2431,31 @@ app.get('/api/telegram/status', async (req, res) => {
       };
     } catch (e) { webhook = { error: `Telegram API недоступен: ${e.message}` }; }
   }
+  let maxSubscriptions = null;
+  if (isMaxEnabled()) {
+    const subs = await _maxApiCall('GET', '/subscriptions').catch(() => null);
+    maxSubscriptions = subs?.ok ? (subs.data?.subscriptions || []).map((x) => x.url) : { error: subs?.error || 'нет ответа' };
+  }
   const data = {
-    botTokenSet: !!token,
-    webhookUrlSet: !!expectedUrl,
-    expectedUrl,
-    webhook,
-    lastRegistration: lastWebhookRegistration,
-    lastUpdate: lastTelegramUpdate,
-    lastStartReply,
+    telegram: {
+      mode: TELEGRAM_UPDATES_MODE,
+      polling: TELEGRAM_UPDATES_MODE === 'polling' ? telegramPolling : null,
+      botTokenSet: !!token,
+      webhookUrlSet: !!expectedUrl,
+      expectedUrl,
+      webhook,
+      lastRegistration: lastWebhookRegistration,
+      lastUpdate: lastTelegramUpdate,
+      lastStartReply,
+    },
+    max: {
+      enabled: isMaxEnabled(),
+      mode: MAX_UPDATES_MODE,
+      polling: MAX_UPDATES_MODE === 'polling' ? maxPolling : null,
+      subscriptions: maxSubscriptions,
+      lastUpdate: lastMaxUpdate,
+      lastStartReply: lastMaxStartReply,
+    },
   };
   telegramStatusCache = { at: Date.now(), data };
   res.json(data);
@@ -2844,51 +2870,69 @@ async function mergeUserIdentity(client, target, source) {
 // =============================================
 // Принимает обновления от MAX (новые сообщения, callback'и).
 // На старте просто логируем — обработка событий по мере необходимости.
+// Одно обновление MAX — из вебхука или из long polling.
+let lastMaxUpdate = null;
+let lastMaxStartReply = null;
+async function handleMaxUpdate(update) {
+  try {
+    console.log('[MAX] update:', JSON.stringify(update).slice(0, 500));
+    const updateType = update?.update_type;
+    const text = getMaxUpdateText(update).toLowerCase();
+    lastMaxUpdate = { at: new Date().toISOString(), kind: updateType || 'other' };
+
+    if (updateType === 'message_callback') {
+      const payload = getMaxCallbackPayload(update);
+      const callbackId = getMaxCallbackId(update);
+      const [action, userIdStr] = String(payload).split('_');
+      const actorId = getMaxUpdateUserId(update);
+
+      // Решение по заявке — только админ: из ADMIN_MAX_ID или пользователь с is_admin,
+      // привязанный к этому аккаунту MAX.
+      const isEnvAdmin = !!process.env.ADMIN_MAX_ID && String(actorId) === String(process.env.ADMIN_MAX_ID);
+      const actor = !isEnvAdmin && actorId ? await findUserByIdentity('max', String(actorId)).catch(() => null) : null;
+      if (!isEnvAdmin && !actor?.is_admin) {
+        await answerMaxCallback(callbackId, 'Недостаточно прав');
+        return;
+      }
+
+      if (action === 'approve' || action === 'reject') {
+        const result = await applyApplicationDecision(userIdStr, action);
+        const originalText = getMaxMessageText(update) || 'Заявка обработана';
+        const statusLine = result.ok ? `\n\n${action === 'approve' ? '✅' : '❌'} <b>${result.label}</b>` : `\n\n⚠️ <b>${result.message}</b>`;
+        await answerMaxCallback(callbackId, result.notification || result.message, originalText + statusLine);
+      }
+      return;
+    }
+
+    if (updateType === 'bot_started' || text === '/start' || text === 'start') {
+      const userId = getMaxUpdateUserId(update);
+      const firstName = update?.user?.first_name || update?.user?.name || update?.message?.sender?.first_name || update?.message?.sender?.name || '';
+      const welcome = buildWelcomeText(firstName);
+      // Та же картинка, что в Telegram (WELCOME_IMAGE_URL); не ушла — шлём текстом.
+      const image = process.env.WELCOME_IMAGE_URL;
+      let sent = image
+        ? await sendMaxMessage(userId, welcome, [{ type: 'image', payload: { url: image } }, ...buildMaxStartKeyboard()])
+        : null;
+      if (!sent?.ok) sent = await sendMaxMessage(userId, welcome, buildMaxStartKeyboard());
+      lastMaxStartReply = { at: new Date().toISOString(), ok: !!sent?.ok, error: sent?.ok ? null : (sent?.error || 'нет ответа') };
+    }
+  } catch (e) {
+    console.error('[MAX] update error:', e.message);
+  }
+}
+
 app.post('/api/max-webhook', async (req, res) => {
   if (!isMaxEnabled()) return res.sendStatus(404);
+  // В режиме polling вебхук не подписан: всё, что приходит сюда, — не от MAX.
+  if (MAX_UPDATES_MODE !== 'webhook') return res.sendStatus(200);
   // Подпись проверяем, когда секрет задан (он же передаётся MAX при подписке).
   if (process.env.MAX_WEBHOOK_SECRET && req.get('X-Max-Bot-Api-Secret') !== process.env.MAX_WEBHOOK_SECRET) {
     console.warn('[MAX] webhook secret mismatch');
     return res.sendStatus(403);
   }
-  // Подпись проверена; отвечаем быстро, дальнейшая обработка не содержит файлов.
   res.status(200).json({ ok: true });
-  try {
-    const updates = Array.isArray(req.body?.updates) ? req.body.updates : [req.body];
-    for (const update of updates) {
-      console.log('[MAX] webhook update:', JSON.stringify(update).slice(0, 500));
-      const updateType = update?.update_type;
-      const text = getMaxUpdateText(update).toLowerCase();
-
-      if (updateType === 'message_callback') {
-        const payload = getMaxCallbackPayload(update);
-        const callbackId = getMaxCallbackId(update);
-        const [action, userIdStr] = String(payload).split('_');
-        const actorId = getMaxUpdateUserId(update);
-
-        if (process.env.ADMIN_MAX_ID && String(actorId) !== String(process.env.ADMIN_MAX_ID)) {
-          await answerMaxCallback(callbackId, 'Недостаточно прав');
-          continue;
-        }
-
-        if (action === 'approve' || action === 'reject') {
-          const result = await applyApplicationDecision(userIdStr, action);
-          const originalText = getMaxMessageText(update) || 'Заявка обработана';
-          const statusLine = result.ok ? `\n\n${action === 'approve' ? '✅' : '❌'} <b>${result.label}</b>` : `\n\n⚠️ <b>${result.message}</b>`;
-          await answerMaxCallback(callbackId, result.notification || result.message, originalText + statusLine);
-        }
-        continue;
-      }
-
-      if (updateType === 'bot_started' || text === '/start' || text === 'start') {
-        const userId = getMaxUpdateUserId(update);
-        const firstName = update?.user?.first_name || update?.user?.name || update?.message?.sender?.first_name || update?.message?.sender?.name || '';
-        await sendMaxMessage(userId, buildWelcomeText(firstName), buildMaxStartKeyboard());
-      }
-    }
-  } catch (e) {
-    console.error('[MAX] webhook error:', e.message);
-  }
+  const updates = Array.isArray(req.body?.updates) ? req.body.updates : [req.body];
+  for (const update of updates) await handleMaxUpdate(update);
 });
 
 // =============================================
@@ -3432,37 +3476,29 @@ async function handleTelegramStart(message) {
   };
 }
 
-app.post('/api/telegram-webhook', async (req, res) => {
+// Одно обновление Telegram — из вебхука или из long polling. trusted = обновление
+// точно пришло от Telegram (верный секрет вебхука или getUpdates с нашим токеном):
+// без этого кнопки одобрения заявок не срабатывают, а /start отвечает всегда.
+async function handleTelegramUpdate(update, { trusted }) {
   try {
-    // Секрет нужен только кнопкам админа: поддельный /start безвреден, а отказ на
-    // обычное сообщение застопорил бы всю очередь — Telegram доставляет обновления
-    // по одному и повторяет отклонённое, пока оно не пройдёт. Поэтому на сообщения
-    // всегда отвечаем 200, а без секрета — заодно перерегистрируем вебхук.
-    // Без WEBHOOK_URL сервер вебхук не регистрирует, и проверять нечего.
-    const webhookSecret = process.env.WEBHOOK_URL ? telegramWebhookSecret() : null;
-    const secretOk = !webhookSecret || safeEqual(req.get('X-Telegram-Bot-Api-Secret-Token') || '', webhookSecret);
-    if (!secretOk) {
-      console.warn('[Telegram] update without valid secret — re-registering webhook');
-      repairWebhookRegistration();
-    }
-    const message = req.body?.message;
+    const secretOk = trusted;
+    const message = update?.message;
     const messageText = (message?.text || '').trim().toLowerCase();
     lastTelegramUpdate = {
       at: new Date().toISOString(),
       secretOk,
-      kind: message ? (messageText.startsWith('/start') ? 'start' : 'message') : req.body?.callback_query ? 'callback' : 'other',
+      kind: message ? (messageText.startsWith('/start') ? 'start' : 'message') : update?.callback_query ? 'callback' : 'other',
     };
-    if (messageText === '/start' || messageText === 'start') {
-      res.sendStatus(200);
-      handleTelegramStart(message).catch(e => console.error('Telegram /start error:', e.message));
+    if (messageText === '/start' || messageText.startsWith('/start ') || messageText === 'start') {
+      await handleTelegramStart(message);
       return;
     }
 
-    const callback = req.body?.callback_query;
-    if (!callback) return res.sendStatus(200);
+    const callback = update?.callback_query;
+    if (!callback) return;
     if (!secretOk) {
       console.warn('[Telegram] admin callback without valid secret ignored');
-      return res.sendStatus(200);
+      return;
     }
     // Кнопки «одобрить/отклонить» может нажимать только админ: из ADMIN_TELEGRAM_ID
     // или пользователь с is_admin, привязанный к этому Telegram-аккаунту.
@@ -3471,7 +3507,7 @@ app.post('/api/telegram-webhook', async (req, res) => {
     const fromUser = !isEnvAdmin && fromId ? await findUserByIdentity('telegram', fromId).catch(() => null) : null;
     if (!isEnvAdmin && !fromUser?.is_admin) {
       console.warn('[Telegram] admin callback rejected:', fromId);
-      return res.sendStatus(200);
+      return;
     }
     const data = callback.data;
     const [action, userIdStr] = data.split('_');
@@ -3503,8 +3539,23 @@ app.post('/api/telegram-webhook', async (req, res) => {
         });
       }
     }
-    res.sendStatus(200);
-  } catch (e) { console.error('Webhook error:', e); res.sendStatus(200); }
+  } catch (e) { console.error('Telegram update error:', e); }
+}
+
+app.post('/api/telegram-webhook', (req, res) => {
+  // На обновления всегда отвечаем 200: отказ застопорил бы очередь — Telegram
+  // повторяет отклонённое обновление, пока оно не пройдёт. Без WEBHOOK_URL сервер
+  // вебхук не регистрирует, и проверять секрет нечего.
+  const webhookSecret = process.env.WEBHOOK_URL ? telegramWebhookSecret() : null;
+  const secretOk = !webhookSecret || safeEqual(req.get('X-Telegram-Bot-Api-Secret-Token') || '', webhookSecret);
+  if (!secretOk && TELEGRAM_UPDATES_MODE === 'webhook') {
+    console.warn('[Telegram] update without valid secret — re-registering webhook');
+    repairWebhookRegistration();
+  }
+  res.sendStatus(200);
+  // В режиме polling вебхук снят, и сюда Telegram ничего не шлёт: обрабатываем
+  // только как недоверенное (то есть одним приветствием на /start).
+  handleTelegramUpdate(req.body, { trusted: secretOk && TELEGRAM_UPDATES_MODE === 'webhook' });
 });
 
 // =============================================
@@ -5891,11 +5942,17 @@ async function reportSchemaHealth() {
 // Старт: подключаемся к БД + регистрируем webhook
 initDb().then(() => {
   reportSchemaHealth();
-  registerWebhook();
+  if (TELEGRAM_UPDATES_MODE === 'webhook') registerWebhook();
+  else startTelegramPolling({
+    token: process.env.BOT_TOKEN,
+    status: telegramPolling,
+    onUpdate: (update) => handleTelegramUpdate(update, { trusted: true }),
+  });
   syncTelegramBotProfile();
   // Регистрируем MAX webhook (no-op если MAX_ENABLED != 'true')
   if (isMaxEnabled()) {
-    registerMaxWebhook().catch(e => console.error('[MAX] webhook reg error:', e?.message || e));
+    if (MAX_UPDATES_MODE === 'webhook') registerMaxWebhook().catch(e => console.error('[MAX] webhook reg error:', e?.message || e));
+    else startMaxPolling({ apiCall: _maxApiCall, status: maxPolling, onUpdate: handleMaxUpdate });
     console.log('🟣 MAX platform: ENABLED');
   } else {
     console.log('⚪ MAX platform: disabled (set MAX_ENABLED=true to enable)');

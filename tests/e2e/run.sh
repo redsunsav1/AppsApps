@@ -46,7 +46,7 @@ chmod 600 "$WORK/pg/server.key"
 
 start_server() {
   (cd "$ROOT" && PORT=$APP_PORT DATABASE_URL="$TEST_DATABASE_URL" BOT_TOKEN=123:test NODE_ENV=development \
-    GOLD_HOLD_DAYS=30 TELEGRAM_SYNC_BOT_PROFILE=off \
+    GOLD_HOLD_DAYS=30 TELEGRAM_SYNC_BOT_PROFILE=off TELEGRAM_UPDATES=webhook \
     PD_OPERATOR_NAME='ООО Тест' PD_OPERATOR_ADDRESS='г. Астрахань' PD_CONTACT_EMAIL=pd@example.test \
     exec node server.js >>"$WORK/server.log" 2>&1) &
   SERVER_PID=$!

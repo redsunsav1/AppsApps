@@ -2946,8 +2946,9 @@ app.post('/api/applications/:userId/reject', async (req, res) => {
 // ссылки задаются переменными окружения. Пока ссылки нет — строка не выводится,
 // чтобы не отправлять человека на несуществующую страницу.
 function getOwnPrivacyPolicyUrl() {
-  const base = (process.env.APP_URL || process.env.WEBAPP_URL || '').replace(/\/$/, '');
-  if (!base || missingPolicyVars().length) return null;
+  // Тот же адрес, что у кнопки «Открыть приложение»: на проде задан только WEBHOOK_URL.
+  const base = getAppUrl().replace(/\/$/, '');
+  if (missingPolicyVars().length) return null;
   return `${base}/legal/privacy-policy.html`;
 }
 

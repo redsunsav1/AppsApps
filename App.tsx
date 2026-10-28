@@ -61,7 +61,6 @@ const App: React.FC = () => {
   const [regCompanyType, setRegCompanyType] = useState<'agency' | 'ip'>('agency');
   const [consentPd, setConsentPd] = useState(false);
   const [consentMarketing, setConsentMarketing] = useState(false);
-  const [consentLeaderboard, setConsentLeaderboard] = useState(false);
   const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
   const [approvalStatus, setApprovalStatus] = useState<string>('none');
   const [user, setUser] = useState<any>(null);
@@ -246,7 +245,6 @@ const App: React.FC = () => {
       last_name: sUser.last_name || '',
       company_type: sUser.company_type || 'agency',
       marketing_consent: !!sUser.marketing_consent,
-      leaderboard_consent: !!sUser.leaderboard_consent,
     });
     if (sUser.first_name) setRegName(sUser.first_name);
     setApprovalStatus(sUser.approval_status || 'none');
@@ -461,7 +459,6 @@ const App: React.FC = () => {
         phone: regPhone,
         consentPd: true,
         consentMarketing,
-        consentLeaderboard,
         contactResponse: regContactResponse || undefined,
       }),
     })
@@ -737,12 +734,9 @@ const App: React.FC = () => {
               {' '}<a href="/legal/marketing-consent.html" target="_blank" rel="noreferrer" className="text-yellow-700 underline font-semibold">Условия рассылки</a>
             </span>
           </label>
-          <label className="flex items-start gap-3 mt-2 cursor-pointer">
-            <input type="checkbox" checked={consentLeaderboard} onChange={e => setConsentLeaderboard(e.target.checked)} className="mt-1 w-5 h-5 rounded accent-yellow-600 shrink-0" />
-            <span className="text-xs text-gray-600 leading-relaxed">
-              Разрешаю показывать моё имя и компанию другим участникам рейтинга. Без согласия результат будет обезличен.
-            </span>
-          </label>
+          <p className="text-[11px] text-gray-500 leading-relaxed mt-2">
+            В рейтинге клуба другие партнёры видят ваше имя, фамилию и агентство — так все видят, кто и за счёт чего впереди.
+          </p>
           <button onClick={handleRegistration} disabled={isSubmitting || !regPhone || !regCompany || !regName || !consentPd} className="w-full py-4 bg-brand-black text-white rounded-xl font-bold text-lg mt-4 active:scale-95 transition-transform disabled:opacity-50 disabled:scale-100">{isSubmitting ? 'Отправка...' : 'Подать заявку'}</button>
         </div>
         {linkCodeBlock}
@@ -815,7 +809,7 @@ const App: React.FC = () => {
     <div className="flex flex-col h-[100dvh] w-full max-w-md mx-auto bg-brand-cream relative shadow-2xl overflow-hidden text-brand-black">
       <PullToRefresh onRefresh={handlePullRefresh} className="flex-1 overflow-y-auto custom-scrollbar pb-24">
         {activeTab === Tab.PROFILE && <Dashboard user={user} quests={quests} stats={stats} missions={missions} onClaimQuest={onClaimQuest} pwaToken={pwaToken}
-          onConsentsChange={(c) => setUser((prev: any) => prev && ({ ...prev, marketing_consent: c.marketing, leaderboard_consent: c.leaderboard }))} />}
+          onMarketingChange={(marketing) => setUser((prev: any) => prev && ({ ...prev, marketing_consent: marketing }))} />}
         {activeTab === Tab.CONTENT && <ContentHub news={news} isAdmin={user.is_admin} onEdit={handleOpenEdit} onRefresh={fetchNews} />}
         {activeTab === Tab.MARKET && <Marketplace userSilver={user.silverCoins} userGold={user.goldCoins} isAdmin={user.is_admin} />}
         {activeTab === Tab.SECTIONS && renderSectionsContent()}

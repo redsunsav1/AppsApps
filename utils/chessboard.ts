@@ -164,6 +164,18 @@ export function roomLabel(rooms: number): string {
   return `${rooms}-комн`;
 }
 
+// В фиде секция приходит голой цифрой. Что за ней стоит, зависит от проекта:
+// в «Манхэттене» это подъезды одного дома, в «Харизме» — отдельные дома.
+// Подпись, которая уже не цифра (например, «Секция А»), оставляем как есть.
+export function sectionLabel(section: string | null | undefined, projectName?: string | null): string {
+  const sec = String(section ?? '').trim();
+  if (!/^\d+$/.test(sec)) return sec;
+  const name = String(projectName ?? '').toLowerCase();
+  if (name.includes('манх')) return `${sec} подъезд`;
+  if (name.includes('харизм')) return `${sec} дом`;
+  return sec;
+}
+
 export function roomShort(rooms: number): string {
   if (!Number.isFinite(rooms) || rooms <= 0) return 'СТ';
   return `${rooms}к`;

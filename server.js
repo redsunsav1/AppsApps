@@ -3060,19 +3060,15 @@ app.post('/api/privacy/preferences', async (req, res) => {
     const user = await resolveDbUser(req.body?.initData);
     if (!user) return res.status(401).json({ error: 'Invalid signature' });
     const marketing = req.body?.marketing === true;
-    const leaderboard = req.body?.leaderboard === true;
     await pool.query(`
       UPDATE users SET
         marketing_consent = $1,
         marketing_consent_at = CASE WHEN $1 THEN NOW() ELSE NULL END,
-        marketing_consent_version = CASE WHEN $1 THEN $3 ELSE NULL END,
-        leaderboard_consent = $2,
-        leaderboard_consent_at = CASE WHEN $2 THEN NOW() ELSE NULL END,
-        leaderboard_consent_version = CASE WHEN $2 THEN $4 ELSE NULL END
-      WHERE id = $5
-    `, [marketing, leaderboard, MARKETING_CONSENT_VERSION, LEADERBOARD_CONSENT_VERSION, user.id]);
-    logAudit(user, 'privacy.preferences_change', 'user', user.id, { marketing, leaderboard });
-    res.json({ success: true, marketing, leaderboard });
+        marketing_consent_version = CASE WHEN $1 THEN $2 ELSE NULL END
+      WHERE id = $3
+    `, [marketing, MARKETING_CONSENT_VERSION, user.id]);
+    logAudit(user, 'privacy.preferences_change', 'user', user.id, { marketing });
+    res.json({ success: true, marketing });
   } catch (e) {
     console.error('Privacy preferences error:', e);
     res.status(500).json({ error: 'Server error' });
@@ -4246,10 +4242,7 @@ app.get('/api/leaderboard', requireRegisteredRequest, async (req, res) => {
         ? `AND b.created_at >= date_trunc('month', CURRENT_DATE)`
         : `AND b.created_at >= date_trunc('quarter', CURRENT_DATE)`;
       const result = await pool.query(`
-        SELECT u.id,
-          CASE WHEN u.leaderboard_consent THEN u.first_name ELSE 'Партнёр #' || u.id END as name,
-          CASE WHEN u.leaderboard_consent THEN u.last_name ELSE NULL END as last_name,
-          CASE WHEN u.leaderboard_consent THEN u.company ELSE NULL END as company,
+        SELECT u.id, u.first_name as name, u.last_name, u.company,
           COUNT(b.id)::int as deals, u.xp_points as xp
         FROM users u
         LEFT JOIN bookings b ON b.user_id = u.id AND b.stage = 'COMPLETE' ${dateFilter}
@@ -4261,10 +4254,7 @@ app.get('/api/leaderboard', requireRegisteredRequest, async (req, res) => {
       res.json(result.rows);
     } else {
       const result = await pool.query(`
-        SELECT id,
-          CASE WHEN leaderboard_consent THEN first_name ELSE 'Партнёр #' || id END as name,
-          CASE WHEN leaderboard_consent THEN last_name ELSE NULL END as last_name,
-          CASE WHEN leaderboard_consent THEN company ELSE NULL END as company,
+        SELECT id, first_name as name, last_name, company,
           deals_closed as deals, xp_points as xp
         FROM users WHERE is_registered = TRUE
         ORDER BY deals_closed DESC, xp_points DESC LIMIT 50

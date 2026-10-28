@@ -6,6 +6,7 @@ import { getAuthData } from '../utils/auth';
 interface LeaderboardUser {
   id: number;
   name: string;
+  last_name?: string | null;
   company: string;
   deals: number;
   xp: number;
@@ -97,7 +98,7 @@ const Leaderboard: React.FC = () => {
                 </div>
 
                 <div className="flex-1 min-w-0">
-                  <h4 className="font-bold text-[#433830] text-sm truncate">{leader.name}</h4>
+                  <h4 className="font-bold text-[#433830] text-sm truncate">{[leader.name, leader.last_name].filter(Boolean).join(' ')}</h4>
                   <div className="flex items-center gap-2 mt-0.5">
                     <span className="text-[9px] bg-[#F2EBDF] text-[#433830]/80 px-1.5 py-0.5 rounded-md font-bold whitespace-nowrap">
                       {rankName}

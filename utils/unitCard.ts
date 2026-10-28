@@ -1,5 +1,5 @@
 import { ChessUnit, ProjectData, MortgageProgram } from '../types';
-import { roomLabel } from './chessboard';
+import { roomLabel, sectionLabel } from './chessboard';
 
 export interface CardAgent {
   name: string;
@@ -58,7 +58,7 @@ export function buildUnitText(
   lines.push(`${roomLabel(unit.rooms)}${unit.area > 0 ? `, ${unit.area} м²` : ''}`);
 
   const meta = [`${unit.floor} этаж`];
-  if (unit.section) meta.push(unit.section);
+  if (unit.section) meta.push(sectionLabel(unit.section, project?.name));
   meta.push(`кв. ${unit.number}`);
   lines.push(meta.join(' · '));
 
@@ -227,7 +227,7 @@ export async function renderUnitCard(
 
   // Этаж, секция, номер
   const meta = [`${unit.floor} этаж`];
-  if (unit.section) meta.push(unit.section);
+  if (unit.section) meta.push(sectionLabel(unit.section, project?.name));
   meta.push(`кв. ${unit.number}`);
   ctx.fillStyle = PALETTE.grey;
   ctx.font = font(500, 30);

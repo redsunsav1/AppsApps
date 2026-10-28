@@ -26,7 +26,6 @@ export interface UserProfile {
   last_name?: string;
   company_type?: 'agency' | 'ip';
   marketing_consent?: boolean;
-  leaderboard_consent?: boolean;
 }
 
 export interface ProjectStat {

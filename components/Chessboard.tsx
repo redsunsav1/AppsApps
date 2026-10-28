@@ -9,7 +9,7 @@ import ConstructionProgress from './ConstructionProgress';
 import BuyerLinkPanel from './BuyerLinkPanel';
 import {
     UnitFilter, EMPTY_FILTER, isFilterActive, matchesFilter,
-    buildGridLayout, availableRoomOptions, roomLabel, roomShort,
+    buildGridLayout, availableRoomOptions, roomLabel, roomShort, sectionLabel,
 } from '../utils/chessboard';
 import {
     CardAgent, renderUnitCard, shareUnitCard, buildUnitText,
@@ -534,7 +534,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                                         : 'bg-white border border-brand-light text-brand-grey hover:border-brand-gold'
                                                 }`}
                                             >
-                                                {sec}
+                                                {sectionLabel(sec, selectedProject?.name)}
                                             </button>
                                         ))}
                                     </div>
@@ -627,7 +627,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                                         {roomLabel(unit.rooms)}{unit.area > 0 ? ` · ${unit.area} м²` : ''}
                                                     </div>
                                                     <div className="text-[11px] text-brand-grey mt-0.5 truncate">
-                                                        {unit.section ? `${unit.section} · ` : ''}{unit.floor} этаж
+                                                        {unit.section ? `${sectionLabel(unit.section, selectedProject?.name)} · ` : ''}{unit.floor} этаж
                                                     </div>
                                                 </div>
 
@@ -673,7 +673,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                 Кв. №{bookingUnit.number}
                             </h3>
                             <p className="text-sm text-brand-grey mt-1">
-                                {getRoomLabel(bookingUnit.rooms)} · {bookingUnit.area} м² · {bookingUnit.floor} эт.{bookingUnit.section ? ` · ${bookingUnit.section}` : ''}
+                                {getRoomLabel(bookingUnit.rooms)} · {bookingUnit.area} м² · {bookingUnit.floor} эт.{bookingUnit.section ? ` · ${sectionLabel(bookingUnit.section, selectedProject?.name)}` : ''}
                             </p>
 
                             {/* Price - large */}

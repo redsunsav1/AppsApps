@@ -13,7 +13,7 @@ interface DashboardProps {
   missions: Mission[];
   onClaimQuest: (id: string) => void;
   pwaToken?: string;
-  onConsentsChange?: (next: { marketing: boolean; leaderboard: boolean }) => void;
+  onMarketingChange?: (marketing: boolean) => void;
 }
 
 const MISSION_ICONS: Record<string, React.ReactNode> = {
@@ -29,7 +29,7 @@ const MISSION_ICONS: Record<string, React.ReactNode> = {
   star: <Target size={18} />,
 };
 
-const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, onClaimQuest, pwaToken, onConsentsChange }) => {
+const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, onClaimQuest, pwaToken, onMarketingChange }) => {
   const progressPercent = (user.currentXP / user.nextLevelXP) * 100;
   const currentRank = getRank(user.dealsClosed);
 
@@ -439,7 +439,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
 
       {user.is_registered && user.approval_status === 'approved' && (
         <div className="px-4 mt-4">
-          <PrivacySettings marketing={!!user.marketing_consent} leaderboard={!!user.leaderboard_consent} onChange={onConsentsChange} />
+          <PrivacySettings marketing={!!user.marketing_consent} onChange={onMarketingChange} />
         </div>
       )}
     </div>

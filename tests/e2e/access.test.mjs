@@ -25,18 +25,18 @@ check('заявку на скрытый приз оформить нельзя',
 r = await get('/api/quests?userId=2', 1003);
 check('партнёр получает свои квесты, а не чужие по userId', r.status === 200 && Array.isArray(r.data), r.status);
 
-// --- Рейтинг обезличен без согласия
-let board = (await get('/api/leaderboard', 1003)).data;
+// --- Рейтинг: все видят, кто и из какого агентства впереди
+const board = (await get('/api/leaderboard', 1003)).data;
 const anna = board.find((u) => u.id === 2);
-check('без согласия на рейтинг имя и компания скрыты', anna && anna.name === 'Партнёр #2' && !anna.company, anna);
-check('в рейтинге нет telegram_id', board.every((u) => !('telegram_id' in u)), board[0]);
-r = await post('/api/privacy/preferences', 1002, { marketing: true, leaderboard: true });
-check('партнёр включает согласия в профиле', r.status === 200, r);
-board = (await get('/api/leaderboard', 1003)).data;
-check('после согласия имя видно в рейтинге', board.find((u) => u.id === 2)?.name === 'Анна', board.find((u) => u.id === 2));
-const prefs = (await q('SELECT marketing_consent, marketing_consent_version, leaderboard_consent FROM users WHERE id = 2'))[0];
-check('согласие записано с версией текста', prefs.marketing_consent && prefs.marketing_consent_version && prefs.leaderboard_consent, prefs);
-r = await post('/api/privacy/preferences', 1002, { marketing: false, leaderboard: true });
+check('в рейтинге видны имя, фамилия и агентство', anna && anna.name === 'Анна' && anna.last_name === 'Петрова' && anna.company === 'Агентство', anna);
+check('в рейтинге нет telegram_id и телефонов', board.every((u) => !('telegram_id' in u) && !('phone' in u)), board[0]);
+
+// --- Согласие на рекламу
+r = await post('/api/privacy/preferences', 1002, { marketing: true });
+check('партнёр включает рассылку в профиле', r.status === 200, r);
+const prefs = (await q('SELECT marketing_consent, marketing_consent_version FROM users WHERE id = 2'))[0];
+check('согласие записано с версией текста', prefs.marketing_consent && prefs.marketing_consent_version, prefs);
+r = await post('/api/privacy/preferences', 1002, { marketing: false });
 const off = (await q('SELECT marketing_consent, marketing_consent_at FROM users WHERE id = 2'))[0];
 check('отзыв рекламного согласия применяется сразу', !off.marketing_consent && off.marketing_consent_at === null, off);
 const audit = await q("SELECT 1 FROM audit_log WHERE action = 'privacy.preferences_change' AND actor_user_id = 2");

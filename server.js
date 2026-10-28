@@ -9,6 +9,7 @@ import cron from 'node-cron';
 import multer from 'multer';
 import nodemailer from 'nodemailer';
 import { importSiteNews } from './server/newsImport.js';
+import { renderPrivacyPolicy, missingPolicyVars } from './server/privacyPolicy.js';
 
 // =============================================
 // MAX Messenger Platform Adapter (inline)
@@ -41,7 +42,9 @@ function _maxValidateInitData(initData) {
     const secretKey1 = crypto.createHmac('sha256', 'WebAppData').update(token).digest();
     const checkHash1 = crypto.createHmac('sha256', secretKey1).update(dataCheckString).digest('hex');
     const checkHash2 = crypto.createHmac('sha256', token).update(dataCheckString).digest('hex');
-    if (checkHash1 !== hash && checkHash2 !== hash) return null;
+    if (!safeEqual(checkHash1, hash) && !safeEqual(checkHash2, hash)) return null;
+    // Формат MAX менялся; если auth_date нет, не запираем всех пользователей MAX.
+    if (!initDataAgeOk(urlParams, { required: false })) return null;
     const userStr = urlParams.get('user');
     if (userStr) {
       try {
@@ -383,6 +386,54 @@ const FEED_FETCH_TIMEOUT_MS = Math.max(1000, parseInt(process.env.FEED_FETCH_TIM
 // Максимальный возраст подписанного контакта из requestContact (защита от повтора)
 const CONTACT_MAX_AGE_SECONDS = Math.max(60, parseInt(process.env.CONTACT_MAX_AGE_SECONDS || '900', 10) || 900);
 
+// Подпись initData бессрочна, поэтому возраст ограничиваем сами: перехваченная
+// строка (из логов, заголовка, консоли) перестаёт работать через сутки. Мессенджер
+// выдаёт свежую initData при каждом открытии приложения, живых людей это не задевает.
+const INIT_DATA_MAX_AGE_SECONDS = Math.max(300, parseInt(process.env.INIT_DATA_MAX_AGE_SECONDS || '86400', 10) || 86400);
+
+function initDataAgeOk(urlParams, { required }) {
+  const authDate = Number(urlParams.get('auth_date'));
+  if (!authDate) return !required;
+  return (Date.now() / 1000 - authDate) <= INIT_DATA_MAX_AGE_SECONDS;
+}
+
+// Сравнение секретов и подписей за постоянное время: обычное !== выдаёт по таймингу,
+// сколько первых символов совпало. Хэшируем, чтобы не утекала и длина.
+function safeEqual(a, b) {
+  const ha = crypto.createHash('sha256').update(String(a ?? '')).digest();
+  const hb = crypto.createHash('sha256').update(String(b ?? '')).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
+// PWA-токен живёт, пока им пользуются: после PWA_TOKEN_IDLE_DAYS дней тишины он
+// перестаёт работать. Вход через мессенджер продлевает его или выпускает новый.
+// Токен не хэшируем: тот же токен отдаётся при входе с каждого устройства
+// (Telegram, MAX, браузер), и хэш сделал бы это невозможным без выхода везде.
+const PWA_TOKEN_IDLE_DAYS = Math.max(7, parseInt(process.env.PWA_TOKEN_IDLE_DAYS || '90', 10) || 90);
+
+function isPwaTokenIdle(user) {
+  if (!user?.pwa_token_used_at) return false;
+  return Date.now() - new Date(user.pwa_token_used_at).getTime() > PWA_TOKEN_IDLE_DAYS * 86400000;
+}
+
+// Отметку пишем не чаще раза в сутки, чтобы каждый запрос не превращался в UPDATE.
+function touchPwaToken(user) {
+  const last = user?.pwa_token_used_at ? new Date(user.pwa_token_used_at).getTime() : 0;
+  if (Date.now() - last < 86400000) return;
+  pool.query('UPDATE users SET pwa_token_used_at = NOW() WHERE id = $1', [user.id])
+    .catch(e => console.warn('[pwa] touch:', e.message));
+}
+
+async function ensurePwaToken(user) {
+  if (user.pwa_token && !isPwaTokenIdle(user)) {
+    touchPwaToken(user);
+    return user.pwa_token;
+  }
+  const token = crypto.randomBytes(32).toString('hex');
+  await pool.query('UPDATE users SET pwa_token = $1, pwa_token_used_at = NOW() WHERE id = $2', [token, user.id]);
+  return token;
+}
+
 // Transaction helper
 async function withTransaction(fn) {
   const client = await pool.connect();
@@ -418,7 +469,8 @@ function validateTelegramData(initData) {
     const dataCheckString = dataCheckArr.join('\n');
     const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
     const checkHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-    if (checkHash !== hash) return null;
+    if (!safeEqual(checkHash, hash)) return null;
+    if (!initDataAgeOk(urlParams, { required: true })) return null;
     const userStr = urlParams.get('user');
     if (!userStr) return null;
     return JSON.parse(userStr);
@@ -447,7 +499,7 @@ function validateTelegramContact(contactResponse) {
     const dataCheckString = dataCheckArr.join('\n');
     const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
     const checkHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-    if (checkHash !== hash) return null;
+    if (!safeEqual(checkHash, hash)) return null;
 
     // Подпись не имеет срока годности сама по себе — ограничиваем возраст вручную,
     // чтобы старый перехваченный ответ нельзя было переиспользовать.
@@ -514,8 +566,9 @@ async function resolveAuth(initDataOrToken, platformHint) {
   // 3. PWA-токен (как раньше)
   try {
     const res = await pool.query('SELECT * FROM users WHERE pwa_token = $1', [initDataOrToken]);
-    if (res.rows.length > 0) {
+    if (res.rows.length > 0 && !isPwaTokenIdle(res.rows[0])) {
       const user = res.rows[0];
+      touchPwaToken(user);
       return {
         id: user.telegram_id || user.max_id,
         username: user.username,
@@ -1069,6 +1122,10 @@ const initDb = async () => {
     );`);
     // PWA-токен для авторизации вне Telegram
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS pwa_token TEXT;');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS pwa_token_used_at TIMESTAMP;');
+    // Токены, выданные до появления отметки, считаем свежими с момента выкатки,
+    // иначе протухание выбросило бы из браузера всех разом.
+    await pool.query('UPDATE users SET pwa_token_used_at = NOW() WHERE pwa_token IS NOT NULL AND pwa_token_used_at IS NULL;');
     // Трекинг входов для миссии серий
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_date DATE;');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS login_streak INT DEFAULT 0;');
@@ -2153,11 +2210,7 @@ app.post('/api/auth', rateLimit(900000, 30), async (req, res) => {
       user.platform = 'telegram';
     }
     // Генерировать PWA-токен если его нет
-    if (!user.pwa_token) {
-      const token = crypto.randomBytes(32).toString('hex');
-      await pool.query('UPDATE users SET pwa_token = $1 WHERE id = $2', [token, user.id]);
-      user.pwa_token = token;
-    }
+    user.pwa_token = await ensurePwaToken(user);
     const today = new Date().toISOString().slice(0, 10);
     const lastLogin = user.last_login_date ? new Date(user.last_login_date).toISOString().slice(0, 10) : null;
     if (lastLogin !== today) {
@@ -2187,6 +2240,10 @@ app.post('/api/auth/token', rateLimit(900000, 30), async (req, res) => {
     const result = await pool.query('SELECT * FROM users WHERE pwa_token = $1', [token]);
     if (result.rows.length === 0) return res.status(401).json({ error: 'Invalid token' });
     const user = result.rows[0];
+    if (isPwaTokenIdle(user)) {
+      return res.status(401).json({ error: 'Сессия истекла. Откройте приложение через Telegram или MAX, чтобы войти заново.' });
+    }
+    touchPwaToken(user);
     // Обновить серию входов
     const today = new Date().toISOString().slice(0, 10);
     const lastLogin = user.last_login_date ? new Date(user.last_login_date).toISOString().slice(0, 10) : null;
@@ -2245,11 +2302,7 @@ app.post('/api/auth/max', rateLimit(900000, 30), async (req, res) => {
     }
 
     // Генерировать PWA-токен если нет (универсальный, единая логика с Telegram)
-    if (!user.pwa_token) {
-      const token = crypto.randomBytes(32).toString('hex');
-      await pool.query('UPDATE users SET pwa_token = $1 WHERE id = $2', [token, user.id]);
-      user.pwa_token = token;
-    }
+    user.pwa_token = await ensurePwaToken(user);
 
     // Серия входов (единая логика с Telegram)
     const today = new Date().toISOString().slice(0, 10);
@@ -2892,9 +2945,16 @@ app.post('/api/applications/:userId/reject', async (req, res) => {
 // Документы оператора: тексты политики и условий живут у оператора, поэтому
 // ссылки задаются переменными окружения. Пока ссылки нет — строка не выводится,
 // чтобы не отправлять человека на несуществующую страницу.
+function getOwnPrivacyPolicyUrl() {
+  const base = (process.env.APP_URL || process.env.WEBAPP_URL || '').replace(/\/$/, '');
+  if (!base || missingPolicyVars().length) return null;
+  return `${base}/legal/privacy-policy.html`;
+}
+
 function getLegalLinks() {
   const links = [];
-  if (process.env.PRIVACY_POLICY_URL) links.push({ title: 'политикой обработки персональных данных', label: 'Политика обработки персональных данных', url: process.env.PRIVACY_POLICY_URL });
+  const policyUrl = process.env.PRIVACY_POLICY_URL || getOwnPrivacyPolicyUrl();
+  if (policyUrl) links.push({ title: 'политикой обработки персональных данных', label: 'Политика обработки персональных данных', url: policyUrl });
   if (process.env.TERMS_URL) links.push({ title: 'условиями участия в клубе', label: 'Условия участия в клубе', url: process.env.TERMS_URL });
   return links;
 }
@@ -3442,15 +3502,35 @@ app.post('/api/debug-feed', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Debug failed: ' + e.message }); }
 });
 
+// Аварийная выдача админки по секрету. Лимит общий на весь сервер, а не на IP:
+// при trust proxy адрес берётся из X-Forwarded-For, и подменой заголовка лимит по IP
+// обходится. 10 попыток в час с любых адресов — подбор секрета бессмыслен.
+const MAKE_ADMIN_MIN_SECRET_LENGTH = 16;
+const makeAdminAttempts = { windowStart: 0, count: 0 };
+
 app.post('/api/make-admin', async (req, res) => {
   try {
+    const now = Date.now();
+    if (now - makeAdminAttempts.windowStart > 3600000) {
+      makeAdminAttempts.windowStart = now;
+      makeAdminAttempts.count = 0;
+    }
+    if (++makeAdminAttempts.count > 10) return res.status(429).json({ error: 'Слишком много попыток. Попробуйте через час.' });
+
     const { telegramId, secret } = req.body;
     const ADMIN_SECRET = process.env.ADMIN_SECRET;
-    if (!ADMIN_SECRET) return res.status(500).json({ error: 'ADMIN_SECRET not configured' });
-    if (secret !== ADMIN_SECRET) return res.status(403).json({ error: 'Wrong secret' });
+    if (!ADMIN_SECRET || ADMIN_SECRET.length < MAKE_ADMIN_MIN_SECRET_LENGTH) {
+      return res.status(503).json({ error: `ADMIN_SECRET не задан или короче ${MAKE_ADMIN_MIN_SECRET_LENGTH} символов` });
+    }
+    if (!safeEqual(secret, ADMIN_SECRET)) {
+      logAudit(null, 'admin.grant_via_secret_failed', 'telegram_id', telegramId ? String(telegramId) : null);
+      notifyAdmin(`⚠️ <b>Неудачная попытка получить права администратора</b>\n\nНеверный секрет для Telegram ID ${escapeHtml(telegramId || '—')}.`).catch(() => {});
+      return res.status(403).json({ error: 'Wrong secret' });
+    }
     if (!telegramId) return res.status(400).json({ error: 'No telegramId' });
     await pool.query('UPDATE users SET is_admin = TRUE WHERE telegram_id = $1', [telegramId]);
     logAudit(null, 'admin.grant_via_secret', 'telegram_id', telegramId);
+    notifyAdmin(`🔐 <b>Выданы права администратора</b>\n\nTelegram ID ${escapeHtml(telegramId)} получил админку по секрету.`).catch(() => {});
     res.json({ success: true, message: `User ${telegramId} is now admin` });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -4989,6 +5069,14 @@ app.post('/api/bookings/cancel', async (req, res) => {
     console.error('Cancel booking error:', e);
     res.status(500).json({ error: 'Server error' });
   }
+});
+
+// =============================================
+// ПОЛИТИКА ОБРАБОТКИ ПДн
+// =============================================
+app.get(['/legal/privacy-policy.html', '/legal/privacy-policy', '/privacy'], (req, res) => {
+  const { status, html } = renderPrivacyPolicy();
+  res.status(status).type('html').setHeader('Cache-Control', 'no-cache').send(html);
 });
 
 // =============================================

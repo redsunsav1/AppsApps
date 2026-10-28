@@ -1020,11 +1020,22 @@ async function registerWebhook() {
       })
     });
     const result = await resp.json();
+    lastWebhookRegistration = { at: new Date().toISOString(), ok: !!result.ok, description: result.description || null };
     console.log('🔗 Webhook:', result.ok ? 'registered' : result.description);
     if (!result.ok) notifyAdmin(`⚠️ <b>Вебхук Telegram не зарегистрирован</b>\n\n${escapeHtml(result.description || 'без описания')}`).catch(() => {});
     return result.ok;
-  } catch (e) { console.error('Webhook error:', e.message); return false; }
+  } catch (e) {
+    lastWebhookRegistration = { at: new Date().toISOString(), ok: false, description: e.message };
+    console.error('Webhook error:', e.message);
+    return false;
+  }
 }
+
+// Что видно о боте без доступа к логам: последняя регистрация вебхука, последнее
+// входящее обновление и последний ответ на /start. Без токенов и персональных данных.
+let lastWebhookRegistration = null;
+let lastTelegramUpdate = null;
+let lastStartReply = null;
 
 // Обновление пришло без нашего секрета — значит, регистрация вебхука при старте
 // не дошла до Telegram. Пробуем ещё раз, но не чаще раза в 10 минут.
@@ -2388,6 +2399,42 @@ app.get('/api/compliance/status', (req, res) => {
   });
 });
 
+// Диагностика бота для случаев «бот молчит»: спрашиваем у Telegram, куда он шлёт
+// обновления и с какой ошибкой, и показываем, что дошло до сервера.
+let telegramStatusCache = { at: 0, data: null };
+app.get('/api/telegram/status', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  if (Date.now() - telegramStatusCache.at < 15000 && telegramStatusCache.data) return res.json(telegramStatusCache.data);
+  const token = process.env.BOT_TOKEN;
+  const expectedUrl = process.env.WEBHOOK_URL ? `${process.env.WEBHOOK_URL}/api/telegram-webhook` : null;
+  let webhook = null;
+  if (token) {
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`, { signal: AbortSignal.timeout(5000) });
+      const info = (await r.json())?.result || {};
+      webhook = {
+        url: info.url || null,
+        matchesExpected: !!expectedUrl && info.url === expectedUrl,
+        pendingUpdates: info.pending_update_count ?? null,
+        lastError: info.last_error_message || null,
+        lastErrorAt: info.last_error_date ? new Date(info.last_error_date * 1000).toISOString() : null,
+        allowedUpdates: info.allowed_updates || null,
+      };
+    } catch (e) { webhook = { error: `Telegram API недоступен: ${e.message}` }; }
+  }
+  const data = {
+    botTokenSet: !!token,
+    webhookUrlSet: !!expectedUrl,
+    expectedUrl,
+    webhook,
+    lastRegistration: lastWebhookRegistration,
+    lastUpdate: lastTelegramUpdate,
+    lastStartReply,
+  };
+  telegramStatusCache = { at: Date.now(), data };
+  res.json(data);
+});
+
 app.get('/api/ping', async (req, res) => {
   // Внешний мониторинг (UptimeRobot и т.п.) смотрит на HTTP-код:
   // 200 — всё живо, 503 — база недоступна. Детали — для ручной диагностики.
@@ -3372,10 +3419,17 @@ async function handleTelegramStart(message) {
   const viaMiniApp = await sendTelegramWelcome(chatId, text, [[
     { text: '🏠 Открыть приложение', web_app: { url: getAppUrl() } },
   ]]);
+  let final = viaMiniApp;
   if (!viaMiniApp?.ok) {
     console.warn('[invite] web_app-кнопка не прошла, шлём обычную ссылку:', viaMiniApp?.description || '');
-    await sendTelegramWelcome(chatId, text, getAppOpenKeyboard());
+    final = await sendTelegramWelcome(chatId, text, getAppOpenKeyboard());
   }
+  lastStartReply = {
+    at: new Date().toISOString(),
+    ok: !!final?.ok,
+    miniAppError: viaMiniApp?.ok ? null : (viaMiniApp?.description || viaMiniApp?.error || 'нет ответа'),
+    error: final?.ok ? null : (final?.description || final?.error || 'нет ответа'),
+  };
 }
 
 app.post('/api/telegram-webhook', async (req, res) => {
@@ -3393,6 +3447,11 @@ app.post('/api/telegram-webhook', async (req, res) => {
     }
     const message = req.body?.message;
     const messageText = (message?.text || '').trim().toLowerCase();
+    lastTelegramUpdate = {
+      at: new Date().toISOString(),
+      secretOk,
+      kind: message ? (messageText.startsWith('/start') ? 'start' : 'message') : req.body?.callback_query ? 'callback' : 'other',
+    };
     if (messageText === '/start' || messageText === 'start') {
       res.sendStatus(200);
       handleTelegramStart(message).catch(e => console.error('Telegram /start error:', e.message));

@@ -78,6 +78,9 @@ r = await fetch(`${process.env.TEST_BASE_URL || 'http://127.0.0.1:18090'}/api/te
   body: JSON.stringify({ message: { message_id: 1, chat: { id: 1003 }, from: { id: 1003 }, text: '/start' } }),
 });
 check('сообщение /start принимается (200)', r.status === 200, r.status);
+const tgStatus = await get('/api/telegram/status');
+check('диагностика бота показывает последнее входящее обновление без секретов',
+  tgStatus.status === 200 && tgStatus.data?.lastUpdate?.kind === 'start' && !tgStatus.text.includes('123:test'), tgStatus.data);
 
 // --- Страницы правил
 for (const path of ['/legal/privacy-policy.html', '/legal/marketing-consent.html', '/legal/prize-rules.html', '/legal/terms.html']) {

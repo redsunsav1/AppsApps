@@ -1,5 +1,7 @@
-import React from 'react';
-import { Lock } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Lock, Clock, CheckCircle2, XCircle, Gift, ShieldCheck } from 'lucide-react';
+import { getAuthData } from '../utils/auth';
+import { confirmDialog, alertDialog } from '../utils/dialog';
 
 interface MarketplaceProps {
   userSilver?: number;
@@ -9,64 +11,119 @@ interface MarketplaceProps {
   isAdmin?: boolean;
 }
 
-// Призы показываем силуэтами: фотографий товаров нет, а под размытием от снимка
-// всё равно осталось бы пятно. Форму видно, деталей — нет: ровно то, что нужно анонсу.
-const IPhone = () => (
-  <svg viewBox="0 0 100 120" className="h-24" aria-hidden>
-    <rect x="18" y="6" width="64" height="108" rx="16" fill="#433830" />
-    <rect x="23" y="11" width="54" height="98" rx="12" fill="#6B5C4E" />
-    <rect x="27" y="15" width="27" height="27" rx="9" fill="#3A312A" />
-    <circle cx="35" cy="23" r="4.5" fill="#241D18" />
-    <circle cx="46" cy="23" r="4.5" fill="#241D18" />
-    <circle cx="35" cy="34" r="4.5" fill="#241D18" />
-  </svg>
+interface Product {
+  id: number;
+  title: string;
+  price: number;
+  currency: 'GOLD' | 'SILVER';
+  image_url?: string | null;
+  stock: number | null;
+}
+
+interface Order {
+  id: number;
+  product_id: number;
+  product_title?: string;
+  price: number;
+  currency: 'GOLD' | 'SILVER';
+  status: 'PENDING' | 'NEW' | 'APPROVED' | 'REJECTED';
+  review_note?: string | null;
+  created_at: string;
+}
+
+interface GoldSummary {
+  total: number;
+  available: number;
+  held: number;
+  onReview: number;
+  nextUnlockAt: string | null;
+}
+
+const GoldCoin = () => (
+  <div className="w-3 h-3 rounded-full bg-brand-gold border border-brand-black flex items-center justify-center text-[6px] font-bold text-black">X</div>
 );
+const SilverCoin = () => <div className="w-3 h-3 rounded-full bg-slate-300 border border-slate-400" />;
 
-const Headphones = () => (
-  <svg viewBox="0 0 120 100" className="h-24" aria-hidden>
-    <path d="M22 58 Q22 16 60 16 Q98 16 98 58" fill="none" stroke="#D6C4A8" strokeWidth="10" strokeLinecap="round" />
-    <rect x="6" y="44" width="34" height="48" rx="14" fill="#E0CCAF" />
-    <rect x="80" y="44" width="34" height="48" rx="14" fill="#E0CCAF" />
-    <rect x="14" y="53" width="18" height="30" rx="9" fill="#D6C4A8" />
-    <rect x="88" y="53" width="18" height="30" rx="9" fill="#D6C4A8" />
-  </svg>
-);
+const formatDate = (iso: string) => new Date(iso).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
 
-const Tee = () => (
-  <svg viewBox="0 0 100 100" className="h-24" aria-hidden>
-    <path
-      d="M34 18 L44 13 Q50 22 56 13 L66 18 L88 32 L78 47 L70 40 L70 88 Q50 92 30 88 L30 40 L22 47 L12 32 Z"
-      fill="#D9C3A2"
-    />
-    <path d="M44 13 Q50 24 56 13" fill="none" stroke="#C2AB88" strokeWidth="4" />
-  </svg>
-);
+const ORDER_STATUS: Record<Order['status'], { label: string; className: string; Icon: typeof Clock }> = {
+  PENDING: { label: 'На проверке', className: 'bg-amber-50 text-amber-700 border-amber-200', Icon: Clock },
+  NEW: { label: 'На проверке', className: 'bg-amber-50 text-amber-700 border-amber-200', Icon: Clock },
+  APPROVED: { label: 'Одобрено', className: 'bg-green-50 text-green-700 border-green-200', Icon: CheckCircle2 },
+  REJECTED: { label: 'Отклонено', className: 'bg-red-50 text-red-600 border-red-200', Icon: XCircle },
+};
 
-const Hoodie = () => (
-  <svg viewBox="0 0 100 100" className="h-24" aria-hidden>
-    <path
-      d="M30 28 L40 22 L60 22 L70 28 L90 42 L80 56 L70 48 L70 90 Q50 94 30 90 L30 48 L20 56 L10 42 Z"
-      fill="#D9C3A2"
-    />
-    <path d="M35 27 Q50 13 65 27 Q66 34 58 36 Q50 40 42 36 Q34 34 35 27 Z" fill="#C2AB88" />
-    <rect x="34" y="60" width="32" height="19" rx="7" fill="#C2AB88" />
-    <path d="M44 34 L43 50 M56 34 L57 50" stroke="#F7F2E8" strokeWidth="4" strokeLinecap="round" />
-  </svg>
-);
-
-const PRIZES = [
-  { name: 'iPhone 17 Pro', art: <IPhone /> },
-  { name: 'AirPods Max', art: <Headphones /> },
-  { name: 'Футболка клуба', art: <Tee /> },
-  { name: 'Худи клуба', art: <Hoodie /> },
-];
-
-// Магазин закрыт до запуска: каталог не показываем, но даём увидеть, ради чего
-// копятся баллы. Товарами по-прежнему управляет админка — как откроем, сюда
-// вернётся сетка из /api/products (см. историю файла).
+// Покупка — это заявка: монеты списываются сразу, а приз выдаёт отдел продаж после
+// проверки сделок. Поэтому в интерфейсе везде «заявка», а не «покупка».
 const Marketplace: React.FC<MarketplaceProps> = ({ userSilver, userGold, silver: silverProp, gold: goldProp }) => {
-  const silver = userSilver ?? silverProp ?? 0;
-  const gold = userGold ?? goldProp ?? 0;
+  const [products, setProducts] = useState<Product[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [gold, setGold] = useState<GoldSummary | null>(null);
+  const [silver, setSilver] = useState<number>(userSilver ?? silverProp ?? 0);
+  const [holdDays, setHoldDays] = useState(30);
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  const load = useCallback(() => {
+    const initData = getAuthData();
+    fetch('/api/products', { headers: { 'x-init-data': initData } })
+      .then(r => r.json())
+      .then(d => setProducts(Array.isArray(d) ? d : []))
+      .catch(() => {});
+    if (!initData) return;
+    fetch('/api/gold/me', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.gold) setGold(d.gold);
+        if (typeof d.silver === 'number') setSilver(d.silver);
+        if (typeof d.holdDays === 'number') setHoldDays(d.holdDays);
+        setOrders(Array.isArray(d.orders) ? d.orders : []);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const availableGold = gold ? Math.max(gold.available, 0) : (userGold ?? goldProp ?? 0);
+  const lockedGold = gold ? gold.held + gold.onReview : 0;
+
+  const activeOrderFor = useMemo(() => {
+    const map = new Map<number, Order>();
+    for (const o of orders) if (o.status !== 'REJECTED' && !map.has(o.product_id)) map.set(o.product_id, o);
+    return map;
+  }, [orders]);
+
+  const sorted = useMemo(
+    () => [...products].sort((a, b) => (a.currency !== b.currency ? (a.currency === 'GOLD' ? -1 : 1) : b.price - a.price)),
+    [products],
+  );
+
+  const handleOrder = async (p: Product) => {
+    const unit = p.currency === 'GOLD' ? 'золотых' : 'серебра';
+    const ok = await confirmDialog(
+      `Оформить заявку на «${p.title}» за ${p.price} ${unit}?\n\nМонеты спишутся сразу. Если заявку отклонят, они вернутся.`,
+    );
+    if (!ok) return;
+    setBusyId(p.id);
+    try {
+      const res = await fetch('/api/buy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: getAuthData(), productId: p.id }),
+      });
+      const data = await res.json();
+      if (data.success) alertDialog('Заявка отправлена! Мы проверим её и свяжемся с вами.');
+      else alertDialog(data.error || 'Не удалось оформить заявку');
+    } catch {
+      alertDialog('Ошибка сети');
+    } finally {
+      setBusyId(null);
+      load();
+    }
+  };
 
   return (
     <div className="pb-36 animate-fade-in">
@@ -74,55 +131,119 @@ const Marketplace: React.FC<MarketplaceProps> = ({ userSilver, userGold, silver:
         <div className="flex justify-between items-end">
           <div>
             <h2 className="text-2xl font-bold text-brand-black">Маркет</h2>
-            <p className="text-brand-grey text-sm mt-1">Каталог наград</p>
+            <p className="text-brand-grey text-sm mt-1">Призы за сделки</p>
           </div>
           <div className="flex gap-2">
-             {/* Silver Badge */}
-             <div className="bg-brand-white px-3 py-1.5 rounded-full border border-brand-light flex items-center gap-1.5 shadow-sm">
-                <div className="w-3 h-3 rounded-full bg-slate-300 border border-slate-400"></div>
-                <span className="font-bold text-brand-black text-xs">{silver.toLocaleString()}</span>
-             </div>
-             {/* Gold Badge */}
-             <div className="bg-brand-black px-3 py-1.5 rounded-full border border-brand-black flex items-center gap-1.5 shadow-sm">
-                <div className="w-3 h-3 rounded-full bg-brand-gold border border-brand-black flex items-center justify-center text-[6px] font-bold text-black">X</div>
-                <span className="font-bold text-brand-gold text-xs">{gold.toLocaleString()}</span>
-             </div>
+            <div className="bg-brand-white px-3 py-1.5 rounded-full border border-brand-light flex items-center gap-1.5 shadow-sm">
+              <SilverCoin />
+              <span className="font-bold text-brand-black text-xs">{silver.toLocaleString()}</span>
+            </div>
+            <div className="bg-brand-black px-3 py-1.5 rounded-full border border-brand-black flex items-center gap-1.5 shadow-sm">
+              <GoldCoin />
+              <span className="font-bold text-brand-gold text-xs">{availableGold.toLocaleString()}</span>
+            </div>
           </div>
         </div>
       </header>
 
-      <div className="mx-4 mt-5 bg-brand-white rounded-2xl border border-brand-beige p-6 text-center shadow-sm">
-        <div className="w-14 h-14 rounded-full bg-brand-gold/15 mx-auto flex items-center justify-center text-brand-gold">
-          <Lock size={24} />
+      <div className="mx-4 mt-4 bg-brand-white rounded-2xl border border-brand-beige p-4 shadow-sm flex gap-3">
+        <ShieldCheck size={20} className="text-brand-gold shrink-0 mt-0.5" />
+        <div className="text-xs text-brand-grey leading-relaxed">
+          Золото начисляется только за сделки, подтверждённые отделом продаж.
+          {holdDays > 0 && <> Монета становится доступной через {holdDays} дней после подтверждения.</>}
+          {lockedGold > 0 && (
+            <div className="mt-2 font-bold text-brand-black">
+              Ещё {lockedGold} {lockedGold === 1 ? 'монета' : 'монет'} на проверке
+              {gold?.nextUnlockAt && <> — ближайшая откроется {formatDate(gold.nextUnlockAt)}</>}
+            </div>
+          )}
         </div>
-        <h3 className="text-lg font-extrabold text-brand-black mt-4 leading-snug">
-          Совсем скоро станет доступен внутренний магазин
-        </h3>
-        <p className="text-sm text-brand-grey mt-2 leading-relaxed">
-          Баллы за брони и миссии копятся уже сейчас — потратить их можно будет здесь.
-        </p>
       </div>
 
-      {/* Витрина до открытия: силуэты видно, деталей — нет */}
-      <div
-        aria-hidden
-        className="px-4 mt-5 grid grid-cols-2 gap-3 select-none pointer-events-none"
-        style={{
-          filter: 'blur(5px)',
-          WebkitMaskImage: 'linear-gradient(to bottom, #000 88%, transparent 100%)',
-          maskImage: 'linear-gradient(to bottom, #000 88%, transparent 100%)',
-        }}
-      >
-        {PRIZES.map((prize) => (
-          <div
-            key={prize.name}
-            className="bg-brand-white rounded-2xl border border-brand-light p-4 flex flex-col items-center gap-3 shadow-sm"
-          >
-            <div className="h-24 flex items-center justify-center">{prize.art}</div>
-            <span className="text-sm font-bold text-brand-black text-center leading-tight">{prize.name}</span>
-          </div>
-        ))}
+      <div className="px-4 py-4 grid grid-cols-2 gap-3">
+        {sorted.length === 0 && (
+          <div className="col-span-2 text-center py-10 text-brand-grey text-sm">Призов пока нет</div>
+        )}
+        {sorted.map((p) => {
+          const isGold = p.currency === 'GOLD';
+          const balance = isGold ? availableGold : silver;
+          const soldOut = p.stock !== null && p.stock <= 0;
+          const myOrder = activeOrderFor.get(p.id);
+          const canAfford = balance >= p.price;
+          const disabled = soldOut || !canAfford || busyId === p.id || (isGold && !!myOrder);
+
+          let label: React.ReactNode;
+          if (isGold && myOrder) label = myOrder.status === 'APPROVED' ? 'Ваш приз' : 'Заявка подана';
+          else if (soldOut) label = 'Приз забрали';
+          else label = (
+            <>
+              {!canAfford && <Lock size={12} />}
+              {p.price.toLocaleString()} {isGold ? <GoldCoin /> : <SilverCoin />}
+            </>
+          );
+
+          return (
+            <div
+              key={p.id}
+              className={`p-4 rounded-2xl shadow-sm border flex flex-col relative overflow-hidden ${
+                isGold ? 'bg-gradient-to-br from-[#D6C4A8] to-[#C5B191] border-[#C5B191]' : 'bg-brand-white border-brand-light'
+              } ${soldOut && !myOrder ? 'opacity-60' : ''}`}
+            >
+              {p.stock !== null && !soldOut && (
+                <span className="absolute top-2 left-2 z-10 text-[10px] font-bold px-2 py-0.5 rounded-full bg-brand-black text-brand-gold">
+                  {p.stock === 1 ? 'Остался 1' : `Осталось ${p.stock}`}
+                </span>
+              )}
+              <div className={`h-24 rounded-xl mb-3 flex items-center justify-center overflow-hidden ${isGold ? 'bg-white/20' : 'bg-brand-cream'}`}>
+                {p.image_url && p.image_url.startsWith('http') ? (
+                  <img src={p.image_url} alt={p.title} className="w-full h-full object-cover rounded-xl" />
+                ) : (
+                  <Gift size={36} className="text-brand-black/40" />
+                )}
+              </div>
+              <h3 className="font-bold text-sm leading-tight mb-1 line-clamp-2 text-brand-black">{p.title}</h3>
+              <div className="mt-auto pt-3">
+                <button
+                  onClick={() => handleOrder(p)}
+                  disabled={disabled}
+                  className={`w-full py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                    !disabled ? 'bg-brand-black text-brand-gold active:scale-[0.98]' : isGold ? 'bg-black/10 text-black/40' : 'bg-brand-light text-white'
+                  }`}
+                >
+                  {busyId === p.id ? '...' : label}
+                </button>
+              </div>
+            </div>
+          );
+        })}
       </div>
+
+      {orders.length > 0 && (
+        <div className="mx-4 bg-brand-white rounded-2xl border border-brand-beige p-4 shadow-sm">
+          <h3 className="text-xs font-bold text-brand-grey uppercase tracking-wide mb-3">Мои заявки</h3>
+          <div className="space-y-2">
+            {orders.map((o) => {
+              const st = ORDER_STATUS[o.status] || ORDER_STATUS.PENDING;
+              return (
+                <div key={o.id} className="flex items-start justify-between gap-3 py-2 border-b border-brand-light last:border-0">
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-brand-black truncate">{o.product_title || 'Приз'}</div>
+                    <div className="text-[11px] text-brand-grey">
+                      {formatDate(o.created_at)} · {o.price} {o.currency === 'GOLD' ? 'зол.' : 'сер.'}
+                    </div>
+                    {o.status === 'REJECTED' && o.review_note && (
+                      <div className="text-[11px] text-red-600 mt-0.5">Причина: {o.review_note}. Монеты возвращены.</div>
+                    )}
+                  </div>
+                  <span className={`shrink-0 text-[10px] font-bold px-2 py-1 rounded-full border flex items-center gap-1 ${st.className}`}>
+                    <st.Icon size={11} /> {st.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

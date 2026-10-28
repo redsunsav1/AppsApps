@@ -10,6 +10,8 @@ import multer from 'multer';
 import nodemailer from 'nodemailer';
 import { importSiteNews } from './server/newsImport.js';
 import { renderPrivacyPolicy, missingPolicyVars } from './server/privacyPolicy.js';
+import { ensureGoldSchema, addGold, voidGoldEntry, goldSummary, goldHistory, GOLD_HOLD_DAYS } from './server/gold.js';
+import { verifyDealInAmo } from './server/dealVerification.js';
 
 // =============================================
 // MAX Messenger Platform Adapter (inline)
@@ -961,6 +963,12 @@ const initDb = async () => {
 
     // --- Миграции ---
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS gold_balance INT DEFAULT 0;');
+    // Магазин: остаток приза (NULL — без ограничения) и разбор заявок админом
+    await pool.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS stock INT;');
+    await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS reviewed_by INT;');
+    await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP;');
+    await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS review_note TEXT;');
+    await ensureGoldSchema(pool);
     await pool.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS project_name TEXT;');
     await pool.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS progress INT DEFAULT 0;');
     await pool.query('ALTER TABLE news ADD COLUMN IF NOT EXISTS checklist JSONB;');
@@ -1302,8 +1310,7 @@ const initDb = async () => {
     if (parseInt(questCheck.rows[0].count) === 0) {
       await pool.query(`INSERT INTO quests (type, title, reward_xp, reward_amount, reward_currency) VALUES
         ('SHARE', 'Репост новости клуба', 50, 100, 'SILVER'),
-        ('TEST', 'Тест: Планировки ЖК Харизма', 100, 200, 'SILVER'),
-        ('DEAL', 'Продать 2-к квартиру', 1000, 10, 'GOLD')
+        ('TEST', 'Тест: Планировки ЖК Харизма', 100, 200, 'SILVER')
       ON CONFLICT DO NOTHING`);
     }
 
@@ -1314,14 +1321,23 @@ const initDb = async () => {
         ('first_booking',    'Первая бронь',          'Забронируйте свою первую квартиру',            200,  'SILVER', 1,  'booking',  'key',       1),
         ('bookings_5',       'Пять броней',           'Забронируйте 5 квартир',                       500,  'SILVER', 5,  'booking',  'layers',    2),
         ('bookings_10',      'Десять броней',         'Забронируйте 10 квартир',                      1000, 'SILVER', 10, 'booking',  'trophy',    3),
-        ('bookings_25',      'Четверть сотни',        'Забронируйте 25 квартир',                      5,    'GOLD',   25, 'booking',  'crown',     4),
+        ('bookings_25',      'Четверть сотни',        'Забронируйте 25 квартир',                      2000, 'SILVER', 25, 'booking',  'crown',     4),
         ('multi_project',    'Мультипроект',          'Забронируйте квартиры в 2 разных ЖК',          300,  'SILVER', 2,  'explore',  'map',       5),
         ('all_projects',     'Покоритель всех ЖК',   'Продайте квартиры в 2 разных ЖК',              5,    'GOLD',   2,  'explore',  'globe',     6),
         ('profile_complete', 'Визитка заполнена',     'Заполните все поля профиля при регистрации',    100,  'SILVER', 1,  'profile',  'user',      7),
         ('login_streak_7',   'Неделя активности',     'Заходите в приложение 7 дней подряд',           300,  'SILVER', 7,  'loyalty',  'flame',     8),
-        ('login_streak_30',  'Месяц верности',        'Заходите в приложение 30 дней подряд',          3,    'GOLD',   30, 'loyalty',  'fire',      9)
+        ('login_streak_30',  'Месяц верности',        'Заходите в приложение 30 дней подряд',          1000, 'SILVER', 30, 'loyalty',  'fire',      9)
       ON CONFLICT (code) DO NOTHING`);
     }
+    // Золото — только за подтверждённые продажи. Квест «Продать квартиру» выдавал его
+    // по нажатию кнопки, а миссии за брони и входы — за действия, которые легко накрутить
+    // (наделать броней и отменить). Переводим их на серебро; квесты-продажи выключаем:
+    // продажу засчитывает только подтверждение сделки.
+    await pool.query(`UPDATE quests SET is_active = FALSE WHERE type = 'DEAL' AND is_active = TRUE`);
+    await pool.query(`UPDATE quests SET reward_currency = 'SILVER' WHERE reward_currency = 'GOLD'`);
+    await pool.query(`UPDATE missions SET reward_currency = 'SILVER', reward_amount = 2000 WHERE code = 'bookings_25' AND reward_currency = 'GOLD'`);
+    await pool.query(`UPDATE missions SET reward_currency = 'SILVER', reward_amount = 1000 WHERE code = 'login_streak_30' AND reward_currency = 'GOLD'`);
+
     // В продаже остались два ЖК, а миссия просила «во всех 3» — выполнить её стало
     // невозможно. Теперь это сделки (не брони) в 2 разных ЖК, чтобы не повторять
     // «Мультипроект». Прогресс пересчитываем сразу: иначе старое число броней
@@ -2453,6 +2469,7 @@ async function mergeUserIdentity(client, target, source) {
 
   await client.query('UPDATE bookings SET user_id = $1 WHERE user_id = $2', [target.id, source.id]);
   await client.query('UPDATE orders SET user_id = $1 WHERE user_id = $2', [target.id, source.id]);
+  await client.query('UPDATE gold_ledger SET user_id = $1 WHERE user_id = $2', [target.id, source.id]);
 
   await client.query(`
     DELETE FROM event_registrations src
@@ -3202,11 +3219,19 @@ app.get('/api/products', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'DB Error' }); }
 });
 
+// Пустое поле — без ограничения, иначе целое число не меньше нуля.
+function parseStock(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 app.post('/api/products', async (req, res) => {
   try {
     if (await isAdminRequest(req)) {
       const { title, price, currency, image_url } = req.body;
-      await pool.query('INSERT INTO products (title, price, currency, image_url) VALUES ($1, $2, $3, $4)', [title, price, currency || 'SILVER', image_url]);
+      await pool.query('INSERT INTO products (title, price, currency, image_url, stock) VALUES ($1, $2, $3, $4, $5)',
+        [title, price, currency || 'SILVER', image_url, parseStock(req.body.stock)]);
       res.json({ success: true });
     } else res.status(403).json({ error: 'Forbidden' });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
@@ -3216,8 +3241,8 @@ app.put('/api/products/:id', async (req, res) => {
   try {
     if (await isAdminRequest(req)) {
       const { title, price, currency, image_url } = req.body;
-      await pool.query('UPDATE products SET title = $1, price = $2, currency = $3, image_url = $4 WHERE id = $5',
-        [title, price, currency || 'SILVER', image_url, req.params.id]);
+      await pool.query('UPDATE products SET title = $1, price = $2, currency = $3, image_url = $4, stock = $5 WHERE id = $6',
+        [title, price, currency || 'SILVER', image_url, parseStock(req.body.stock), req.params.id]);
       res.json({ success: true });
     } else res.status(403).json({ error: 'Forbidden' });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
@@ -3232,30 +3257,220 @@ app.delete('/api/products/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
+// Покупка в магазине — это заявка: золото списывается сразу (чтобы его нельзя было
+// потратить дважды), приз уходит в резерв, а выдаёт его админ после проверки.
+// Отказ возвращает и золото, и приз.
 app.post('/api/buy', rateLimitByUser(900000, 30), async (req, res) => {
   const { initData, productId } = req.body;
   try {
-    const tgUser = await resolveDbUser(initData);
-    if (!tgUser) return res.status(401).json({ error: 'Invalid signature' });
+    const authUser = await resolveDbUser(initData);
+    if (!authUser) return res.status(401).json({ error: 'Invalid signature' });
+    if (!authUser.is_registered || authUser.approval_status !== 'approved') {
+      return res.status(403).json({ error: 'Магазин доступен подтверждённым партнёрам' });
+    }
     const result = await withTransaction(async (client) => {
-      const userRes = await client.query('SELECT * FROM users WHERE id = $1 FOR UPDATE', [tgUser.id]);
-      const prodRes = await client.query('SELECT * FROM products WHERE id = $1', [productId]);
-      if (userRes.rows.length === 0 || prodRes.rows.length === 0) throw { status: 404, msg: 'Not found' };
-      const user = userRes.rows[0]; const product = prodRes.rows[0];
+      const user = (await client.query('SELECT * FROM users WHERE id = $1 FOR UPDATE', [authUser.id])).rows[0];
+      // Блокировка строки товара выстраивает покупателей в очередь: последний приз
+      // получит один человек, а не все, кто нажал одновременно.
+      const product = (await client.query('SELECT * FROM products WHERE id = $1 AND is_active = TRUE FOR UPDATE', [productId])).rows[0];
+      if (!user || !product) throw { status: 404, msg: 'Товар недоступен' };
+      if (product.stock !== null && product.stock <= 0) throw { status: 409, msg: 'Этот приз уже забрали' };
+
+      let order;
       if (product.currency === 'GOLD') {
-        if (user.gold_balance < product.price) throw { status: 400, msg: 'Не хватает золота' };
-        await client.query('UPDATE users SET gold_balance = gold_balance - $1 WHERE id = $2', [product.price, user.id]);
+        const dup = await client.query("SELECT 1 FROM orders WHERE user_id = $1 AND product_id = $2 AND status <> 'REJECTED'", [user.id, product.id]);
+        if (dup.rowCount) throw { status: 409, msg: 'Вы уже оформили заявку на этот приз' };
+        const gold = await goldSummary(client, user.id);
+        if (gold.available < product.price) {
+          throw {
+            status: 400,
+            msg: gold.total >= product.price
+              ? `Доступно ${Math.max(gold.available, 0)} из ${gold.total} золотых: остальное ещё в заморозке после сделки или на проверке`
+              : 'Не хватает золота',
+          };
+        }
+        order = (await client.query(
+          "INSERT INTO orders (user_id, product_id, price, currency, status) VALUES ($1, $2, $3, 'GOLD', 'PENDING') RETURNING *",
+          [user.id, product.id, product.price]
+        )).rows[0];
+        await addGold(client, { userId: user.id, delta: -product.price, reason: 'order', orderId: order.id, note: product.title });
       } else {
-        if (user.balance < product.price) throw { status: 400, msg: 'Не хватает серебра' };
+        if ((user.balance || 0) < product.price) throw { status: 400, msg: 'Не хватает серебра' };
         await client.query('UPDATE users SET balance = balance - $1 WHERE id = $2', [product.price, user.id]);
+        order = (await client.query(
+          "INSERT INTO orders (user_id, product_id, price, currency, status) VALUES ($1, $2, $3, 'SILVER', 'PENDING') RETURNING *",
+          [user.id, product.id, product.price]
+        )).rows[0];
       }
-      await client.query('INSERT INTO orders (user_id, product_id, price, currency) VALUES ($1, $2, $3, $4)', [user.id, product.id, product.price, product.currency]);
-      return { success: true };
+      if (product.stock !== null) {
+        await client.query('UPDATE products SET stock = stock - 1 WHERE id = $1', [product.id]);
+      }
+      return { order, product, user };
     });
-    res.json(result);
+
+    const { order, product, user } = result;
+    const who = [user.first_name, user.last_name].filter(Boolean).join(' ') || `id ${user.id}`;
+    notifyAdmin(
+      `🎁 <b>Заявка на приз</b>\n\n${escapeHtml(product.title)} — ${product.price} ${product.currency === 'GOLD' ? 'золотых' : 'серебра'}\n` +
+      `Партнёр: ${escapeHtml(who)}${user.company ? `, ${escapeHtml(user.company)}` : ''}\n\n` +
+      `Проверьте историю золота партнёра и одобрите или отклоните заявку в админке («Товары»).`
+    ).catch(() => {});
+    logAudit(user, 'order.create', 'order', order.id, { product_id: product.id, price: product.price, currency: product.currency });
+    res.json({ success: true, orderId: order.id, status: order.status });
   } catch (e) {
     if (e.status) return res.status(e.status).json({ error: e.msg });
+    console.error('Buy error:', e);
     res.status(500).json({ error: 'Buy error' });
+  }
+});
+
+// Админ по запросу, с проверкой PIN. Возвращает строку пользователя — нужна для журнала.
+async function adminActor(req) {
+  if (!adminPinOk(req)) return null;
+  const initData = req.body?.initData || req.get('x-init-data') || '';
+  const user = await resolveDbUser(typeof initData === 'string' ? initData : '');
+  return user?.is_admin ? user : null;
+}
+
+// Золото и заявки самого партнёра — для магазина.
+app.post('/api/gold/me', async (req, res) => {
+  try {
+    const user = await resolveDbUser(req.body?.initData);
+    if (!user) return res.status(401).json({ error: 'Invalid signature' });
+    const [summary, orders] = await Promise.all([
+      goldSummary(pool, user.id),
+      pool.query(`
+        SELECT o.id, o.product_id, o.price, o.currency, o.status, o.review_note, o.created_at, p.title AS product_title
+        FROM orders o LEFT JOIN products p ON p.id = o.product_id
+        WHERE o.user_id = $1 ORDER BY o.created_at DESC LIMIT 50
+      `, [user.id]),
+    ]);
+    res.json({ gold: summary, silver: user.balance || 0, holdDays: GOLD_HOLD_DAYS, orders: orders.rows });
+  } catch (e) { console.error('Gold me error:', e); res.status(500).json({ error: 'Server error' }); }
+});
+
+// Заявки на призы: по умолчанию — ждущие решения
+app.post('/api/admin/orders', async (req, res) => {
+  try {
+    if (!await adminActor(req)) return res.status(403).json({ error: 'Forbidden' });
+    const status = ['PENDING', 'APPROVED', 'REJECTED', 'ALL'].includes(req.body?.status) ? req.body.status : 'PENDING';
+    const result = await pool.query(`
+      SELECT o.*, p.title AS product_title, p.stock AS product_stock,
+             u.first_name, u.last_name, u.company, u.phone,
+             (SELECT count(*)::int FROM gold_ledger g WHERE g.user_id = o.user_id AND g.reason = 'deal' AND g.voided_at IS NULL) AS verified_deals,
+             (SELECT COALESCE(SUM(g.delta), 0)::int FROM gold_ledger g WHERE g.user_id = o.user_id AND g.reason = 'legacy' AND g.voided_at IS NULL) AS legacy_gold
+      FROM orders o
+      LEFT JOIN products p ON p.id = o.product_id
+      LEFT JOIN users u ON u.id = o.user_id
+      WHERE $1 = 'ALL' OR o.status = $1 OR ($1 = 'PENDING' AND o.status = 'NEW')
+      ORDER BY o.created_at DESC LIMIT 200
+    `, [status]);
+    res.json(result.rows);
+  } catch (e) { console.error('Admin orders error:', e); res.status(500).json({ error: 'Server error' }); }
+});
+
+app.post('/api/admin/orders/:id/approve', async (req, res) => {
+  try {
+    const admin = await adminActor(req);
+    if (!admin) return res.status(403).json({ error: 'Forbidden' });
+    const note = String(req.body?.note || '').trim().slice(0, 500) || null;
+    const upd = await pool.query(`
+      UPDATE orders SET status = 'APPROVED', reviewed_by = $2, reviewed_at = NOW(), review_note = $3
+      WHERE id = $1 AND status IN ('PENDING', 'NEW') RETURNING *
+    `, [req.params.id, admin.id, note]);
+    const order = upd.rows[0];
+    if (!order) return res.status(409).json({ error: 'Заявку уже разобрали' });
+    const product = (await pool.query('SELECT title FROM products WHERE id = $1', [order.product_id])).rows[0];
+    notifyUser(order.user_id, `🎉 <b>Заявка одобрена!</b>\n\n«${escapeHtml(product?.title || 'Приз')}» ваш. Мы свяжемся с вами, чтобы договориться о вручении.`).catch(() => {});
+    logAudit(admin, 'order.approve', 'order', order.id, { note });
+    res.json({ success: true });
+  } catch (e) { console.error('Approve order error:', e); res.status(500).json({ error: 'Server error' }); }
+});
+
+app.post('/api/admin/orders/:id/reject', async (req, res) => {
+  try {
+    const admin = await adminActor(req);
+    if (!admin) return res.status(403).json({ error: 'Forbidden' });
+    const note = String(req.body?.note || '').trim().slice(0, 500);
+    if (note.length < 5) return res.status(400).json({ error: 'Укажите причину отказа — её увидит партнёр' });
+    const order = await withTransaction(async (client) => {
+      const o = (await client.query(`
+        UPDATE orders SET status = 'REJECTED', reviewed_by = $2, reviewed_at = NOW(), review_note = $3
+        WHERE id = $1 AND status IN ('PENDING', 'NEW') RETURNING *
+      `, [req.params.id, admin.id, note])).rows[0];
+      if (!o) throw { status: 409, msg: 'Заявку уже разобрали' };
+      // Возврат: золото — аннулированием списания (история остаётся), серебро — на баланс
+      if (o.currency === 'GOLD') {
+        const debit = (await client.query("SELECT id FROM gold_ledger WHERE order_id = $1 AND reason = 'order' AND voided_at IS NULL", [o.id])).rows;
+        for (const d of debit) await voidGoldEntry(client, d.id, { actorUserId: admin.id, note: `Заявка отклонена: ${note}` });
+        // Заявки до журнала списывали золото напрямую
+        if (!debit.length) await addGold(client, { userId: o.user_id, delta: o.price, reason: 'order_refund', orderId: o.id, actorUserId: admin.id, note });
+      } else {
+        await client.query('UPDATE users SET balance = balance + $1 WHERE id = $2', [o.price, o.user_id]);
+      }
+      await client.query('UPDATE products SET stock = stock + 1 WHERE id = $1 AND stock IS NOT NULL', [o.product_id]);
+      return o;
+    });
+    const product = (await pool.query('SELECT title FROM products WHERE id = $1', [order.product_id])).rows[0];
+    notifyUser(order.user_id, `Заявка на «${escapeHtml(product?.title || 'приз')}» отклонена.\n\nПричина: ${escapeHtml(note)}\n\nМонеты вернулись на баланс.`).catch(() => {});
+    logAudit(admin, 'order.reject', 'order', order.id, { note });
+    res.json({ success: true });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.msg });
+    console.error('Reject order error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// История золота партнёра: откуда каждая монета и куда ушла
+app.post('/api/admin/gold/history', async (req, res) => {
+  try {
+    if (!await adminActor(req)) return res.status(403).json({ error: 'Forbidden' });
+    const userId = parseInt(req.body?.userId, 10);
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const [summary, history] = await Promise.all([goldSummary(pool, userId), goldHistory(pool, userId)]);
+    res.json({ summary, history, holdDays: GOLD_HOLD_DAYS });
+  } catch (e) { console.error('Gold history error:', e); res.status(500).json({ error: 'Server error' }); }
+});
+
+// Разморозить начисление досрочно (после ручной проверки)
+app.post('/api/admin/gold/:entryId/release', async (req, res) => {
+  try {
+    const admin = await adminActor(req);
+    if (!admin) return res.status(403).json({ error: 'Forbidden' });
+    const upd = await pool.query(`
+      UPDATE gold_ledger SET available_at = NOW()
+      WHERE id = $1 AND voided_at IS NULL AND delta > 0 AND (available_at IS NULL OR available_at > NOW())
+      RETURNING *
+    `, [req.params.entryId]);
+    if (!upd.rowCount) return res.status(409).json({ error: 'Эта запись уже доступна или аннулирована' });
+    logAudit(admin, 'gold.release', 'gold_ledger', req.params.entryId, { user_id: upd.rows[0].user_id, delta: upd.rows[0].delta, reason: upd.rows[0].reason });
+    res.json({ success: true });
+  } catch (e) { console.error('Gold release error:', e); res.status(500).json({ error: 'Server error' }); }
+});
+
+// Аннулировать начисление (например, золото, накопленное через старые дыры)
+app.post('/api/admin/gold/:entryId/void', async (req, res) => {
+  try {
+    const admin = await adminActor(req);
+    if (!admin) return res.status(403).json({ error: 'Forbidden' });
+    const note = String(req.body?.note || '').trim().slice(0, 500);
+    if (note.length < 5) return res.status(400).json({ error: 'Укажите причину' });
+    const entry = await withTransaction(async (client) => {
+      const row = (await client.query('SELECT * FROM gold_ledger WHERE id = $1 FOR UPDATE', [req.params.entryId])).rows[0];
+      if (!row || row.voided_at) throw { status: 409, msg: 'Запись не найдена или уже аннулирована' };
+      // Списания по заявкам отменяются отказом в заявке, а сделки — отзывом сделки
+      if (row.delta <= 0 || ['deal', 'order'].includes(row.reason)) {
+        throw { status: 400, msg: row.reason === 'deal' ? 'Золото за сделку снимается отзывом сделки' : 'Эту запись нельзя аннулировать вручную' };
+      }
+      return voidGoldEntry(client, row.id, { actorUserId: admin.id, note });
+    });
+    logAudit(admin, 'gold.void', 'gold_ledger', entry.id, { user_id: entry.user_id, delta: entry.delta, reason: entry.reason, note });
+    res.json({ success: true });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.msg });
+    console.error('Gold void error:', e);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
@@ -3742,16 +3957,17 @@ app.post('/api/quests/claim', async (req, res) => {
     const questRes = await pool.query('SELECT * FROM quests WHERE id = $1 AND is_active = TRUE', [questId]);
     if (questRes.rows.length === 0) return res.status(404).json({ error: 'Quest not found' });
     const quest = questRes.rows[0];
+    if (quest.type === 'DEAL') {
+      return res.status(400).json({ error: 'Продажа засчитывается автоматически, когда отдел продаж подтвердит сделку' });
+    }
     const checkRes = await pool.query('SELECT id FROM quest_completions WHERE user_id = $1 AND quest_id = $2 AND DATE(completed_at) = CURRENT_DATE', [user.id, questId]);
     if (checkRes.rows.length > 0) return res.status(400).json({ error: 'Квест уже выполнен сегодня' });
 
     await withTransaction(async (client) => {
       await client.query('INSERT INTO quest_completions (user_id, quest_id) VALUES ($1, $2)', [user.id, questId]);
-      if (quest.reward_currency === 'GOLD') {
-        await client.query('UPDATE users SET gold_balance = gold_balance + $1, xp_points = xp_points + $2 WHERE id = $3', [quest.reward_amount, quest.reward_xp, user.id]);
-      } else {
-        await client.query('UPDATE users SET balance = balance + $1, xp_points = xp_points + $2 WHERE id = $3', [quest.reward_amount, quest.reward_xp, user.id]);
-      }
+      // Квест подтверждается нажатием кнопки — поэтому только серебро, даже если
+      // в базе по ошибке осталось GOLD.
+      await client.query('UPDATE users SET balance = balance + $1, xp_points = xp_points + $2 WHERE id = $3', [quest.reward_amount, quest.reward_xp, user.id]);
     });
     const updatedUser = await pool.query('SELECT * FROM users WHERE id = $1', [user.id]);
     res.json({ success: true, user: updatedUser.rows[0] });
@@ -3765,7 +3981,7 @@ app.post('/api/quests', async (req, res) => {
     if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
     const { type, title, reward_xp, reward_amount, reward_currency } = req.body;
     if (!type || !title) return res.status(400).json({ error: 'type and title required' });
-    await pool.query('INSERT INTO quests (type, title, reward_xp, reward_amount, reward_currency) VALUES ($1, $2, $3, $4, $5)', [type, title, reward_xp || 0, reward_amount || 0, reward_currency || 'SILVER']);
+    await pool.query('INSERT INTO quests (type, title, reward_xp, reward_amount, reward_currency) VALUES ($1, $2, $3, $4, $5)', [type, title, reward_xp || 0, reward_amount || 0, 'SILVER']);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
@@ -3826,6 +4042,7 @@ app.get('/api/statistics', requireRegisteredRequest, async (req, res) => {
 // =============================================
 // Кэш воронок и кастомных полей AmoCRM (заполняется при старте)
 let amocrmPipelineCache = { pipelineId: null, statusId: null };
+let amocrmStatusNames = {}; // { statusId: 'Название этапа' } — для сверки сделок
 let amocrmFieldsCache = {}; // { 'метраж': fieldId, 'этаж': fieldId, ... }
 let amocrmDriveUrlCache = null;
 
@@ -3996,6 +4213,7 @@ async function fetchAmoCRMPipelines() {
       const statuses = p?._embedded?.statuses || [];
       for (const s of statuses) {
         console.log(`    Этап: "${s.name}" (ID: ${s.id})`);
+        amocrmStatusNames[s.id] = s.name;
         // Ищем этап "устная бронь" (регистронезависимо)
         if (s.name.toLowerCase().includes('устн') && s.name.toLowerCase().includes('бронь')) {
           amocrmPipelineCache = { pipelineId: p.id, statusId: s.id };
@@ -4383,6 +4601,9 @@ async function ensureUserMissions(userId) {
 }
 
 // Проверить и обновить прогресс миссий + начислить награды
+// Золото дают только миссии, прогресс которых считается по подтверждённым сделкам.
+const GOLD_MISSION_CODES = new Set(['all_projects']);
+
 async function checkMissions(userId, trigger) {
   try {
     await ensureUserMissions(userId);
@@ -4436,15 +4657,25 @@ async function checkMissions(userId, trigger) {
 
       // --- Если достиг цели — завершить и начислить ---
       if (newProgress >= m.target_count && !um.completed) {
-        await pool.query(
-          'UPDATE user_missions SET completed = TRUE, completed_at = NOW(), rewarded = TRUE, progress = $1 WHERE user_id = $2 AND mission_id = $3',
-          [newProgress, userId, m.id]
-        );
-        // Начислить награду
-        const balField = m.reward_currency === 'GOLD' ? 'gold_balance' : 'balance';
-        await pool.query(`UPDATE users SET ${balField} = ${balField} + $1 WHERE id = $2`, [m.reward_amount, userId]);
-        rewards.push({ code: m.code, title: m.title, amount: m.reward_amount, currency: m.reward_currency });
-        console.log(`🏆 Миссия "${m.title}" выполнена! User=${userId}, +${m.reward_amount} ${m.reward_currency}`);
+        // Отметка и награда — одной транзакцией, и награду даёт только тот, кто отметку
+        // поставил: два одновременных триггера (вход и бронь) раньше платили дважды.
+        const currency = m.reward_currency === 'GOLD' && GOLD_MISSION_CODES.has(m.code) ? 'GOLD' : 'SILVER';
+        const won = await withTransaction(async (client) => {
+          const mark = await client.query(
+            'UPDATE user_missions SET completed = TRUE, completed_at = NOW(), rewarded = TRUE, progress = $1 WHERE user_id = $2 AND mission_id = $3 AND completed = FALSE RETURNING id',
+            [newProgress, userId, m.id]
+          );
+          if (!mark.rowCount) return false;
+          if (currency === 'GOLD') {
+            await addGold(client, { userId, delta: m.reward_amount, reason: 'mission', missionCode: m.code, note: m.title, hold: true });
+          } else {
+            await client.query('UPDATE users SET balance = balance + $1 WHERE id = $2', [m.reward_amount, userId]);
+          }
+          return true;
+        });
+        if (!won) continue;
+        rewards.push({ code: m.code, title: m.title, amount: m.reward_amount, currency });
+        console.log(`🏆 Миссия "${m.title}" выполнена! User=${userId}, +${m.reward_amount} ${currency}`);
       }
     }
     return rewards;
@@ -4493,6 +4724,9 @@ app.post('/api/bookings', rateLimitByUser(900000, 20), async (req, res) => {
     const user = await resolveDbUser(initData);
     if (!user) return res.status(401).json({ error: 'Invalid signature' });
     if (!user.is_registered) return res.status(400).json({ error: 'Сначала зарегистрируйтесь' });
+    if (user.approval_status !== 'approved' && !isStaff(user)) {
+      return res.status(403).json({ error: 'Бронирование откроется после одобрения заявки' });
+    }
 
     // Освежаем фид перед бронью, но не делаем его доступность условием работы.
     // Если фид застройщика лежит — раньше риелтор вообще не мог забронировать;
@@ -4918,54 +5152,134 @@ app.post('/api/bookings/:id/documents', upload.array('documents', 10), async (re
   }
 });
 
-// Подтверждение сделки (только админ) — присуждает золотую монету
+// Подтверждение сделки (только админ) — присуждает золотую монету.
+// Кнопка админа сама по себе продажу не доказывает: сначала сверяемся с amoCRM
+// (лид выигран, покупатель новый). Не сошлось — подтвердить можно только вручную,
+// с письменной причиной, которая попадёт в журнал золота и в алерт.
 app.post('/api/bookings/:id/complete', async (req, res) => {
   try {
-    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
+    const admin = await adminActor(req);
+    if (!admin) return res.status(403).json({ error: 'Forbidden' });
     const bookingRes = await pool.query('SELECT * FROM bookings WHERE id = $1', [req.params.id]);
     if (bookingRes.rows.length === 0) return res.status(404).json({ error: 'Booking not found' });
     const booking = bookingRes.rows[0];
     if (booking.stage === 'COMPLETE') return res.status(400).json({ error: 'Сделка уже подтверждена' });
     if (booking.stage !== 'DOCS_SENT') return res.status(400).json({ error: 'Документы ещё не отправлены' });
 
-    await withTransaction(async (client) => {
-      await client.query(`UPDATE bookings SET stage = 'COMPLETE' WHERE id = $1`, [booking.id]);
+    const override = req.body?.override === true;
+    const overrideReason = String(req.body?.overrideReason || '').trim().slice(0, 500);
+    const check = await verifyDealInAmo({
+      leadId: booking.amocrm_lead_id,
+      buyerPhone: booking.buyer_phone,
+      bookingCreatedAt: booking.created_at,
+      statusNames: amocrmStatusNames,
+    });
+    if (!check.ok) {
+      if (!override) {
+        return res.status(409).json({ error: 'Сделка не прошла сверку с amoCRM', problems: check.problems, checked: check.checked });
+      }
+      if (overrideReason.length < 10) {
+        return res.status(400).json({ error: 'Опишите, почему подтверждаете без сверки (не короче 10 символов)' });
+      }
+    }
+    const note = check.ok
+      ? 'Сверено с amoCRM: лид «Успешно реализовано», покупатель новый'
+      : `Подтверждено вручную: ${overrideReason}. Не сошлось: ${check.problems.join('; ')}`;
+
+    const entry = await withTransaction(async (client) => {
+      const upd = await client.query("UPDATE bookings SET stage = 'COMPLETE' WHERE id = $1 AND stage = 'DOCS_SENT' RETURNING id", [booking.id]);
+      if (!upd.rowCount) throw { status: 409, msg: 'Сделку уже подтвердили' };
       await client.query(`UPDATE units SET status = 'SOLD' WHERE id = $1`, [booking.unit_id]);
-      await client.query('UPDATE users SET deals_closed = deals_closed + 1, gold_balance = gold_balance + 1 WHERE id = $1', [booking.user_id]);
+      await client.query('UPDATE users SET deals_closed = deals_closed + 1 WHERE id = $1', [booking.user_id]);
+      return addGold(client, {
+        userId: booking.user_id, delta: 1, reason: 'deal', bookingId: booking.id,
+        leadId: booking.amocrm_lead_id, actorUserId: admin.id, note, hold: true,
+      });
     });
 
-    // Уведомление риелтору
     const userRes = await pool.query('SELECT telegram_id, max_id, platform, first_name FROM users WHERE id = $1', [booking.user_id]);
     if (userRes.rows[0]) {
+      const unlock = entry.available_at && new Date(entry.available_at) > new Date()
+        ? `\n\nМонету можно будет обменять в магазине с ${new Date(entry.available_at).toLocaleDateString('ru-RU')} — после проверки сделки.`
+        : '';
       notifyUser(userRes.rows[0],
-        `🎉 <b>Сделка подтверждена!</b>\n\nПоздравляем, ${userRes.rows[0].first_name || 'партнёр'}! Вам начислена 1 золотая монета 🪙`);
+        `🎉 <b>Сделка подтверждена!</b>\n\nПоздравляем, ${escapeHtml(userRes.rows[0].first_name || 'партнёр')}! Вам начислена 1 золотая монета 🪙${unlock}`);
+    }
+    if (!check.ok) {
+      notifyAdmin(
+        `⚠️ <b>Сделка подтверждена без сверки с amoCRM</b>\n\nБронь #${booking.id}, начислено 1 золото.\n` +
+        `Причина: ${escapeHtml(overrideReason)}\nНе сошлось: ${escapeHtml(check.problems.join('; '))}`
+      ).catch(() => {});
     }
     checkMissions(booking.user_id, 'booking').catch(() => {});
-    console.log(`✅ Сделка подтверждена: booking=${booking.id}, user=${booking.user_id}, +1 gold`);
-    logAuditFromRequest(req, 'booking.complete', 'booking', booking.id, { unit_id: booking.unit_id, realtor_user_id: booking.user_id });
-    res.json({ success: true, stage: 'COMPLETE' });
-  } catch (e) { console.error('Complete booking error:', e); res.status(500).json({ error: 'Server error' }); }
+    console.log(`✅ Сделка подтверждена: booking=${booking.id}, user=${booking.user_id}, +1 gold${check.ok ? '' : ' (вручную)'}`);
+    logAuditFromRequest(req, 'booking.complete', 'booking', booking.id, {
+      unit_id: booking.unit_id, realtor_user_id: booking.user_id,
+      amo_verified: check.ok, override: !check.ok, override_reason: check.ok ? null : overrideReason, problems: check.ok ? null : check.problems,
+    });
+    res.json({ success: true, stage: 'COMPLETE', verified: check.ok, availableAt: entry.available_at });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.msg });
+    console.error('Complete booking error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-// Отмена подтверждения сделки (только админ) — отзыв золотой монеты
+// Отмена подтверждения сделки (только админ) — отзыв золотой монеты.
+// Монета аннулируется в журнале; если партнёр уже потратил её, баланс уходит в минус
+// и следующая сделка его погасит. Вместе со сделкой пересчитывается миссия по ЖК.
 app.post('/api/bookings/:id/revoke', async (req, res) => {
   try {
-    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
-    const bookingRes = await pool.query('SELECT * FROM bookings WHERE id = $1', [req.params.id]);
-    if (bookingRes.rows.length === 0) return res.status(404).json({ error: 'Booking not found' });
-    const booking = bookingRes.rows[0];
-    if (booking.stage !== 'COMPLETE') return res.status(400).json({ error: 'Сделка не была подтверждена' });
+    const admin = await adminActor(req);
+    if (!admin) return res.status(403).json({ error: 'Forbidden' });
+    const note = String(req.body?.reason || '').trim().slice(0, 500) || 'Сделка отозвана';
 
-    await withTransaction(async (client) => {
-      await client.query(`UPDATE bookings SET stage = 'DOCS_SENT' WHERE id = $1`, [booking.id]);
+    const result = await withTransaction(async (client) => {
+      const booking = (await client.query("UPDATE bookings SET stage = 'DOCS_SENT' WHERE id = $1 AND stage = 'COMPLETE' RETURNING *", [req.params.id])).rows[0];
+      if (!booking) throw { status: 400, msg: 'Сделка не была подтверждена' };
       await client.query(`UPDATE units SET status = 'BOOKED' WHERE id = $1`, [booking.unit_id]);
-      await client.query('UPDATE users SET deals_closed = GREATEST(deals_closed - 1, 0), gold_balance = GREATEST(gold_balance - 1, 0) WHERE id = $1', [booking.user_id]);
+      await client.query('UPDATE users SET deals_closed = GREATEST(deals_closed - 1, 0) WHERE id = $1', [booking.user_id]);
+
+      const deals = (await client.query("SELECT id FROM gold_ledger WHERE booking_id = $1 AND reason = 'deal' AND voided_at IS NULL", [booking.id])).rows;
+      for (const d of deals) await voidGoldEntry(client, d.id, { actorUserId: admin.id, note });
+      // Сделку подтвердили до появления журнала — её монета сидит в перенесённом балансе
+      if (!deals.length) {
+        await addGold(client, { userId: booking.user_id, delta: -1, reason: 'deal_revoke', bookingId: booking.id, actorUserId: admin.id, note });
+      }
+
+      const mission = (await client.query("SELECT * FROM missions WHERE code = 'all_projects'")).rows[0];
+      if (mission) {
+        const cnt = parseInt((await client.query(
+          "SELECT count(DISTINCT project_id) FROM bookings WHERE user_id = $1 AND stage = 'COMPLETE'", [booking.user_id]
+        )).rows[0].count, 10);
+        if (cnt < mission.target_count) {
+          const reopened = await client.query(
+            'UPDATE user_missions SET completed = FALSE, rewarded = FALSE, completed_at = NULL, progress = $3 WHERE user_id = $1 AND mission_id = $2 AND completed = TRUE RETURNING id',
+            [booking.user_id, mission.id, cnt]
+          );
+          if (reopened.rowCount) {
+            const rewards = (await client.query(
+              "SELECT id FROM gold_ledger WHERE user_id = $1 AND reason = 'mission' AND mission_code = 'all_projects' AND voided_at IS NULL", [booking.user_id]
+            )).rows;
+            for (const r of rewards) await voidGoldEntry(client, r.id, { actorUserId: admin.id, note: `${note} — миссия «${mission.title}» больше не выполнена` });
+          }
+        }
+      }
+      return { booking, gold: await goldSummary(client, booking.user_id) };
     });
 
+    const { booking, gold } = result;
     console.log(`🔄 Сделка отозвана: booking=${booking.id}, user=${booking.user_id}, -1 gold`);
-    logAuditFromRequest(req, 'booking.revoke', 'booking', booking.id, { unit_id: booking.unit_id, realtor_user_id: booking.user_id });
-    res.json({ success: true, stage: 'DOCS_SENT' });
-  } catch (e) { console.error('Revoke booking error:', e); res.status(500).json({ error: 'Server error' }); }
+    logAuditFromRequest(req, 'booking.revoke', 'booking', booking.id, { unit_id: booking.unit_id, realtor_user_id: booking.user_id, note });
+    res.json({
+      success: true, stage: 'DOCS_SENT',
+      warning: gold.available < 0 ? `Партнёр уже потратил это золото: доступный баланс ${gold.available}. Проверьте его заявки на призы.` : null,
+    });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.msg });
+    console.error('Revoke booking error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // Мои бронирования

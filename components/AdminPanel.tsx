@@ -94,6 +94,12 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [selectedProfile, setSelectedProfile] = useState<any | null>(null);
   const [profileBookings, setProfileBookings] = useState<any[]>([]);
   const [profilePrizes, setProfilePrizes] = useState<any[]>([]);
+  const [profileGold, setProfileGold] = useState<{ summary: any; history: any[]; holdDays: number } | null>(null);
+  // Сделка не сошлась с amoCRM: показываем причины и даём подтвердить вручную с объяснением
+  const [overrideFor, setOverrideFor] = useState<{ bookingId: number; problems: string[] } | null>(null);
+  const [overrideReason, setOverrideReason] = useState('');
+  const [voidFor, setVoidFor] = useState<number | null>(null);
+  const [voidReason, setVoidReason] = useState('');
   const [now, setNow] = useState(Date.now());
 
   // News
@@ -118,6 +124,10 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [shopImage, setShopImage] = useState('');
   const [editingProductId, setEditingProductId] = useState<number | null>(null);
   const [shopProducts, setShopProducts] = useState<any[]>([]);
+  const [shopStock, setShopStock] = useState<string>('');
+  const [prizeOrders, setPrizeOrders] = useState<any[]>([]);
+  const [rejectFor, setRejectFor] = useState<number | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
 
   // Quests
   const [questsList, setQuestsList] = useState<QuestItem[]>([]);
@@ -246,11 +256,79 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
 
   const fetchShopProducts = () => {
     fetch('/api/products').then(r => r.json()).then(d => setShopProducts(Array.isArray(d) ? d : [])).catch(() => {});
+    fetchPrizeOrders();
+  };
+
+  const fetchPrizeOrders = () => {
+    fetch('/api/admin/orders', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: getAuthData(), status: 'PENDING' }),
+    }).then(r => r.json()).then(d => setPrizeOrders(Array.isArray(d) ? d : [])).catch(() => {});
+  };
+
+  const decidePrizeOrder = async (orderId: number, action: 'approve' | 'reject', note = '') => {
+    try {
+      const res = await fetch(`/api/admin/orders/${orderId}/${action}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: getAuthData(), note }),
+      });
+      const data = await res.json();
+      if (!data.success) return showToast(data.error || 'Ошибка', 'error');
+      showToast(action === 'approve' ? 'Заявка одобрена, партнёр получит уведомление' : 'Заявка отклонена, монеты возвращены', 'success');
+      setRejectFor(null); setRejectReason('');
+      fetchShopProducts();
+    } catch { showToast('Ошибка сети', 'error'); }
+  };
+
+  const fetchProfileGold = async (userId: number) => {
+    try {
+      const res = await fetch('/api/admin/gold/history', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: getAuthData(), userId }),
+      });
+      const data = await res.json();
+      setProfileGold(data.summary ? data : null);
+    } catch { setProfileGold(null); }
+  };
+
+  const goldEntryAction = async (entryId: number, action: 'release' | 'void', note = '') => {
+    try {
+      const res = await fetch(`/api/admin/gold/${entryId}/${action}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: getAuthData(), note }),
+      });
+      const data = await res.json();
+      if (!data.success) return showToast(data.error || 'Ошибка', 'error');
+      showToast(action === 'release' ? 'Монеты разморожены' : 'Начисление аннулировано', 'success');
+      setVoidFor(null); setVoidReason('');
+      if (selectedProfile) openProfile(selectedProfile);
+    } catch { showToast('Ошибка сети', 'error'); }
+  };
+
+  const completeDeal = async (bookingId: number, override = false) => {
+    try {
+      const res = await fetch(`/api/bookings/${bookingId}/complete`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: getAuthData(), ...(override ? { override: true, overrideReason } : {}) }),
+      });
+      const data = await res.json();
+      if (res.status === 409 && Array.isArray(data.problems)) {
+        setOverrideFor({ bookingId, problems: data.problems });
+        setOverrideReason('');
+        return;
+      }
+      if (!data.success) return showToast(data.error || 'Ошибка', 'error');
+      setOverrideFor(null); setOverrideReason('');
+      showToast(data.verified ? 'Сделка сверена с amoCRM и подтверждена, +1 золото' : 'Сделка подтверждена вручную, +1 золото', 'success');
+      openProfile(selectedProfile);
+    } catch { showToast('Ошибка сети', 'error'); }
   };
 
   const openProfile = async (user: any) => {
     setSelectedProfile(user);
     setProfilePrizes([]);
+    setOverrideFor(null);
+    fetchProfileGold(user.id);
     try {
       const [bookingsRes, prizesRes] = await Promise.all([
         // Брони фильтрует сервер: тянуть все брони системы ради одного профиля незачем
@@ -525,7 +603,8 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                 title: shopTitle,
                 price: Number(shopPrice),
                 currency: shopCurrency,
-                image_url: shopImage
+                image_url: shopImage,
+                stock: shopStock
             })
         });
         showToast(editingProductId ? 'Товар обновлён!' : 'Товар добавлен!', 'success');
@@ -540,11 +619,12 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
     setShopPrice(p.price);
     setShopCurrency(p.currency);
     setShopImage(p.image_url || '');
+    setShopStock(p.stock === null || p.stock === undefined ? '' : String(p.stock));
   };
 
   const resetShopForm = () => {
     setEditingProductId(null);
-    setShopTitle(''); setShopPrice(0); setShopCurrency('SILVER'); setShopImage('');
+    setShopTitle(''); setShopPrice(0); setShopCurrency('SILVER'); setShopImage(''); setShopStock('');
   };
 
   const handleCreateQuest = async () => {
@@ -813,6 +893,45 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
 
         {activeTab === 'shop' && (
             <div className="flex flex-col gap-3 animate-fade-in">
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+                    <h4 className="font-bold text-black text-sm mb-1">Заявки на призы ({prizeOrders.length})</h4>
+                    <p className="text-[11px] text-gray-500 mb-2">Перед одобрением откройте партнёра в «Базе» и посмотрите историю золота: за какие сделки оно начислено.</p>
+                    {prizeOrders.length === 0 ? (
+                        <p className="text-gray-400 text-xs text-center py-2">Новых заявок нет</p>
+                    ) : (
+                        <div className="space-y-2">
+                            {prizeOrders.map((o: any) => (
+                                <div key={o.id} className="bg-white rounded-lg p-3 border text-xs">
+                                    <div className="flex justify-between gap-2">
+                                        <div className="min-w-0">
+                                            <div className="font-bold text-black text-sm truncate">{o.product_title || 'Приз'}</div>
+                                            <div className="text-gray-500">{[o.first_name, o.last_name].filter(Boolean).join(' ')}{o.company ? ` · ${o.company}` : ''}</div>
+                                            <div className="text-gray-400">{new Date(o.created_at).toLocaleString('ru-RU')} · {o.price} {o.currency === 'GOLD' ? 'Gold' : 'Silver'}</div>
+                                        </div>
+                                        <div className="text-right shrink-0">
+                                            <div className="font-bold text-green-700">Сделок: {o.verified_deals}</div>
+                                            {o.legacy_gold > 0 && <div className="text-red-600 font-bold">Непроверенного золота: {o.legacy_gold}</div>}
+                                        </div>
+                                    </div>
+                                    {rejectFor === o.id ? (
+                                        <div className="mt-2 flex flex-col gap-2">
+                                            <input autoFocus placeholder="Причина отказа (её увидит партнёр)" value={rejectReason} onChange={e => setRejectReason(e.target.value)} className="p-2 border rounded-lg text-black bg-gray-50" />
+                                            <div className="flex gap-2">
+                                                <button onClick={() => decidePrizeOrder(o.id, 'reject', rejectReason)} disabled={rejectReason.trim().length < 5} className="flex-1 py-2 bg-red-600 text-white rounded-lg font-bold disabled:opacity-40">Отклонить и вернуть монеты</button>
+                                                <button onClick={() => { setRejectFor(null); setRejectReason(''); }} className="px-3 py-2 bg-gray-200 text-black rounded-lg">Отмена</button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="mt-2 flex gap-2">
+                                            <button onClick={async () => { if (await confirmDialog(`Одобрить «${o.product_title}» для ${o.first_name || 'партнёра'}?`)) decidePrizeOrder(o.id, 'approve'); }} className="flex-1 py-2 bg-green-600 text-white rounded-lg font-bold">Одобрить</button>
+                                            <button onClick={() => { setRejectFor(o.id); setRejectReason(''); }} className="flex-1 py-2 bg-red-50 text-red-600 rounded-lg font-bold">Отклонить</button>
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
                 <h4 className="font-bold text-black text-sm">{editingProductId ? 'Редактировать товар' : 'Новый товар'}</h4>
                 <input placeholder="Название товара (Худи)" value={shopTitle} onChange={e => setShopTitle(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
                 <div className="flex gap-2">
@@ -823,6 +942,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                     </select>
                 </div>
                 <input placeholder="Ссылка на фото" value={shopImage} onChange={e => setShopImage(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
+                <input type="number" min={0} placeholder="Сколько штук (пусто — без ограничения)" value={shopStock} onChange={e => setShopStock(e.target.value)} className="p-3 border rounded-lg w-full text-black bg-gray-50" />
                 <div className="flex gap-2">
                     <button onClick={handleSubmitProduct} disabled={loading} className="flex-1 bg-emerald-600 text-white p-3 rounded-lg font-bold shadow-md">
                         {loading ? '...' : editingProductId ? 'Сохранить' : 'Добавить товар'}
@@ -841,7 +961,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                 <div key={p.id} className="flex items-center justify-between bg-gray-50 p-3 rounded-lg">
                                     <div className="flex-1 min-w-0">
                                         <div className="font-bold text-black text-sm truncate">{p.title}</div>
-                                        <div className="text-[10px] text-gray-400">{p.price} {p.currency === 'GOLD' ? 'Gold' : 'Silver'}</div>
+                                        <div className="text-[10px] text-gray-400">{p.price} {p.currency === 'GOLD' ? 'Gold' : 'Silver'} · {p.stock === null || p.stock === undefined ? 'без ограничения' : `осталось ${p.stock}`}</div>
                                     </div>
                                     <div className="flex gap-1 ml-2">
                                         <button onClick={() => handleEditProduct(p)} className="p-2 text-blue-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit3 size={16} /></button>
@@ -1413,38 +1533,44 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                         </div>
                                     )}
                                     {/* Admin actions */}
-                                    {b.stage === 'DOCS_SENT' && (
+                                    {b.stage === 'DOCS_SENT' && overrideFor?.bookingId !== b.id && (
                                         <button
                                             onClick={async (e) => {
                                                 e.stopPropagation();
-                                                if (!await confirmDialog('Подтвердить сделку и начислить золотую монету?')) return;
-                                                try {
-                                                    const res = await fetch(`/api/bookings/${b.id}/complete`, {
-                                                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                                        body: JSON.stringify({ initData: getAuthData() }),
-                                                    });
-                                                    const data = await res.json();
-                                                    if (data.success) { showToast('Сделка подтверждена! +1 золотая монета', 'success'); openProfile(selectedProfile); }
-                                                    else showToast(data.error || 'Ошибка', 'error');
-                                                } catch { showToast('Ошибка сети', 'error'); }
+                                                if (!await confirmDialog('Сверить сделку с amoCRM и начислить золотую монету?')) return;
+                                                completeDeal(b.id);
                                             }}
                                             className="mt-2 w-full py-1.5 bg-green-100 text-green-700 rounded-lg text-[11px] font-bold active:scale-[0.98]"
                                         >
                                             ✅ Подтвердить сделку (+1 Gold)
                                         </button>
                                     )}
+                                    {overrideFor?.bookingId === b.id && (
+                                        <div className="mt-2 p-3 rounded-lg bg-red-50 border border-red-200 flex flex-col gap-2">
+                                            <div className="font-bold text-red-700">Сделка не прошла сверку с amoCRM:</div>
+                                            <ul className="list-disc pl-4 text-red-700 space-y-0.5">
+                                                {overrideFor.problems.map((pr, i) => <li key={i}>{pr}</li>)}
+                                            </ul>
+                                            <div className="text-gray-600">Подтвердить можно только вручную, с объяснением. Оно попадёт в журнал золота, а вам придёт алерт.</div>
+                                            <textarea value={overrideReason} onChange={e => setOverrideReason(e.target.value)} rows={2} placeholder="Почему подтверждаете: например, «ДДУ подписан 20.10, лид не переведён в amoCRM»" className="p-2 border rounded-lg text-black bg-white" />
+                                            <div className="flex gap-2">
+                                                <button onClick={() => completeDeal(b.id, true)} disabled={overrideReason.trim().length < 10} className="flex-1 py-1.5 bg-red-600 text-white rounded-lg font-bold disabled:opacity-40">Подтвердить вручную</button>
+                                                <button onClick={() => { setOverrideFor(null); setOverrideReason(''); }} className="px-3 py-1.5 bg-gray-200 text-black rounded-lg">Отмена</button>
+                                            </div>
+                                        </div>
+                                    )}
                                     {b.stage === 'COMPLETE' && (
                                         <button
                                             onClick={async (e) => {
                                                 e.stopPropagation();
-                                                if (!await confirmDialog('Отозвать подтверждение? Золотая монета будет списана.')) return;
+                                                if (!await confirmDialog('Отозвать подтверждение? Золотая монета будет списана, а если сделка была нужна для миссии — и награда за миссию.')) return;
                                                 try {
                                                     const res = await fetch(`/api/bookings/${b.id}/revoke`, {
                                                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                                                         body: JSON.stringify({ initData: getAuthData() }),
                                                     });
                                                     const data = await res.json();
-                                                    if (data.success) { showToast('Сделка отозвана, монета списана', 'info'); openProfile(selectedProfile); }
+                                                    if (data.success) { showToast(data.warning || 'Сделка отозвана, монета списана', data.warning ? 'error' : 'info'); openProfile(selectedProfile); }
                                                     else showToast(data.error || 'Ошибка', 'error');
                                                 } catch { showToast('Ошибка сети', 'error'); }
                                             }}
@@ -1486,6 +1612,63 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                 )}
 
                 {/* Prizes / Orders */}
+                {profileGold && (
+                    <div className="bg-white rounded-xl p-4 border">
+                        <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">История золота</h4>
+                        <div className="grid grid-cols-3 gap-2 mb-3 text-center text-xs">
+                            <div className="bg-green-50 rounded-lg p-2"><div className="font-black text-green-700 text-base">{profileGold.summary.available}</div>доступно</div>
+                            <div className="bg-amber-50 rounded-lg p-2"><div className="font-black text-amber-700 text-base">{profileGold.summary.held}</div>в заморозке</div>
+                            <div className="bg-red-50 rounded-lg p-2"><div className="font-black text-red-600 text-base">{profileGold.summary.onReview}</div>на проверке</div>
+                        </div>
+                        {profileGold.history.length === 0 ? (
+                            <p className="text-gray-400 text-sm text-center py-2">Движений нет</p>
+                        ) : (
+                            <div className="space-y-1.5">
+                                {profileGold.history.map((g: any) => {
+                                    const voided = !!g.voided_at;
+                                    const locked = !voided && g.delta > 0 && (!g.available_at || new Date(g.available_at) > new Date());
+                                    const title =
+                                        g.reason === 'deal' ? `Сделка: кв. №${g.unit_number || '?'}${g.amocrm_lead_id ? ` · лид ${g.amocrm_lead_id}` : ''}` :
+                                        g.reason === 'mission' ? `Миссия: ${g.note || g.mission_code}` :
+                                        g.reason === 'order' ? `Заявка: ${g.product_title || 'приз'}` :
+                                        g.reason === 'order_refund' ? 'Возврат по заявке' :
+                                        g.reason === 'deal_revoke' ? 'Отзыв сделки' :
+                                        g.reason === 'legacy' ? 'Баланс до журнала (непроверенный)' : g.reason;
+                                    return (
+                                        <div key={g.id} className={`p-2 rounded-lg border text-[11px] ${voided ? 'bg-gray-50 opacity-50' : 'bg-gray-50'}`}>
+                                            <div className="flex justify-between gap-2">
+                                                <span className={`font-bold text-black ${voided ? 'line-through' : ''}`}>{title}</span>
+                                                <span className={`font-black shrink-0 ${g.delta > 0 ? 'text-green-700' : 'text-red-600'}`}>{g.delta > 0 ? '+' : ''}{g.delta}</span>
+                                            </div>
+                                            <div className="text-gray-400">
+                                                {new Date(g.created_at).toLocaleDateString('ru-RU')}
+                                                {locked && (g.available_at ? ` · откроется ${new Date(g.available_at).toLocaleDateString('ru-RU')}` : ' · ждёт проверки')}
+                                                {voided && ` · аннулировано: ${g.void_note || ''}`}
+                                            </div>
+                                            {g.reason === 'deal' && g.note && !voided && <div className="text-gray-500 mt-0.5">{g.note}</div>}
+                                            {locked && voidFor !== g.id && (
+                                                <div className="flex gap-2 mt-1.5">
+                                                    <button onClick={async () => { if (await confirmDialog(`Сделать ${g.delta} золота доступным сейчас?`)) goldEntryAction(g.id, 'release'); }} className="flex-1 py-1 bg-green-100 text-green-700 rounded font-bold">Разморозить</button>
+                                                    {g.reason !== 'deal' && <button onClick={() => { setVoidFor(g.id); setVoidReason(''); }} className="flex-1 py-1 bg-red-50 text-red-600 rounded font-bold">Аннулировать</button>}
+                                                </div>
+                                            )}
+                                            {voidFor === g.id && (
+                                                <div className="flex flex-col gap-1.5 mt-1.5">
+                                                    <input autoFocus placeholder="Причина (например, «накручено квестом»)" value={voidReason} onChange={e => setVoidReason(e.target.value)} className="p-1.5 border rounded text-black bg-white" />
+                                                    <div className="flex gap-2">
+                                                        <button onClick={() => goldEntryAction(g.id, 'void', voidReason)} disabled={voidReason.trim().length < 5} className="flex-1 py-1 bg-red-600 text-white rounded font-bold disabled:opacity-40">Аннулировать</button>
+                                                        <button onClick={() => setVoidFor(null)} className="px-2 py-1 bg-gray-200 text-black rounded">Отмена</button>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+                )}
+
                 {profilePrizes.length > 0 && (
                     <div className="bg-white rounded-xl p-4 border">
                         <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">🎁 Призы ({profilePrizes.length})</h4>
@@ -1500,6 +1683,7 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                                         o.currency === 'GOLD' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'
                                     }`}>
                                         {o.price} {o.currency === 'GOLD' ? 'Gold' : 'Silver'}
+                                        {o.status === 'APPROVED' ? ' · одобрено' : o.status === 'REJECTED' ? ' · отклонено' : ' · на проверке'}
                                     </span>
                                 </div>
                             ))}

@@ -624,6 +624,27 @@ async function canManageBookings(initData) {
   } catch (e) { return false; }
 }
 
+// Шахматка, проекты и рейтинг — только подтверждённым партнёрам и сотрудникам.
+// Админ и менеджер отдела продаж могли не проходить регистрацию партнёра.
+function isStaff(user) {
+  return !!(user?.is_admin || user?.can_manage_bookings);
+}
+
+async function requireRegisteredRequest(req, res, next) {
+  try {
+    const initData = req.get('x-init-data') || req.body?.initData || '';
+    const user = await resolveDbUser(typeof initData === 'string' ? initData : '');
+    if (!user || (!isStaff(user) && !(user.is_registered && user.approval_status === 'approved'))) {
+      return res.status(401).json({ error: 'Требуется подтверждённый аккаунт' });
+    }
+    req.authUser = user;
+    next();
+  } catch (e) {
+    console.error('Registered access check error:', e.message);
+    res.status(401).json({ error: 'Требуется авторизация' });
+  }
+}
+
 // Второй фактор для админки: PIN из переменной окружения ADMIN_PIN.
 // Не задан — поведение прежнее (только Telegram-аутентификация).
 // Задан — каждый админский запрос обязан нести заголовок x-admin-pin.
@@ -3115,7 +3136,7 @@ app.post('/api/admin/user-orders', async (req, res) => {
 // =============================================
 // API: ШАХМАТКА
 // =============================================
-app.get('/api/projects', async (req, res) => {
+app.get('/api/projects', requireRegisteredRequest, async (req, res) => {
   try {
     // Риелтор не должен видеть распроданный проект в списке; админу он нужен —
     // чтобы вернуть из архива или посмотреть историю.
@@ -3245,6 +3266,10 @@ app.post('/api/projects/:id/resync', async (req, res) => {
 
 async function handleProjectUnits(req, res) {
   try {
+    const viewer = await resolveDbUser(req.get('x-init-data') || req.body?.initData || '');
+    if (!viewer || (!isStaff(viewer) && !(viewer.is_registered && viewer.approval_status === 'approved'))) {
+      return res.status(401).json({ error: 'Требуется подтверждённый аккаунт' });
+    }
     const adminView = await canManageBookingsRequest(req);
     const result = adminView
       ? await pool.query(`
@@ -3271,7 +3296,7 @@ async function handleProjectUnits(req, res) {
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 }
 
-app.get('/api/units/:projectId', handleProjectUnits);
+app.get('/api/units/:projectId', requireRegisteredRequest, handleProjectUnits);
 app.post('/api/units/:projectId', handleProjectUnits);
 
 app.post('/api/sync-xml-url', async (req, res) => {
@@ -3500,7 +3525,7 @@ app.post('/api/admin/audit', async (req, res) => {
 // =============================================
 // API: ЛИДЕРБОРД
 // =============================================
-app.get('/api/leaderboard', async (req, res) => {
+app.get('/api/leaderboard', requireRegisteredRequest, async (req, res) => {
   try {
     const { period } = req.query;
     if (period === 'month' || period === 'quarter') {
@@ -3624,7 +3649,7 @@ app.post('/api/settings', async (req, res) => {
 // =============================================
 // API: СТАТИСТИКА
 // =============================================
-app.get('/api/statistics', async (req, res) => {
+app.get('/api/statistics', requireRegisteredRequest, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT p.id, p.name,

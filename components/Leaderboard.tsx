@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { getRank } from '../types';
 import { Trophy, Loader2 } from 'lucide-react';
+import { getAuthData } from '../utils/auth';
 
 interface LeaderboardUser {
   id: number;
@@ -27,7 +28,7 @@ const Leaderboard: React.FC = () => {
   useEffect(() => {
     setLoading(true);
     const url = period === 'all' ? '/api/leaderboard' : `/api/leaderboard?period=${period}`;
-    fetch(url)
+    fetch(url, { headers: { 'x-init-data': getAuthData() } })
       .then(res => res.json())
       .then(data => setUsers(Array.isArray(data) ? data : []))
       .catch(e => console.error('Leaderboard error:', e))

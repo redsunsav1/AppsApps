@@ -33,6 +33,7 @@ const MOCK_DEFAULTS = {
 
 // Цвета для статистики проектов
 const PROJECT_COLORS = ['bg-brand-black', 'bg-brand-gold', 'bg-brand-grey', 'bg-stone-400', 'bg-blue-500', 'bg-green-500'];
+const protectedHeaders = () => ({ 'x-init-data': getAuthData() });
 
 const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
@@ -156,7 +157,7 @@ const App: React.FC = () => {
   };
 
   const fetchStats = () => {
-    fetch('/api/statistics')
+    fetch('/api/statistics', { headers: protectedHeaders() })
       .then(res => res.json())
       .then(data => {
         const mapped: ProjectStat[] = data.map((s: any, i: number) => ({
@@ -197,7 +198,7 @@ const App: React.FC = () => {
   };
 
   const fetchProjects = () => {
-    fetch('/api/projects')
+    fetch('/api/projects', { headers: protectedHeaders() })
       .then(res => res.json())
       .then(data => {
         const mapped: ProjectData[] = data.map((p: any) => ({
@@ -248,6 +249,10 @@ const App: React.FC = () => {
     fetchQuests(sUser.id);
     fetchMissions();
     fetchUnreadCount();
+    if (sUser.is_admin || sUser.can_manage_bookings || (sUser.is_registered && sUser.approval_status === 'approved')) {
+      fetchStats();
+      fetchProjects();
+    }
   };
 
   useEffect(() => {

@@ -70,10 +70,10 @@ rsync -a ~/.claude/projects/-Users-admin-Documents-GitHub-AppsApps/memory /Volum
 
 Обновлять флешку — после каждой крупной выкатки и минимум раз в месяц.
 
-> ⚠️ На 29.10.2026 **GitHub отстаёт от рабочей версии на 13 коммитов** (там `cf53da2`,
-> на проде и локально `f319fd0`). Пока это не исправлено, флешка — единственная полная
-> копия свежего кода, кроме самой Amvera. Исправление:
-> `gh auth switch --user redsunsav1 && git push origin main`.
+> ⚠️ Следите, чтобы **GitHub не отставал от прода**: после каждой выкатки в Amvera делайте
+> `git push origin main`. Проверка: `git fetch origin && git rev-list --count origin/main..main`
+> должно показать `0`. Если GitHub отстаёт, свежий код есть только на этом компьютере
+> и в Amvera.
 
 ---
 

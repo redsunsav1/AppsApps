@@ -39,6 +39,7 @@ npm start       # сервер отдаёт dist/ и API
 
 ## Документация
 
+- [RECOVERY.md](RECOVERY.md) — аварийная инструкция: что копировать на флешку и как поднять всё на новом компьютере
 - [OPERATIONS.md](OPERATIONS.md) — бэкапы, мониторинг, инциденты, чек-лист запуска
 - [PartnerBuild_Product_Roadmap.md](PartnerBuild_Product_Roadmap.md) — продуктовая дорожная карта
 - [PartnerBuild_Roadmap.md](PartnerBuild_Roadmap.md) — план рефакторинга бэкенда

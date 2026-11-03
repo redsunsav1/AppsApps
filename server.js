@@ -1455,7 +1455,6 @@ const initDb = async () => {
         ('bookings_25',      'Четверть сотни',        'Забронируйте 25 квартир',                      2000, 'SILVER', 25, 'booking',  'crown',     4),
         ('multi_project',    'Мультипроект',          'Забронируйте квартиры в 2 разных ЖК',          300,  'SILVER', 2,  'explore',  'map',       5),
         ('all_projects',     'Покоритель всех ЖК',   'Продайте квартиры в 2 разных ЖК',              5,    'GOLD',   2,  'explore',  'globe',     6),
-        ('profile_complete', 'Визитка заполнена',     'Заполните все поля профиля при регистрации',    100,  'SILVER', 1,  'profile',  'user',      7),
         ('login_streak_7',   'Неделя активности',     'Заходите в приложение 7 дней подряд',           300,  'SILVER', 7,  'loyalty',  'flame',     8),
         ('login_streak_30',  'Месяц верности',        'Заходите в приложение 30 дней подряд',          1000, 'SILVER', 30, 'loyalty',  'fire',      9)
       ON CONFLICT (code) DO NOTHING`);
@@ -1488,6 +1487,23 @@ const initDb = async () => {
       );
       console.log('🎯 Миссия all_projects: 2 ЖК, считаются сделки');
     }
+
+    // Партнёр начинает с нуля серебра и золота. «Визитка заполнена» платила серебро
+    // за саму регистрацию, ещё до одобрения заявки. Миссию убираем, выданное за неё
+    // забираем (не уводя баланс в минус). После удаления миссии шаг больше не сработает.
+    await withTransaction(async (client) => {
+      const pc = (await client.query("SELECT id, reward_amount FROM missions WHERE code = 'profile_complete' FOR UPDATE")).rows[0];
+      if (!pc) return;
+      const revoked = await client.query(
+        `UPDATE users u SET balance = GREATEST(COALESCE(u.balance, 0) - $2, 0)
+         FROM user_missions um
+         WHERE um.user_id = u.id AND um.mission_id = $1 AND um.rewarded`,
+        [pc.id, pc.reward_amount || 0]
+      );
+      await client.query('DELETE FROM user_missions WHERE mission_id = $1', [pc.id]);
+      await client.query('DELETE FROM missions WHERE id = $1', [pc.id]);
+      console.log(`🎯 Миссия profile_complete убрана, серебро списано у ${revoked.rowCount} польз.`);
+    });
 
     // Ипотечные программы на октябрь 2026 (Астрахань, новостройки). С 1.10.2026
     // семейная ипотека зависит от числа детей, единой ставки 6% больше нет.
@@ -3139,8 +3155,6 @@ app.post('/api/register', rateLimitByUser(900000, 15), async (req, res) => {
       // Дублируем уведомление админу в оба мессенджера (TG обязательно, MAX если включён)
       notifyAdmin(text, keyboard);
     }
-    // Проверить миссию «профиль заполнен» (асинхронно)
-    if (userId) checkMissions(userId, 'register').catch(() => {});
     res.json({
       success: true,
       status: registrationResult.user.approval_status || 'pending',
@@ -5104,14 +5118,6 @@ async function checkMissions(userId, trigger) {
       if (m.code === 'all_projects' && (trigger === 'booking' || trigger === 'init')) {
         const dealRes = await pool.query("SELECT count(DISTINCT project_id) FROM bookings WHERE user_id = $1 AND stage = 'COMPLETE'", [userId]);
         newProgress = parseInt(dealRes.rows[0].count);
-      }
-
-      if (m.code === 'profile_complete' && (trigger === 'register' || trigger === 'init')) {
-        const userRes = await pool.query('SELECT first_name, last_name, phone, company FROM users WHERE id = $1', [userId]);
-        const u = userRes.rows[0];
-        if (u && u.first_name && u.last_name && u.phone && u.company) {
-          newProgress = 1;
-        }
       }
 
       if (['login_streak_7', 'login_streak_30'].includes(m.code) && (trigger === 'login' || trigger === 'init')) {

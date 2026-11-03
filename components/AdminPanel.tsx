@@ -154,6 +154,8 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
   const [shopTeaser, setShopTeaser] = useState(false);
   const [prizeOrders, setPrizeOrders] = useState<any[]>([]);
   const [unverifiedGold, setUnverifiedGold] = useState<any[]>([]);
+  const [usersAudit, setUsersAudit] = useState<any | null>(null);
+  const [usersAuditLoading, setUsersAuditLoading] = useState(false);
   const [auditRows, setAuditRows] = useState<any[]>([]);
   const [auditAction, setAuditAction] = useState('');
   const [auditHasMore, setAuditHasMore] = useState(false);
@@ -297,6 +299,18 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ initData: getAuthData() }),
     }).then(r => r.json()).then(d => setUnverifiedGold(Array.isArray(d) ? d : [])).catch(() => {});
+  };
+
+  const runUsersAudit = () => {
+    setUsersAuditLoading(true);
+    fetch('/api/admin/users/audit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: getAuthData() }),
+    })
+      .then(r => r.json())
+      .then(d => { if (d?.sections) setUsersAudit(d); else showToast(d?.error || 'Проверка не удалась', 'error'); })
+      .catch(() => showToast('Проверка не удалась', 'error'))
+      .finally(() => setUsersAuditLoading(false));
   };
 
   // Открывает партнёра в «Базе» из сводки непроверенного золота.
@@ -1260,6 +1274,50 @@ export const AdminPanel = ({ onNewsAdded, onClose, editData }: AdminPanelProps) 
                         </div>
                     ) : (
                         <p className="text-xs text-gray-400">Загрузка ссылок...</p>
+                    )}
+                </div>
+
+                {/* Проверка базы: дубли, чужие права и странные анкеты среди одобренных и ожидающих */}
+                <div className="bg-gray-50 rounded-lg p-4">
+                    <div className="flex items-center justify-between gap-2">
+                        <div>
+                            <h4 className="font-bold text-black text-sm">Проверка базы</h4>
+                            <p className="text-[11px] text-gray-500">Дубли, права сотрудников, странные анкеты</p>
+                        </div>
+                        <button onClick={runUsersAudit} disabled={usersAuditLoading} className="px-3 py-2 bg-black text-white rounded-lg text-xs font-bold shrink-0 disabled:opacity-50">
+                            {usersAuditLoading ? 'Проверяю…' : 'Проверить'}
+                        </button>
+                    </div>
+                    {usersAudit && (
+                        <div className="mt-3 space-y-3">
+                            <p className="text-[11px] text-gray-500">
+                                Одобрено {usersAudit.totals?.approved ?? 0}, ждут {usersAudit.totals?.pending ?? 0}.
+                                {usersAudit.sections.length === 0 && ' Ничего подозрительного не найдено.'}
+                            </p>
+                            {usersAudit.sections.map((sec: any) => (
+                                <div key={sec.key} className={`rounded-lg border p-3 bg-white ${sec.severity === 'high' ? 'border-red-300' : sec.severity === 'medium' ? 'border-amber-300' : 'border-gray-200'}`}>
+                                    <div className="font-bold text-black text-xs">{sec.severity === 'high' ? '🔴' : sec.severity === 'medium' ? '🟠' : '⚪️'} {sec.title} ({sec.groups.length})</div>
+                                    <p className="text-[11px] text-gray-500 mb-2">{sec.hint}</p>
+                                    <div className="space-y-2">
+                                        {sec.groups.map((group: any[], gi: number) => (
+                                            <div key={gi} className={group.length > 1 ? 'border-l-2 border-gray-300 pl-2 space-y-1' : ''}>
+                                                {group.map((u: any) => (
+                                                    <div key={u.id} className="text-[11px] text-black">
+                                                        <span className="font-bold">{u.first_name} {u.last_name}</span>
+                                                        <span className="text-gray-500"> · {u.company || '—'} · {u.phone || 'без телефона'} · {u.platform === 'max' ? 'MAX' : 'Telegram'}</span>
+                                                        <span className={u.approval_status === 'approved' ? 'text-green-600' : 'text-amber-600'}> · {u.approval_status === 'approved' ? 'одобрен' : 'ждёт'}</span>
+                                                        {(u.is_admin || u.can_manage_bookings) && <span className="text-red-600"> · {u.is_admin ? 'админ' : 'отдел продаж'}</span>}
+                                                        {sec.key === 'balance' && <span className="text-gray-500"> · золото {u.gold_balance}</span>}
+                                                        <span className="text-gray-400"> · #{u.id}, {new Date(u.created_at).toLocaleDateString('ru-RU')}</span>
+                                                        {u.reasons && <div className="text-amber-700">{u.reasons.join(', ')}</div>}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                     )}
                 </div>
 

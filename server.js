@@ -15,6 +15,7 @@ import { ensureGoldSchema, addGold, voidGoldEntry, goldSummary, goldHistory, GOL
 import { verifyDealInAmo } from './server/dealVerification.js';
 import { createPollingStatus, startTelegramPolling, startMaxPolling } from './server/botPolling.js';
 import { ensurePrizeSchema, seedPrizeCatalog, publicProduct } from './server/prizes.js';
+import { auditUsers } from './server/userAudit.js';
 
 // =============================================
 // MAX Messenger Platform Adapter (inline)
@@ -4341,6 +4342,14 @@ app.post('/api/admin/users', async (req, res) => {
     );
     res.json(result.rows.map(row => ({ ...row, avatar_url: avatarPath(row) })));
   } catch (e) { console.error('Admin users error:', e); res.status(500).json({ error: 'Server error' }); }
+});
+
+// Проверка базы: дубли, чужие права, странные анкеты — для админа перед одобрением.
+app.post('/api/admin/users/audit', async (req, res) => {
+  try {
+    if (!await isAdminRequest(req)) return res.status(403).json({ error: 'Forbidden' });
+    res.json(await auditUsers(pool));
+  } catch (e) { console.error('Users audit error:', e); res.status(500).json({ error: 'Server error' }); }
 });
 
 app.patch('/api/admin/users/:id/roles', async (req, res) => {

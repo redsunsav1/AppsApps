@@ -50,4 +50,18 @@ const reg = (await q('SELECT first_name, company, company_type FROM users WHERE 
 check('регистрация с «&» и «<» проходит, тип агентства только из списка',
   r.status === 200 && reg?.company === 'АН Дом & Ко' && reg?.company_type === 'agency', { r, reg });
 
+// --- Проверка базы: видит только админ, ловит дубль телефона и золото без сделок
+r = await post('/api/admin/users/audit', 1002);
+check('проверку базы партнёр не видит', r.status === 403, r.status);
+// Одобренным двоим один номер не даст уникальный индекс, а заявке в ожидании — даст.
+const veraPhone = (await q('SELECT phone, phone_normalized FROM users WHERE id = 4'))[0];
+await q(`UPDATE users SET phone = '+7 999 000-00-02', phone_normalized = '79990000002' WHERE id = 4`);
+r = await post('/api/admin/users/audit', 1001);
+const section = (key) => r.data?.sections?.find((s) => s.key === key);
+check('проверка базы находит один телефон у двух аккаунтов',
+  section('dup_phone')?.groups.some((g) => g.map((u) => u.id).sort().join() === '2,4'), r.data);
+check('проверка базы показывает админа в правах сотрудника', section('staff')?.groups.some((g) => g[0].id === 1), section('staff'));
+check('в проверке базы нет telegram_id', !JSON.stringify(r.data).includes('telegram_id'), null);
+await q('UPDATE users SET phone = $1, phone_normalized = $2 WHERE id = 4', [veraPhone.phone, veraPhone.phone_normalized]);
+
 await finish();

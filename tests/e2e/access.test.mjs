@@ -30,6 +30,10 @@ const board = (await get('/api/leaderboard', 1003)).data;
 const anna = board.find((u) => u.id === 2);
 check('в рейтинге видны имя, фамилия и агентство', anna && anna.name === 'Анна' && anna.last_name === 'Петрова' && anna.company === 'Агентство', anna);
 check('в рейтинге нет telegram_id и телефонов', board.every((u) => !('telegram_id' in u) && !('phone' in u)), board[0]);
+await q('UPDATE users SET deals_closed = 99, xp_points = 9999 WHERE id = 1');
+const boardAll = (await get('/api/leaderboard', 1003)).data;
+check('админа нет в рейтинге, даже с баллами и сделками', !boardAll.some((u) => u.id === 1), boardAll[0]);
+await q('UPDATE users SET deals_closed = 0, xp_points = 0 WHERE id = 1');
 
 // --- Согласие на рекламу
 r = await post('/api/privacy/preferences', 1002, { marketing: true });

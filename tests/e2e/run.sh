@@ -66,7 +66,7 @@ kill "$SERVER_PID"; wait "$SERVER_PID" 2>/dev/null || true
 start_server            # миграции поверх тестовых данных (старое золото → журнал)
 
 status=0
-for t in shop access; do
+for t in shop access security; do
   echo "── $t"
   node "$ROOT/tests/e2e/$t.test.mjs" || status=1
 done

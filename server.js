@@ -47,9 +47,13 @@ function _maxValidateInitData(initData) {
     const secretKey1 = crypto.createHmac('sha256', 'WebAppData').update(token).digest();
     const checkHash1 = crypto.createHmac('sha256', secretKey1).update(dataCheckString).digest('hex');
     const checkHash2 = crypto.createHmac('sha256', token).update(dataCheckString).digest('hex');
-    if (!safeEqual(checkHash1, hash) && !safeEqual(checkHash2, hash)) return null;
+    const fail = (reason) => {
+      lastMaxAuthFailure = { at: new Date().toISOString(), reason, fields: pairs.map(p => p.split('=')[0]) };
+      return null;
+    };
+    if (!safeEqual(checkHash1, hash) && !safeEqual(checkHash2, hash)) return fail('подпись не совпала');
     // Формат MAX менялся; если auth_date нет, не запираем всех пользователей MAX.
-    if (!initDataAgeOk(urlParams, { required: false })) return null;
+    if (!initDataAgeOk(urlParams, { required: false })) return fail('initData старше суток');
     const userStr = urlParams.get('user');
     if (userStr) {
       try {
@@ -66,9 +70,15 @@ function _maxValidateInitData(initData) {
   }
 }
 
+// Почему последний вход через MAX не прошёл проверку подписи — для диагностики бота.
+// Только имена полей и причина, без значений.
+let lastMaxAuthFailure = null;
+
 function parseMaxInitData(initData) {
   if (!initData) return null;
-  if (process.env.MAX_TRUST_INIT_DATA === 'true') {
+  // Без проверки подписи кто угодно входит под любым аккаунтом MAX, поэтому
+  // режим отладки работает только в разработке, даже если переменная задана.
+  if (process.env.MAX_TRUST_INIT_DATA === 'true' && process.env.NODE_ENV === 'development') {
     console.warn('[MAX] ⚠️ MAX_TRUST_INIT_DATA=true — валидация отключена (dev-режим)');
     try {
       const urlParams = new URLSearchParams(initData);
@@ -275,6 +285,7 @@ const LEADERBOARD_CONSENT_VERSION = process.env.LEADERBOARD_CONSENT_VERSION || '
 // Доверяем reverse proxy Amvera — req.ip берётся из X-Forwarded-For,
 // иначе все клиенты за прокси выглядят как один IP и попадают в общий rate-limit
 app.set('trust proxy', true);
+app.disable('x-powered-by');
 
 // Принимаем только то, что реально бывает в документах сделки: фото, PDF, Word.
 // Всё остальное (архивы, экзешники, скрипты) отсекается до попадания в память.
@@ -784,26 +795,45 @@ async function requireRegisteredRequest(req, res, next) {
 // Не задан — поведение прежнее (только Telegram-аутентификация).
 // Задан — каждый админский запрос обязан нести заголовок x-admin-pin.
 // Сравнение через хэши, чтобы длина PIN не утекала по таймингу.
+// Неверные PIN считаем на весь сервер: PIN проверяется в каждом админском запросе,
+// и лимит по initData обходится, если каждый раз присылать новые данные входа.
+// После ADMIN_PIN_MAX_FAILS ошибок за 15 минут PIN не принимается до конца окна.
+const ADMIN_PIN_FAIL_WINDOW_MS = 15 * 60 * 1000;
+const ADMIN_PIN_MAX_FAILS = 20;
+const adminPinFails = { start: 0, count: 0, alerted: false };
+
 function adminPinOk(req) {
   const pin = process.env.ADMIN_PIN;
   if (!pin) return true;
   const supplied = req?.get?.('x-admin-pin') || '';
   if (!supplied) return false;
+  const now = Date.now();
+  if (now - adminPinFails.start > ADMIN_PIN_FAIL_WINDOW_MS) {
+    adminPinFails.start = now; adminPinFails.count = 0; adminPinFails.alerted = false;
+  }
+  if (adminPinFails.count >= ADMIN_PIN_MAX_FAILS) return false;
   const a = crypto.createHash('sha256').update(String(supplied)).digest();
   const b = crypto.createHash('sha256').update(String(pin)).digest();
-  return crypto.timingSafeEqual(a, b);
+  if (crypto.timingSafeEqual(a, b)) return true;
+  if (++adminPinFails.count >= ADMIN_PIN_MAX_FAILS && !adminPinFails.alerted) {
+    adminPinFails.alerted = true;
+    notifyAdmin('🚨 <b>Подбор PIN админки</b>\n\nСлишком много неверных PIN за 15 минут. Вход в админку закрыт на 15 минут. Если это не вы — смените ADMIN_PIN в Amvera.').catch(() => {});
+  }
+  return false;
 }
 
+// Сначала роль, потом PIN: иначе посторонний мог бы неверными PIN исчерпать
+// общий счётчик и запереть админку настоящему админу.
 async function isAdminRequest(req) {
-  if (!adminPinOk(req)) return false;
   const initData = req.body?.initData || req.get('x-init-data') || req.query?.initData || '';
-  return isAdmin(typeof initData === 'string' ? initData : '');
+  if (!await isAdmin(typeof initData === 'string' ? initData : '')) return false;
+  return adminPinOk(req);
 }
 
 async function canManageBookingsRequest(req) {
-  if (!adminPinOk(req)) return false;
   const initData = req.body?.initData || req.get('x-init-data') || req.query?.initData || '';
-  return canManageBookings(typeof initData === 'string' ? initData : '');
+  if (!await canManageBookings(typeof initData === 'string' ? initData : '')) return false;
+  return adminPinOk(req);
 }
 
 // =============================================
@@ -857,6 +887,29 @@ async function sendDocumentEmail(subject, files, bookingInfo) {
 // =============================================
 // TELEGRAM BOT NOTIFICATIONS
 // =============================================
+// Разметку в уведомлениях могут сломать данные партнёра (имя, агентство с «&» или «<»).
+// Тогда Telegram отклоняет сообщение целиком, поэтому повторяем его простым текстом.
+function htmlToPlainText(html) {
+  return String(html)
+    .replace(/<[^>]*>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+}
+
+async function sendTelegramMessage(BOT_TOKEN, body) {
+  const send = async (payload) => {
+    const resp = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    });
+    return resp.json();
+  };
+  const result = await send(body);
+  if (!result.ok && /can't parse entities/i.test(result.description || '')) {
+    const { parse_mode, ...rest } = body;
+    return send({ ...rest, text: htmlToPlainText(body.text) });
+  }
+  return result;
+}
+
 async function notifyUserTelegram(telegramId, text, inlineKeyboard) {
   const BOT_TOKEN = process.env.BOT_TOKEN;
   if (!BOT_TOKEN) { console.warn('⚠️ notifyUser: BOT_TOKEN не задан'); return { ok: false, error: 'no BOT_TOKEN' }; }
@@ -865,10 +918,7 @@ async function notifyUserTelegram(telegramId, text, inlineKeyboard) {
     const body = { chat_id: telegramId, text, parse_mode: 'HTML' };
     if (inlineKeyboard) body.reply_markup = JSON.stringify({ inline_keyboard: inlineKeyboard });
     console.log(`📤 Sending notification to ${telegramId}...`);
-    const resp = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-    });
-    const result = await resp.json();
+    const result = await sendTelegramMessage(BOT_TOKEN, body);
     if (!result.ok) console.error(`❌ Telegram API error for ${telegramId}:`, result.description || JSON.stringify(result));
     else console.log(`✅ Notification sent to ${telegramId}`);
     return result;
@@ -885,9 +935,8 @@ async function notifyAdminTelegram(text, inlineKeyboard) {
   try {
     const body = { chat_id: ADMIN_CHAT_ID, text, parse_mode: 'HTML' };
     if (inlineKeyboard) body.reply_markup = JSON.stringify({ inline_keyboard: inlineKeyboard });
-    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-    });
+    const result = await sendTelegramMessage(BOT_TOKEN, body);
+    if (!result.ok) console.error('❌ Telegram admin notify error:', result.description || JSON.stringify(result));
   } catch (e) { console.error('Telegram notify error:', e.message); }
 }
 
@@ -2471,6 +2520,8 @@ app.get(['/api/telegram/status', '/api/bot/status'], async (req, res) => {
       subscriptions: maxSubscriptions,
       lastUpdate: lastMaxUpdate,
       lastStartReply: lastMaxStartReply,
+      trustInitDataIgnored: process.env.MAX_TRUST_INIT_DATA === 'true' && process.env.NODE_ENV !== 'development',
+      lastAuthFailure: lastMaxAuthFailure,
     },
   };
   telegramStatusCache = { at: Date.now(), data };
@@ -2763,7 +2814,7 @@ async function applyApplicationDecision(userId, action) {
       return { ok: true, label: 'ПРИВЯЗАНО', notification: '🔗 Привязано!' };
     }
 
-    notifyUser(result.user, `🎉 <b>Добро пожаловать в Клуб Партнёров!</b>\n\nПривет, ${result.user.first_name || 'партнёр'}! Ваша заявка одобрена.`);
+    notifyUser(result.user, `🎉 <b>Добро пожаловать в Клуб Партнёров!</b>\n\nПривет, ${escapeHtml(result.user.first_name || 'партнёр')}! Ваша заявка одобрена.`);
     return { ok: true, label: 'ОДОБРЕНО', notification: '✅ Одобрено!' };
   }
 
@@ -2960,7 +3011,10 @@ app.post('/api/avatar', async (req, res) => {
     const dbUser = await resolveDbUser(initData);
     if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
     if (!avatarData) return res.status(400).json({ error: 'No avatar data' });
-    if (avatarData.length > 1400000) return res.status(400).json({ error: 'Image too large' });
+    if (typeof avatarData !== 'string' || avatarData.length > 1400000) return res.status(400).json({ error: 'Image too large' });
+    // Только картинка в base64. Иначе вместо фото можно положить HTML со скриптом,
+    // и ссылка /api/avatar/<id> выполнит его от имени нашего домена.
+    if (!AVATAR_DATA_URL_RE.test(avatarData)) return res.status(400).json({ error: 'Нужна картинка JPEG, PNG или WebP' });
     await pool.query('UPDATE users SET avatar_url = $1 WHERE id = $2', [avatarData, dbUser.id]);
     res.json({ success: true, avatar_url: avatarPath({ id: dbUser.id, avatar_url: avatarData }) });
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
@@ -2969,6 +3023,8 @@ app.post('/api/avatar', async (req, res) => {
 // Отдача аватарки как обычной картинки. Списки и профили теперь содержат лёгкую
 // ссылку /api/avatar/<id> вместо мегабайтного base64 — браузер грузит фото
 // отдельно и кэширует. В ответе только изображение, без имён и телефонов.
+const AVATAR_DATA_URL_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
+
 function avatarPath(userRow) {
   if (!userRow?.avatar_url) return null;
   const secret = process.env.AVATAR_SIGNING_SECRET || process.env.ADMIN_SECRET || process.env.BOT_TOKEN;
@@ -2995,13 +3051,13 @@ app.get('/api/avatar/:id', async (req, res) => {
     }
     const r = await pool.query('SELECT avatar_url FROM users WHERE id = $1', [id]);
     const data = r.rows[0]?.avatar_url;
-    if (!data) return res.status(404).end();
-    if (!String(data).startsWith('data:')) return res.redirect(data);
-    const match = String(data).match(/^data:([^;,]+)?(;base64)?,(.*)$/s);
+    // Старые записи не проверялись при загрузке: отдаём только настоящие картинки,
+    // без редиректов на внешние адреса и без HTML/SVG.
+    const match = String(data || '').match(AVATAR_DATA_URL_RE);
     if (!match) return res.status(404).end();
-    const mime = match[1] || 'image/jpeg';
-    const buf = match[2] ? Buffer.from(match[3], 'base64') : Buffer.from(decodeURIComponent(match[3]), 'utf8');
-    res.setHeader('Content-Type', mime);
+    const buf = Buffer.from(String(data).slice(String(data).indexOf(',') + 1), 'base64');
+    res.setHeader('Content-Type', `image/${match[1]}`);
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
     res.setHeader('Cache-Control', 'private, max-age=900');
     res.send(buf);
   } catch (e) { res.status(500).end(); }
@@ -3012,9 +3068,16 @@ app.get('/api/avatar/:id', async (req, res) => {
 // =============================================
 app.post('/api/register', rateLimitByUser(900000, 15), async (req, res) => {
   const {
-    initData, firstName, lastName, companyType, company, phone, consentPd,
+    initData, phone, consentPd,
     consentMarketing = false, consentLeaderboard = false, contactResponse,
   } = req.body;
+  const companyType = req.body.companyType === 'ip' ? 'ip' : 'agency';
+  // Имя и агентство видят админ в уведомлении и все партнёры в рейтинге:
+  // только строка разумной длины, без объектов и мегабайтов текста.
+  const cleanField = (v) => (typeof v === 'string' ? v.trim().slice(0, 100) : '');
+  const firstName = cleanField(req.body.firstName);
+  const lastName = cleanField(req.body.lastName);
+  const company = cleanField(req.body.company);
   try {
     const authUser = await resolveDbUser(initData);
     if (!authUser) return res.status(401).json({ error: 'Invalid signature' });
@@ -3139,7 +3202,7 @@ app.post('/api/register', rateLimitByUser(900000, 15), async (req, res) => {
       : `${effectivePhone} ⚠️ введён вручную`;
     if (registrationResult.alreadyApproved) {
       notifyAdmin(
-        `ℹ️ <b>Пользователь обновил профиль</b>\n\n👤 ${registrationResult.user.first_name || firstName} ${registrationResult.user.last_name || lastName || ''}\n🏢 ${registrationResult.user.company || company}\n📞 ${phoneLabel}\n📲 Вход: ${platformLabel}`
+        `ℹ️ <b>Пользователь обновил профиль</b>\n\n👤 ${escapeHtml(registrationResult.user.first_name || firstName)} ${escapeHtml(registrationResult.user.last_name || lastName || '')}\n🏢 ${escapeHtml(registrationResult.user.company || company)}\n📞 ${escapeHtml(phoneLabel)}\n📲 Вход: ${platformLabel}`
       );
     } else {
       const requestLabel = registrationResult.needsAdminLinkApproval
@@ -3147,7 +3210,9 @@ app.post('/api/register', rateLimitByUser(900000, 15), async (req, res) => {
         : registrationResult.duplicatePending
           ? '⚠️ <b>Повторная заявка с тем же телефоном</b>'
           : '📋 <b>Новая заявка на вход!</b>';
-      const text = `${requestLabel}\n\n👤 ${firstName} ${lastName}\n🏢 ${typeLabel}: ${company}\n📞 ${phoneLabel}\n📲 ${platformLabel}`;
+      // Имя и агентство — текст партнёра: «&» или «<» в нём ломали HTML-разметку,
+      // и заявка с кнопками одобрения до админа не доходила.
+      const text = `${requestLabel}\n\n👤 ${escapeHtml(firstName)} ${escapeHtml(lastName)}\n🏢 ${typeLabel}: ${escapeHtml(company)}\n📞 ${escapeHtml(phoneLabel)}\n📲 ${platformLabel}`;
       const keyboard = [[
         { text: '✅ Одобрить', callback_data: `approve_${userId}` },
         { text: '❌ Отклонить', callback_data: `reject_${userId}` }
@@ -3269,6 +3334,28 @@ app.post('/api/link/code', rateLimit(900000, 20), async (req, res) => {
   }
 });
 
+// Неверные коды считаем по аккаунту и по всему серверу. Код ищется среди всех
+// выданных, и угаданный чужой код привязал бы мессенджер злоумышленника к чужому
+// аккаунту. Лимит по IP тут не помогает: адрес берётся из X-Forwarded-For.
+const LINK_FAIL_WINDOW_MS = 15 * 60 * 1000;
+const LINK_FAILS_PER_USER = 5;
+const LINK_FAILS_GLOBAL = 100;
+const linkFails = { global: { start: 0, count: 0 }, byUser: new Map() };
+
+function linkFailCounter(key) {
+  const now = Date.now();
+  let e = key === 'global' ? linkFails.global : linkFails.byUser.get(key);
+  if (!e) { e = { start: now, count: 0 }; linkFails.byUser.set(key, e); }
+  if (now - e.start > LINK_FAIL_WINDOW_MS) { e.start = now; e.count = 0; }
+  return e;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of linkFails.byUser) if (now - v.start > LINK_FAIL_WINDOW_MS) linkFails.byUser.delete(k);
+}, LINK_FAIL_WINDOW_MS);
+
+let linkGlobalAlerted = 0;
+
 // Погасить код из второго мессенджера и слить аккаунты.
 app.post('/api/link/redeem', rateLimit(900000, 20), async (req, res) => {
   const { initData, code } = req.body;
@@ -3277,6 +3364,15 @@ app.post('/api/link/redeem', rateLimit(900000, 20), async (req, res) => {
     if (!authUser) return res.status(401).json({ error: 'Invalid signature' });
     const normalizedCode = String(code || '').replace(/\D/g, '');
     if (normalizedCode.length !== 6) return res.status(400).json({ error: 'Код состоит из 6 цифр' });
+    const userFails = linkFailCounter(authUser.id);
+    const globalFails = linkFailCounter('global');
+    if (userFails.count >= LINK_FAILS_PER_USER || globalFails.count >= LINK_FAILS_GLOBAL) {
+      if (globalFails.count >= LINK_FAILS_GLOBAL && Date.now() - linkGlobalAlerted > LINK_FAIL_WINDOW_MS) {
+        linkGlobalAlerted = Date.now();
+        notifyAdmin('⚠️ <b>Похоже на подбор кодов привязки</b>\n\nСлишком много неверных кодов за 15 минут. Привязка мессенджеров приостановлена на 15 минут.').catch(() => {});
+      }
+      return res.status(429).json({ error: 'Слишком много неверных кодов. Попробуйте через 15 минут.' });
+    }
 
     const result = await withTransaction(async (client) => {
       const codeRes = await client.query(`
@@ -3284,7 +3380,11 @@ app.post('/api/link/redeem', rateLimit(900000, 20), async (req, res) => {
         WHERE code_hash = $1 AND used_at IS NULL AND expires_at > NOW()
         FOR UPDATE
       `, [hashLinkCode(normalizedCode)]);
-      if (codeRes.rows.length === 0) throw { status: 400, msg: 'Код неверный или истёк' };
+      if (codeRes.rows.length === 0) {
+        userFails.count++;
+        globalFails.count++;
+        throw { status: 400, msg: 'Код неверный или истёк' };
+      }
       const linkCode = codeRes.rows[0];
 
       if (Number(linkCode.user_id) === Number(authUser.id)) {
@@ -3786,10 +3886,9 @@ app.post('/api/buy', rateLimitByUser(900000, 30), async (req, res) => {
 
 // Админ по запросу, с проверкой PIN. Возвращает строку пользователя — нужна для журнала.
 async function adminActor(req) {
-  if (!adminPinOk(req)) return null;
   const initData = req.body?.initData || req.get('x-init-data') || '';
   const user = await resolveDbUser(typeof initData === 'string' ? initData : '');
-  return user?.is_admin ? user : null;
+  return user?.is_admin && adminPinOk(req) ? user : null;
 }
 
 // Золото и заявки самого партнёра — для магазина.
@@ -4377,6 +4476,10 @@ app.post('/api/admin/audit', async (req, res) => {
 // =============================================
 // API: ЛИДЕРБОРД
 // =============================================
+// Сотрудники застройщика (админ, отдел продаж) в рейтинге не соревнуются:
+// их тестовые брони и баллы ставили их в топ, и риелторы видели незнакомое имя.
+const LEADERBOARD_NOT_STAFF = 'AND COALESCE(u.is_admin, FALSE) = FALSE AND COALESCE(u.can_manage_bookings, FALSE) = FALSE';
+
 app.get('/api/leaderboard', requireRegisteredRequest, async (req, res) => {
   try {
     const { period } = req.query;
@@ -4389,7 +4492,7 @@ app.get('/api/leaderboard', requireRegisteredRequest, async (req, res) => {
           COUNT(b.id)::int as deals, u.xp_points as xp
         FROM users u
         LEFT JOIN bookings b ON b.user_id = u.id AND b.stage = 'COMPLETE' ${dateFilter}
-        WHERE u.is_registered = TRUE
+        WHERE u.is_registered = TRUE ${LEADERBOARD_NOT_STAFF}
         GROUP BY u.id
         HAVING COUNT(b.id) > 0
         ORDER BY deals DESC, u.xp_points DESC LIMIT 50
@@ -4399,7 +4502,7 @@ app.get('/api/leaderboard', requireRegisteredRequest, async (req, res) => {
       const result = await pool.query(`
         SELECT id, first_name as name, last_name, company,
           deals_closed as deals, xp_points as xp
-        FROM users WHERE is_registered = TRUE
+        FROM users u WHERE u.is_registered = TRUE ${LEADERBOARD_NOT_STAFF}
         ORDER BY deals_closed DESC, xp_points DESC LIMIT 50
       `);
       res.json(result.rows);
@@ -4433,16 +4536,23 @@ app.post('/api/quests/claim', async (req, res) => {
   try {
     const user = await resolveDbUser(initData);
     if (!user) return res.status(401).json({ error: 'Invalid signature' });
+    // Серебро — только подтверждённым партнёрам: иначе любой, кто открыл бота,
+    // получал бы его до одобрения заявки.
+    if (!user.is_registered || user.approval_status !== 'approved') {
+      return res.status(403).json({ error: 'Задания откроются после одобрения заявки' });
+    }
     const questRes = await pool.query('SELECT * FROM quests WHERE id = $1 AND is_active = TRUE', [questId]);
     if (questRes.rows.length === 0) return res.status(404).json({ error: 'Quest not found' });
     const quest = questRes.rows[0];
     if (quest.type === 'DEAL') {
       return res.status(400).json({ error: 'Продажа засчитывается автоматически, когда отдел продаж подтвердит сделку' });
     }
-    const checkRes = await pool.query('SELECT id FROM quest_completions WHERE user_id = $1 AND quest_id = $2 AND DATE(completed_at) = CURRENT_DATE', [user.id, questId]);
-    if (checkRes.rows.length > 0) return res.status(400).json({ error: 'Квест уже выполнен сегодня' });
-
+    // Проверка «уже сегодня» и запись — под блокировкой строки пользователя:
+    // параллельные нажатия раньше проходили проверку одновременно и платили несколько раз.
     await withTransaction(async (client) => {
+      await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [user.id]);
+      const checkRes = await client.query('SELECT id FROM quest_completions WHERE user_id = $1 AND quest_id = $2 AND DATE(completed_at) = CURRENT_DATE', [user.id, questId]);
+      if (checkRes.rows.length > 0) throw { status: 400, msg: 'Квест уже выполнен сегодня' };
       await client.query('INSERT INTO quest_completions (user_id, quest_id) VALUES ($1, $2)', [user.id, questId]);
       // Квест подтверждается нажатием кнопки — поэтому только серебро, даже если
       // в базе по ошибке осталось GOLD.
@@ -4451,6 +4561,7 @@ app.post('/api/quests/claim', async (req, res) => {
     const updatedUser = await pool.query('SELECT * FROM users WHERE id = $1', [user.id]);
     res.json({ success: true, user: updatedUser.rows[0] });
   } catch (e) {
+    if (e?.status) return res.status(e.status).json({ error: e.msg });
     res.status(500).json({ error: 'Server error' });
   }
 });

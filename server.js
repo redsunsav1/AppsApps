@@ -4702,8 +4702,9 @@ async function getAmoCRMDriveUrl() {
     console.warn('⚠️ AmoCRM drive_url lookup error:', e.message);
   }
 
-  amocrmDriveUrlCache = `https://${AMOCRM_SUBDOMAIN}.amocrm.ru`;
-  return amocrmDriveUrlCache;
+  // Запасной адрес не запоминаем: иначе один сбой при старте ломал загрузку
+  // файлов до перезапуска сервера, а настоящий drive_url так и не спрашивался.
+  return `https://${AMOCRM_SUBDOMAIN}.amocrm.ru`;
 }
 
 async function uploadFileToAmoCRM(file, fallbackPrefix = 'file') {
@@ -4955,33 +4956,55 @@ async function syncToAmoCRM(booking, userData, unitData) {
 
 // Прикрепить примечание и файлы к лиду в AmoCRM.
 // Ошибки по файлам не блокируют бронь: почта остаётся резервным каналом.
+// Файл, не дошедший до лида, раньше оставался только в логе: менеджер видел
+// заявку с подписью «Паспорт: фото.jpg», а самого фото не было. Теперь админ
+// получает причину по каждой сделке — это редкое событие, а не поток.
+function alertAmoCRMFilesLost(leadId, fileList, reasons) {
+  const names = fileList.map(f => f?.originalname || 'файл').join(', ');
+  notifyAdmin(
+    `🚨 <b>Файл не прикрепился к лиду amoCRM</b>\n\nЛид: ${escapeHtml(leadId)}\nФайлы: ${escapeHtml(names)}\n\n` +
+    `${escapeHtml(reasons.join('\n').slice(0, 1500))}`
+  ).catch(() => {});
+}
+
 async function attachNoteToAmoCRM(leadId, text, files = [], fallbackPrefix = 'document') {
   const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
   const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
   if (!AMOCRM_SUBDOMAIN || !AMOCRM_TOKEN || !leadId) return;
   const fileList = Array.isArray(files) ? files.filter(Boolean) : (files ? [files] : []);
+  const problems = [];
   try {
     await addAmoCRMLeadNote(leadId, { note_type: 'common', params: { text } });
     console.log(`📎 AmoCRM: примечание добавлено к лиду ${leadId}`);
 
-    if (!fileList.length || !isAmoCRMFileUploadEnabled()) return;
+    if (!fileList.length) return;
+    if (!isAmoCRMFileUploadEnabled()) {
+      alertAmoCRMFilesLost(leadId, fileList, ['Прикрепление файлов выключено переменной AMOCRM_ATTACH_FILES=false или ENABLE_DOCUMENT_UPLOAD=false.']);
+      return;
+    }
 
     const uploadedFiles = [];
     for (const file of fileList) {
       try {
         const uploaded = await uploadFileToAmoCRM(file, fallbackPrefix);
         if (uploaded?.uuid) uploadedFiles.push(uploaded);
+        else problems.push(`${file?.originalname || 'файл'}: пустой файл или нет AMOCRM_TOKEN`);
       } catch (e) {
         console.error(`AmoCRM file upload error (${file?.originalname || 'file'}):`, e.message);
+        problems.push(`${file?.originalname || 'файл'}: ${e.name === 'AbortError' ? 'amoCRM не ответила за отведённое время' : e.message}`);
       }
     }
 
-    if (!uploadedFiles.length) return;
+    if (!uploadedFiles.length) {
+      alertAmoCRMFilesLost(leadId, fileList, problems);
+      return;
+    }
 
     try {
       await bindFilesToAmoCRMLead(leadId, uploadedFiles);
     } catch (e) {
       console.error('AmoCRM file bind error:', e.message);
+      problems.push(`привязка к лиду: ${e.message}`);
     }
 
     for (const file of uploadedFiles) {
@@ -4997,9 +5020,14 @@ async function attachNoteToAmoCRM(leadId, text, files = [], fallbackPrefix = 'do
         console.log(`📎 AmoCRM: файл прикреплён к лиду ${leadId}: ${file.original_name || file.name || file.uuid}`);
       } catch (e) {
         console.error(`AmoCRM attachment note error (${file.uuid}):`, e.message);
+        problems.push(`примечание с файлом: ${e.message}`);
       }
     }
-  } catch (e) { console.error('AmoCRM note error:', e.message); }
+    if (problems.length) alertAmoCRMFilesLost(leadId, fileList, problems);
+  } catch (e) {
+    console.error('AmoCRM note error:', e.message);
+    if (fileList.length) alertAmoCRMFilesLost(leadId, fileList, [...problems, `примечание: ${e.message}`]);
+  }
 }
 
 // =============================================

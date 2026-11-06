@@ -9,11 +9,12 @@ interface LeaderboardUser {
   last_name?: string | null;
   company: string;
   deals: number;
-  xp: number;
-  rank: string;
 }
 
 type Period = 'all' | 'quarter' | 'month';
+
+const MEDALS = ['🥇', '🥈', '🥉'];
+const fullName = (u: LeaderboardUser) => [u.name, u.last_name].filter(Boolean).join(' ');
 
 const TABS: { key: Period; label: string }[] = [
   { key: 'all', label: 'Все время' },
@@ -36,11 +37,16 @@ const Leaderboard: React.FC = () => {
       .finally(() => setLoading(false));
   }, [period]);
 
+  // Сервер отдаёт партнёров по убыванию продаж. На пьедестал попадают только
+  // те, у кого есть хотя бы одна монета за сделку, остальные — в общем списке.
+  const podium = users.filter(u => u.deals > 0).slice(0, 3);
+  const rest = users.filter(u => !podium.includes(u));
+
   return (
     <div className="pb-36 pt-6 animate-fade-in">
       <header className="px-6 mb-4">
         <h2 className="text-2xl font-extrabold text-[#433830]">Топ Партнеров</h2>
-        <p className="text-gray-500 text-sm mt-1">Рейтинг эффективности</p>
+        <p className="text-gray-500 text-sm mt-1">Место решают только продажи — золотые монеты за сделки</p>
       </header>
 
       {/* Period tabs */}
@@ -66,61 +72,63 @@ const Leaderboard: React.FC = () => {
         <div className="flex items-center justify-center h-64">
           <Loader2 className="animate-spin text-brand-gold" size={32} />
         </div>
-      ) : users.length === 0 ? (
-        <div className="px-6 text-center text-gray-400 mt-10">
-          <p>Нет данных за выбранный период.</p>
-        </div>
       ) : (
-        <div className="px-4 space-y-3">
-          {users.map((leader, index) => {
-            const isTop3 = index < 3;
-            const rankName = leader.rank || getRank(leader.deals);
-
-            return (
-              <div
-                key={leader.id}
-                className={`
-                  flex items-center p-4 rounded-2xl border transition-all
-                  ${isTop3 ? 'bg-brand-white border-brand-light shadow-sm' : 'bg-transparent border-transparent'}
-                `}
-              >
-                <div className={`
-                  w-8 font-bold text-sm mr-3 text-center shrink-0
-                  ${index === 0 ? 'text-[#BA8F50] text-lg' :
-                    index === 1 ? 'text-[#433830]/80' :
-                    index === 2 ? 'text-[#433830]/60' : 'text-gray-400'}
-                `}>
-                  {index + 1}
+        <>
+          {/* Пьедестал: призовые места занимают только те, у кого есть продажи */}
+          <div className="px-4 mb-5 space-y-2">
+            {[0, 1, 2].map(place => {
+              const leader = podium[place];
+              return (
+                <div
+                  key={place}
+                  className={`flex items-center p-4 rounded-2xl border ${leader ? 'bg-brand-white border-brand-light shadow-sm' : 'border-dashed border-[#EAE0D5]'}`}
+                >
+                  <div className="w-8 mr-3 text-center text-xl shrink-0">{MEDALS[place]}</div>
+                  {leader ? (
+                    <>
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-bold text-[#433830] text-sm truncate">{fullName(leader)}</h4>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[9px] bg-[#F2EBDF] text-[#433830]/80 px-1.5 py-0.5 rounded-md font-bold whitespace-nowrap">
+                            {getRank(leader.deals)}
+                          </span>
+                          <span className="text-[10px] text-gray-400 truncate">{leader.company}</span>
+                        </div>
+                      </div>
+                      <div className="font-bold text-[#433830] text-sm shrink-0 ml-2">🪙 {leader.deals}</div>
+                      {place === 0 && <Trophy size={20} className="text-brand-gold ml-3 shrink-0" />}
+                    </>
+                  ) : (
+                    <div className="flex-1 text-sm text-[#433830]/50">Место свободно — займите его первой продажей</div>
+                  )}
                 </div>
+              );
+            })}
+          </div>
 
-                <div className="w-10 h-10 rounded-full bg-brand-cream border border-[#EAE0D5] mr-3 shrink-0 flex items-center justify-center text-brand-black font-bold text-sm">
-                  {leader.name?.charAt(0) || '?'}
-                </div>
-
-                <div className="flex-1 min-w-0">
-                  <h4 className="font-bold text-[#433830] text-sm truncate">{[leader.name, leader.last_name].filter(Boolean).join(' ')}</h4>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-[9px] bg-[#F2EBDF] text-[#433830]/80 px-1.5 py-0.5 rounded-md font-bold whitespace-nowrap">
-                      {rankName}
-                    </span>
-                    <span className="text-[10px] text-gray-400 truncate">
-                      {leader.company}
-                    </span>
+          {rest.length > 0 && (
+            <div className="px-4">
+              <h3 className="px-2 mb-2 text-xs font-bold text-[#433830]/60 uppercase tracking-wide">Все партнёры</h3>
+              <div className="space-y-1">
+                {rest.map((leader, i) => (
+                  <div key={leader.id} className="flex items-center px-3 py-3 rounded-xl">
+                    <div className="w-8 text-sm text-gray-400 font-bold mr-3 text-center shrink-0">
+                      {leader.deals > 0 ? podium.length + i + 1 : '—'}
+                    </div>
+                    <div className="w-9 h-9 rounded-full bg-brand-cream border border-[#EAE0D5] mr-3 shrink-0 flex items-center justify-center text-brand-black font-bold text-sm">
+                      {leader.name?.charAt(0) || '?'}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="font-bold text-[#433830] text-sm truncate">{fullName(leader)}</h4>
+                      <span className="text-[10px] text-gray-400 truncate block">{leader.company}</span>
+                    </div>
+                    <div className="text-sm font-bold text-[#433830]/70 shrink-0 ml-2">🪙 {leader.deals}</div>
                   </div>
-                </div>
-
-                <div className="text-right shrink-0 ml-2">
-                   <div className="font-bold text-[#433830] text-sm">{leader.deals} сд.</div>
-                   <div className="flex items-center justify-end gap-1 mt-0.5">
-                      <span className="text-[10px] text-gray-400">{leader.xp} XP</span>
-                   </div>
-                </div>
-
-                {index === 0 && <Trophy size={20} className="text-brand-gold ml-3" />}
+                ))}
               </div>
-            );
-          })}
-        </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

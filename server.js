@@ -929,16 +929,64 @@ async function notifyUserTelegram(telegramId, text, inlineKeyboard) {
   }
 }
 
+// Итог последней отправки админу в Telegram — для /api/bot/status, без chat_id.
+let lastAdminTelegramNotify = null;
+
 async function notifyAdminTelegram(text, inlineKeyboard) {
   const BOT_TOKEN = process.env.BOT_TOKEN;
   const ADMIN_CHAT_ID = process.env.ADMIN_TELEGRAM_ID;
-  if (!BOT_TOKEN || !ADMIN_CHAT_ID) { console.warn('⚠️ Telegram уведомление не отправлено'); return; }
+  if (!BOT_TOKEN || !ADMIN_CHAT_ID) {
+    console.warn('⚠️ Telegram уведомление не отправлено');
+    lastAdminTelegramNotify = { at: new Date().toISOString(), ok: false, error: 'не задан ADMIN_TELEGRAM_ID или BOT_TOKEN' };
+    return { ok: false };
+  }
   try {
     const body = { chat_id: ADMIN_CHAT_ID, text, parse_mode: 'HTML' };
     if (inlineKeyboard) body.reply_markup = JSON.stringify({ inline_keyboard: inlineKeyboard });
     const result = await sendTelegramMessage(BOT_TOKEN, body);
     if (!result.ok) console.error('❌ Telegram admin notify error:', result.description || JSON.stringify(result));
-  } catch (e) { console.error('Telegram notify error:', e.message); }
+    lastAdminTelegramNotify = { at: new Date().toISOString(), ok: !!result.ok, error: result.ok ? null : (result.description || 'нет ответа') };
+    return result;
+  } catch (e) {
+    console.error('Telegram notify error:', e.message);
+    lastAdminTelegramNotify = { at: new Date().toISOString(), ok: false, error: e.message };
+    return { ok: false };
+  }
+}
+
+// Уведомление о заявке запоминаем, чтобы убрать его из чата, как только по заявке
+// решили — в админке или кнопкой. Иначе чат админа копит сотни старых заявок.
+async function notifyAdminAboutApplication(userId, text, keyboard) {
+  const [tg, max] = await notifyAdmin(text, keyboard);
+  const rows = [];
+  const tgMsg = tg.status === 'fulfilled' ? tg.value?.result : null;
+  if (tgMsg?.message_id) rows.push(['telegram', String(tgMsg.chat?.id ?? process.env.ADMIN_TELEGRAM_ID), String(tgMsg.message_id)]);
+  const maxMid = max.status === 'fulfilled' ? max.value?.data?.message?.body?.mid : null;
+  if (maxMid) rows.push(['max', String(process.env.ADMIN_MAX_ID || ''), String(maxMid)]);
+  for (const [platform, chatId, messageId] of rows) {
+    await pool.query(
+      'INSERT INTO admin_notifications (user_id, platform, chat_id, message_id) VALUES ($1, $2, $3, $4)',
+      [userId, platform, chatId, messageId]
+    ).catch(e => console.error('admin_notifications insert:', e.message));
+  }
+}
+
+async function clearApplicationNotifications(userId) {
+  try {
+    const res = await pool.query('DELETE FROM admin_notifications WHERE user_id = $1 RETURNING platform, chat_id, message_id', [userId]);
+    for (const n of res.rows) {
+      if (n.platform === 'telegram' && process.env.BOT_TOKEN) {
+        const r = await fetch(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/deleteMessage`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: n.chat_id, message_id: Number(n.message_id) }),
+        }).then(x => x.json()).catch(e => ({ ok: false, description: e.message }));
+        if (!r.ok) console.warn('[Telegram] уведомление о заявке не удалено:', r.description);
+      } else if (n.platform === 'max') {
+        const r = await _maxApiCall('DELETE', `/messages?message_id=${encodeURIComponent(n.message_id)}`);
+        if (!r.ok) console.warn('[MAX] уведомление о заявке не удалено:', r.error);
+      }
+    }
+  } catch (e) { console.error('clearApplicationNotifications:', e.message); }
 }
 
 // =============================================
@@ -1230,6 +1278,15 @@ const initDb = async () => {
     // быть двух ID одного мессенджера. Колонки users.telegram_id/max_id пока живут
     // как есть — на них завязаны рассылки и десятки запросов; здесь ведётся синхронная
     // копия, а чтение идёт сначала отсюда.
+    await pool.query(`CREATE TABLE IF NOT EXISTS admin_notifications (
+      id SERIAL PRIMARY KEY,
+      user_id INT NOT NULL,
+      platform TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );`);
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_admin_notifications_user ON admin_notifications(user_id);');
     await pool.query(`CREATE TABLE IF NOT EXISTS user_identities (
       id SERIAL PRIMARY KEY,
       user_id INT NOT NULL,
@@ -2507,6 +2564,8 @@ app.get(['/api/telegram/status', '/api/bot/status'], async (req, res) => {
       mode: TELEGRAM_UPDATES_MODE,
       polling: TELEGRAM_UPDATES_MODE === 'polling' ? telegramPolling : null,
       botTokenSet: !!token,
+      adminChatSet: !!process.env.ADMIN_TELEGRAM_ID,
+      lastAdminNotify: lastAdminTelegramNotify,
       webhookUrlSet: !!expectedUrl,
       expectedUrl,
       webhook,
@@ -2731,6 +2790,12 @@ app.post('/api/auth/max', rateLimitAuth(900000, 30, 1000), async (req, res) => {
 });
 
 async function applyApplicationDecision(userId, action) {
+  const result = await decideApplication(userId, action);
+  if (result.ok) clearApplicationNotifications(Number(userId));
+  return result;
+}
+
+async function decideApplication(userId, action) {
   const id = Number(userId);
   if (!id || !['approve', 'reject'].includes(action)) {
     return { ok: false, status: 'bad_request', message: 'Некорректное действие' };
@@ -3219,7 +3284,7 @@ app.post('/api/register', rateLimitByUser(900000, 15), async (req, res) => {
         { text: '❌ Отклонить', callback_data: `reject_${userId}` }
       ]];
       // Дублируем уведомление админу в оба мессенджера (TG обязательно, MAX если включён)
-      notifyAdmin(text, keyboard);
+      notifyAdminAboutApplication(userId, text, keyboard).catch(e => console.error('Application notify:', e.message));
     }
     res.json({
       success: true,
@@ -4491,32 +4556,26 @@ const LEADERBOARD_NOT_STAFF = 'AND COALESCE(u.is_admin, FALSE) = FALSE AND COALE
 
 app.get('/api/leaderboard', requireRegisteredRequest, async (req, res) => {
   try {
+    // Место в рейтинге решают только продажи: золотые монеты за подтверждённые
+    // сделки (минус отозванные). XP, квесты, миссии и траты на призы не влияют.
     const { period } = req.query;
-    if (period === 'month' || period === 'quarter') {
-      const dateFilter = period === 'month'
-        ? `AND b.created_at >= date_trunc('month', CURRENT_DATE)`
-        : `AND b.created_at >= date_trunc('quarter', CURRENT_DATE)`;
-      const result = await pool.query(`
-        SELECT u.id, u.first_name as name, u.last_name, u.company,
-          COUNT(b.id)::int as deals, u.xp_points as xp
-        FROM users u
-        LEFT JOIN bookings b ON b.user_id = u.id AND b.stage = 'COMPLETE' ${dateFilter}
-        WHERE u.is_registered = TRUE ${LEADERBOARD_NOT_STAFF}
-        GROUP BY u.id
-        HAVING COUNT(b.id) > 0
-        ORDER BY deals DESC, u.xp_points DESC LIMIT 50
-      `);
-      res.json(result.rows);
-    } else {
-      const result = await pool.query(`
-        SELECT id, first_name as name, last_name, company,
-          deals_closed as deals, xp_points as xp
-        FROM users u WHERE u.is_registered = TRUE ${LEADERBOARD_NOT_STAFF}
-        ORDER BY deals_closed DESC, xp_points DESC LIMIT 50
-      `);
-      res.json(result.rows);
-    }
-  } catch (e) { res.status(500).json({ error: 'Server error' }); }
+    const since = period === 'month' ? `date_trunc('month', CURRENT_DATE)`
+      : period === 'quarter' ? `date_trunc('quarter', CURRENT_DATE)`
+      : null;
+    const result = await pool.query(`
+      SELECT u.id, u.first_name as name, u.last_name, u.company,
+        GREATEST(COALESCE(SUM(g.delta), 0), 0)::int as deals
+      FROM users u
+      LEFT JOIN gold_ledger g ON g.user_id = u.id AND g.voided_at IS NULL
+        AND g.reason IN ('deal', 'deal_revoke') ${since ? `AND g.created_at >= ${since}` : ''}
+      WHERE u.is_registered = TRUE AND u.approval_status = 'approved'
+        AND u.merged_into_user_id IS NULL ${LEADERBOARD_NOT_STAFF}
+      GROUP BY u.id
+      ORDER BY deals DESC, u.first_name, u.id
+      LIMIT 300
+    `);
+    res.json(result.rows);
+  } catch (e) { console.error('Leaderboard error:', e); res.status(500).json({ error: 'Server error' }); }
 });
 
 // =============================================

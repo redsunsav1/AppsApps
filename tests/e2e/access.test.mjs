@@ -35,6 +35,29 @@ const boardAll = (await get('/api/leaderboard', 1003)).data;
 check('админа нет в рейтинге, даже с баллами и сделками', !boardAll.some((u) => u.id === 1), boardAll[0]);
 await q('UPDATE users SET deals_closed = 0, xp_points = 0 WHERE id = 1');
 
+// Место в рейтинге — только продажи: монеты за сделки, а не XP и не старые счётчики
+await q('UPDATE users SET xp_points = 5000, deals_closed = 7 WHERE id = 2');
+const added = await q(`INSERT INTO gold_ledger (user_id, delta, reason, available_at)
+  VALUES (3, 1, 'deal', NOW()), (3, 1, 'deal', NOW()), (2, 3, 'mission', NOW()) RETURNING id`);
+for (const period of ['', '?period=month', '?period=quarter']) {
+  const rows = (await get('/api/leaderboard' + period, 1003)).data;
+  check(`рейтинг${period || ' за всё время'}: первым идёт тот, у кого продажи`,
+    rows[0]?.id === 3 && rows[0]?.deals >= 2 && rows.find((u) => u.id === 2)?.deals === 0, rows.slice(0, 3));
+}
+const pendingInBoard = (await get('/api/leaderboard', 1003)).data.some((u) => u.id === 4);
+check('ожидающих одобрения нет в рейтинге', !pendingInBoard, null);
+await q('DELETE FROM gold_ledger WHERE id = ANY($1)', [added.map((x) => x.id)]);
+await q('UPDATE users SET xp_points = 0, deals_closed = 0 WHERE id = 2');
+
+// Уведомление о заявке убирается из чата админа, когда по заявке решили
+await q(`INSERT INTO users (id, telegram_id, first_name, company, phone, is_registered, approval_status, consent_pd)
+  VALUES (50, 1050, 'Денис', 'Агентство', '+79990000050', TRUE, 'pending', TRUE)`);
+await q(`INSERT INTO admin_notifications (user_id, platform, chat_id, message_id) VALUES (50, 'max', '1', 'mid.test')`);
+r = await post('/api/applications/50/approve', 1001);
+await new Promise((ok) => setTimeout(ok, 300));
+const left = await q('SELECT 1 FROM admin_notifications WHERE user_id = 50');
+check('после одобрения уведомление о заявке забыто и удаляется из чата', r.status === 200 && left.length === 0, { r, left });
+
 // --- Согласие на рекламу
 r = await post('/api/privacy/preferences', 1002, { marketing: true });
 check('партнёр включает рассылку в профиле', r.status === 200, r);

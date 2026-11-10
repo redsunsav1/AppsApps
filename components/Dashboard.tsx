@@ -32,8 +32,9 @@ const MISSION_ICONS: Record<string, React.ReactNode> = {
 const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, onClaimQuest, pwaToken, onMarketingChange }) => {
   const progressPercent = (user.currentXP / user.nextLevelXP) * 100;
   const currentRank = getRank(user.dealsClosed);
+  // Полоска проекта — его доля в продажах партнёра; без продаж все полоски пустые
+  const myDealsTotal = stats.reduce((sum, s) => sum + s.sales, 0);
 
-  const [mySales, setMySales] = useState<{ project: string; count: number }[]>([]);
 
   // Код привязки второго мессенджера. Показывается только владельцу аккаунта
   // и живёт 10 минут — этого достаточно, чтобы перенести его в другой мессенджер.
@@ -57,26 +58,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
       .catch(err => alertDialog(err.message))
       .finally(() => setIsLinkCodeLoading(false));
   };
-
-  useEffect(() => {
-    fetch('/api/bookings/my', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData: getAuthData() }),
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (!Array.isArray(data)) return;
-        const completed = data.filter((b: any) => b.stage === 'COMPLETE');
-        const grouped: Record<string, number> = {};
-        completed.forEach((b: any) => {
-          const name = b.project_name || 'Без проекта';
-          grouped[name] = (grouped[name] || 0) + 1;
-        });
-        setMySales(Object.entries(grouped).map(([project, count]) => ({ project, count })));
-      })
-      .catch(() => {});
-  }, []);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [avatarUrl, setAvatarUrl] = useState(user.avatar || '');
@@ -396,16 +377,12 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
           <div className="bg-brand-white rounded-3xl p-6 shadow-sm border border-brand-light">
               <div className="space-y-6">
                   {stats.map(stat => {
-                      const percent = stat.totalUnits > 0 ? Math.round((stat.sales / stat.totalUnits) * 100) : 0;
+                      const percent = myDealsTotal > 0 ? Math.round((stat.sales / myDealsTotal) * 100) : 0;
                       return (
                           <div key={stat.id}>
-                              <div className="flex justify-between items-end mb-1">
+                              <div className="flex justify-between items-end mb-1.5">
                                   <span className="text-sm font-bold text-brand-black">{stat.name}</span>
-                                  <span className="text-xs font-medium text-brand-grey">{percent}% продано</span>
-                              </div>
-                              <div className="flex justify-between items-center text-[10px] text-brand-grey mb-1.5">
-                                  <span>Продано {stat.sales} из {stat.totalUnits} кв.</span>
-                                  <span>Свободно {stat.totalUnits - stat.sales}</span>
+                                  <span className="text-xs font-medium text-brand-grey">Продано {stat.sales}</span>
                               </div>
                               <div className="h-2.5 w-full bg-brand-cream rounded-full overflow-hidden">
                                   <div
@@ -423,16 +400,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
                       <span className="text-xs text-brand-grey font-medium">Ваших сделок</span>
                       <span className="text-xl font-black text-brand-black">{user.dealsClosed}</span>
                   </div>
-                  {mySales.length > 0 && (
-                      <div className="mt-2 space-y-1">
-                          {mySales.map(s => (
-                              <div key={s.project} className="flex justify-between items-center">
-                                  <span className="text-xs text-brand-grey">{s.project}</span>
-                                  <span className="text-xs font-bold text-brand-black">продано ({s.count})</span>
-                              </div>
-                          ))}
-                      </div>
-                  )}
               </div>
           </div>
       </div>

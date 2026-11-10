@@ -4682,15 +4682,19 @@ app.post('/api/settings', async (req, res) => {
 // =============================================
 // API: СТАТИСТИКА
 // =============================================
+// Личная статистика партнёра: сколько его сделок подтверждено (stage = COMPLETE)
+// по каждому действующему проекту. Брони и чужие продажи сюда не попадают,
+// проекты из архива не показываются.
 app.get('/api/statistics', requireRegisteredRequest, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT p.id, p.name,
-        COUNT(CASE WHEN u.status = 'SOLD' THEN 1 END)::int as sales,
-        COUNT(u.id)::int as total_units
-      FROM projects p LEFT JOIN units u ON p.id = u.project_id
+        COUNT(b.id)::int as sales
+      FROM projects p
+      LEFT JOIN bookings b ON b.project_id = p.id AND b.user_id = $1 AND b.stage = 'COMPLETE'
+      WHERE COALESCE(p.is_archived, FALSE) = FALSE
       GROUP BY p.id, p.name ORDER BY p.name
-    `);
+    `, [req.authUser.id]);
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });

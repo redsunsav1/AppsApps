@@ -31,8 +31,7 @@ export interface UserProfile {
 export interface ProjectStat {
   id: string;
   name: string; // "ЖК Бруклин"
-  sales: number;
-  totalUnits: number;
+  sales: number; // подтверждённые сделки самого партнёра по проекту
   color: string;
 }
 

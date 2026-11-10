@@ -165,7 +165,6 @@ const App: React.FC = () => {
           id: s.id,
           name: s.name,
           sales: s.sales || 0,
-          totalUnits: s.total_units || 0,
           color: PROJECT_COLORS[i % PROJECT_COLORS.length],
         }));
         setStats(mapped);

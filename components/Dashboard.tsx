@@ -31,9 +31,13 @@ const MISSION_ICONS: Record<string, React.ReactNode> = {
 
 const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, onClaimQuest, pwaToken, onMarketingChange }) => {
   const progressPercent = (user.currentXP / user.nextLevelXP) * 100;
-  const currentRank = getRank(user.dealsClosed);
-  // Полоска проекта — его доля в продажах партнёра; без продаж все полоски пустые
+  // Сделки партнёра — только подтверждённые продажи (stage = COMPLETE) по действующим
+  // проектам. Старый счётчик users.deals_closed сюда не берём: он мог достаться от
+  // слияния аккаунтов или ручных правок и не совпадает с реальными продажами.
   const myDealsTotal = stats.reduce((sum, s) => sum + s.sales, 0);
+  const currentRank = getRank(myDealsTotal);
+  // В базе проект может называться без «ЖК» — показываем единообразно
+  const projectTitle = (name: string) => /^ЖК\s/i.test(name.trim()) ? name.trim() : `ЖК ${name.trim()}`;
 
 
   // Код привязки второго мессенджера. Показывается только владельцу аккаунта
@@ -122,7 +126,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
                 <div className="bg-brand-gold/10 px-3 py-1.5 rounded-lg border border-brand-gold/20">
                     <span className="text-xs font-bold text-brand-gold uppercase tracking-wider block text-right">{currentRank}</span>
                 </div>
-                <span className="text-[10px] text-brand-grey font-bold mt-1">{user.dealsClosed} продаж</span>
+                <span className="text-[10px] text-brand-grey font-bold mt-1">{myDealsTotal} продаж</span>
             </div>
          </div>
 
@@ -381,7 +385,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
                       return (
                           <div key={stat.id}>
                               <div className="flex justify-between items-end mb-1.5">
-                                  <span className="text-sm font-bold text-brand-black">{stat.name}</span>
+                                  <span className="text-sm font-bold text-brand-black">{projectTitle(stat.name)}</span>
                                   <span className="text-xs font-medium text-brand-grey">Продано {stat.sales}</span>
                               </div>
                               <div className="h-2.5 w-full bg-brand-cream rounded-full overflow-hidden">
@@ -398,7 +402,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, quests, stats, missions, on
               <div className="mt-6 pt-4 border-t border-brand-light">
                   <div className="flex justify-between items-center">
                       <span className="text-xs text-brand-grey font-medium">Ваших сделок</span>
-                      <span className="text-xl font-black text-brand-black">{user.dealsClosed}</span>
+                      <span className="text-xl font-black text-brand-black">{myDealsTotal}</span>
                   </div>
               </div>
           </div>

@@ -14,6 +14,7 @@ import { renderMarketingConsent, renderPrizeRules, renderClubTerms } from './ser
 import { ensureGoldSchema, addGold, voidGoldEntry, goldSummary, goldHistory, GOLD_HOLD_DAYS } from './server/gold.js';
 import { verifyDealInAmo } from './server/dealVerification.js';
 import { createPollingStatus, startTelegramPolling, startMaxPolling } from './server/botPolling.js';
+import { formatBookingConflictAlert, CONFLICT_IGNORED_STAGES } from './server/bookingConflict.js';
 import { ensurePrizeSchema, seedPrizeCatalog, publicProduct } from './server/prizes.js';
 import { auditUsers } from './server/userAudit.js';
 
@@ -2021,12 +2022,20 @@ async function syncProjectWithXmlUnsafe(projectId, url, options = {}) {
 
   // Сохраняем unit_id с активными бронями ДО удаления
   const bookedRes = await pool.query(
-    "SELECT DISTINCT unit_id FROM bookings WHERE project_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'",
+    "SELECT unit_id, COALESCE(stage, 'INIT') AS stage FROM bookings WHERE project_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'",
     [projectId]
   );
   const bookedUnitIds = new Set(bookedRes.rows.map(r => r.unit_id));
+  // Брони «в работе» — без подтверждённых сделок. Если сделка подтверждена (COMPLETE),
+  // продажа у застройщика — ожидаемый итог, а не конфликт.
+  const openBookedUnitIds = new Set(
+    bookedRes.rows.filter(r => !CONFLICT_IGNORED_STAGES.includes(r.stage)).map(r => r.unit_id)
+  );
   // Квартиры, которые застройщик продал, пока у нас на них висит активная бронь
   const soldWhileBooked = [];
+  // Все забронированные у нас квартиры, которые застройщик продал (включая подтверждённые сделки):
+  // им нельзя возвращать статус BOOKED
+  const soldBookedIds = [];
   if (bookedUnitIds.size > 0) {
     console.log(`🔒 Preserving ${bookedUnitIds.size} booked units during sync`);
   }
@@ -2072,7 +2081,8 @@ async function syncProjectWithXmlUnsafe(projectId, url, options = {}) {
     // разбирается админ.
     if (bookedUnitIds.has(u.id)) {
       if (status === 'SOLD') {
-        soldWhileBooked.push(u.id);
+        soldBookedIds.push(u.id);
+        if (openBookedUnitIds.has(u.id)) soldWhileBooked.push(u.id);
       } else {
         status = 'BOOKED';
       }
@@ -2138,7 +2148,7 @@ async function syncProjectWithXmlUnsafe(projectId, url, options = {}) {
            SELECT DISTINCT unit_id FROM bookings
            WHERE project_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'
          )`,
-      [projectId, soldWhileBooked]
+      [projectId, soldBookedIds]
     );
     // Вместе с данными сохраняем валидаторы: следующий цикл сможет обойтись
     // ответом «304» или сравнением хеша вместо полного пересбора.
@@ -2161,13 +2171,34 @@ async function syncProjectWithXmlUnsafe(projectId, url, options = {}) {
   // Конфликт: у нас активная бронь, а застройщик уже продал квартиру.
   // Сообщаем админу один раз на квартиру — синхронизация идёт каждые 5 минут,
   // и повторные уведомления превратились бы в спам.
-  for (const unitId of soldWhileBooked) {
-    if (reportedSoldWhileBooked.has(unitId)) continue;
-    reportedSoldWhileBooked.add(unitId);
-    console.warn(`⚠️ Продано в фиде, но забронировано у нас: unit=${unitId}, project=${projectId}`);
-    notifyAdmin(
-      `⚠️ <b>Конфликт брони</b>\n\nКвартира ${unitId} (${projectId}) продана по данным застройщика, но у нас на неё активная бронь.\nПроверьте сделку и снимите бронь, если она больше не актуальна.`
-    ).catch(() => {});
+  const newConflicts = soldWhileBooked.filter(id => !reportedSoldWhileBooked.has(id));
+  if (newConflicts.length > 0) {
+    // Детали брони — чтобы админ понял, чья квартира, не залезая в базу
+    let detailsByUnit = new Map();
+    try {
+      const det = await pool.query(`
+        SELECT DISTINCT ON (b.unit_id) b.id, b.unit_id, b.stage, b.created_at, b.buyer_name, b.buyer_phone,
+               b.amocrm_lead_id, b.user_name, b.user_phone, b.user_company,
+               u.first_name, u.last_name, u.phone, u.company,
+               un.number AS unit_number, un.floor AS unit_floor, un.area AS unit_area,
+               p.name AS project_name
+        FROM bookings b
+        LEFT JOIN users u ON u.id = b.user_id
+        LEFT JOIN units un ON un.id = b.unit_id
+        LEFT JOIN projects p ON p.id = b.project_id
+        WHERE b.project_id = $1 AND b.unit_id = ANY($2::text[])
+          AND NOT (COALESCE(b.stage, 'INIT') = ANY($3::text[]))
+        ORDER BY b.unit_id, b.created_at DESC
+      `, [projectId, newConflicts, CONFLICT_IGNORED_STAGES]);
+      detailsByUnit = new Map(det.rows.map(r => [r.unit_id, r]));
+    } catch (e) {
+      console.error('Booking conflict details failed:', e.message);
+    }
+    for (const unitId of newConflicts) {
+      reportedSoldWhileBooked.add(unitId);
+      console.warn(`⚠️ Продано в фиде, но забронировано у нас: unit=${unitId}, project=${projectId}`);
+      notifyAdmin(formatBookingConflictAlert({ unitId, projectId, row: detailsByUnit.get(unitId) })).catch(() => {});
+    }
   }
 
   // Секции

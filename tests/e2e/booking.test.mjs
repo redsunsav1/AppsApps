@@ -1,6 +1,27 @@
 // Бронь только с паспортом: риелтор получает ссылку, квартира остаётся свободной,
 // бронь появляется в момент загрузки паспорта покупателем. Идёт последним.
 import { q, post, BASE, check, finish } from './helpers.mjs';
+import http from 'http';
+
+// Подставной Profitbase: сервер приложения ходит сюда (PROFITBASE_BASE_URL в run.sh)
+const pbCalls = [];
+const pbServer = http.createServer((req, res) => {
+  let raw = '';
+  req.on('data', (c) => { raw += c; });
+  req.on('end', () => {
+    const u = new URL(req.url, 'http://x');
+    const body = raw ? JSON.parse(raw) : null;
+    pbCalls.push({ path: u.pathname, token: u.searchParams.get('access_token'), body });
+    res.setHeader('Content-Type', 'application/json');
+    if (u.pathname === '/authentication') return res.end(JSON.stringify({ access_token: 'pbtok', remaining_time: 86400 }));
+    const m = u.pathname.match(/^\/properties\/([^/]+)\/status-change$/);
+    if (m) return res.end(JSON.stringify({ id: m[1], status: body?.status }));
+    res.statusCode = 404; res.end('{}');
+  });
+});
+await new Promise((r) => pbServer.listen(Number(process.env.TEST_PB_PORT || 18092), '127.0.0.1', r));
+const statusCalls = (id) => pbCalls.filter((c) => c.path === `/properties/${id}/status-change`).map((c) => c.body?.status);
+const waitFor = async (fn, ms = 4000) => { const t = Date.now(); while (Date.now() - t < ms) { if (await fn()) return true; await new Promise((r) => setTimeout(r, 100)); } return false; };
 
 await q(`INSERT INTO units (id, project_id, floor, number, rooms, area, price, status) VALUES
   ('b1', 'p1', 2, '21', 1, 40, 5000000, 'FREE'),
@@ -73,6 +94,11 @@ check('квартира забронирована', (await q("SELECT status FRO
 const reqs = await q("SELECT id, status, booking_id FROM booking_requests WHERE unit_id = 'b1' ORDER BY id");
 check('заявка Анны стала бронью, заявка Бориса закрыта', reqs[0].status === 'BOOKED' && reqs[0].booking_id === bk.id && reqs[1].status === 'LOST', reqs);
 
+check('квартира с паспортом забронирована в Profitbase', await waitFor(() => statusCalls('b1').includes('BOOKED')), pbCalls);
+check('в Profitbase ходим с токеном', pbCalls.some((c) => c.path.includes('status-change') && c.token === 'pbtok'), pbCalls);
+check('бронь помечена как переданная в Profitbase',
+  await waitFor(async () => (await q('SELECT profitbase_reserved FROM bookings WHERE id = $1', [bk.id]))[0].profitbase_reserved === true));
+
 r = await post(`/api/booking-requests/${anna.data.requestId}/status`, 1002);
 check('риелтор видит, что бронь оформлена', r.data?.passportSent === true && r.data.bookingId === bk.id && !!r.data.expiresAt, r);
 r = await upload(tA);
@@ -97,6 +123,16 @@ check('проданную квартиру паспорт не бронируе�
 check('брони на проданную квартиру нет', (await q("SELECT count(*)::int c FROM bookings WHERE unit_id = 'b2'"))[0].c === 0);
 check('заявка помечена как упущенная', (await q('SELECT status FROM booking_requests WHERE id = $1', [late.data.requestId]))[0].status === 'LOST');
 
+check('по проданной квартире в Profitbase ничего не меняли', statusCalls('b2').length === 0, statusCalls('b2'));
+check('по одной заявке без паспорта в Profitbase ничего не меняли', statusCalls('b3').length === 0);
+
+// --- Бронь сняли — квартира возвращается в продажу в Profitbase
+r = await post('/api/bookings/cancel', 1001, { unitId: 'b1' });
+check('админ снял бронь', r.status === 200, r);
+check('в Profitbase квартира снова свободна', await waitFor(() => statusCalls('b1').at(-1) === 'AVAILABLE'), statusCalls('b1'));
+check('флаг брони в Profitbase снят',
+  await waitFor(async () => (await q('SELECT profitbase_reserved FROM bookings WHERE id = $1', [bk.id]))[0].profitbase_reserved === false));
+
 // --- Риелтор отменил заявку
 const c = await post('/api/booking-requests', 1002, { unitId: 'b3', projectId: 'p1', ...buyer });
 r = await post(`/api/booking-requests/${c.data.requestId}/cancel`, 1003);
@@ -107,4 +143,5 @@ r = await getConsent(tokenOf(c.data.url));
 check('после отмены ссылка не работает', r.status === 404, r);
 check('после отмены квартира свободна', (await q("SELECT status FROM units WHERE id = 'b3'"))[0].status === 'FREE');
 
+pbServer.close();
 await finish();

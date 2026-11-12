@@ -16,6 +16,7 @@ import { verifyDealInAmo } from './server/dealVerification.js';
 import { createPollingStatus, startTelegramPolling, startMaxPolling } from './server/botPolling.js';
 import { formatBookingConflictAlert, CONFLICT_IGNORED_STAGES } from './server/bookingConflict.js';
 import { isLeadOnBookingEnabled, isCloseReleasedEnabled, AMO_STATUS_CLOSED_LOST, preliminaryLeadNote, releasedLeadNote } from './server/amoBookingLead.js';
+import { createProfitbaseClient } from './server/profitbase.js';
 import { ensurePrizeSchema, seedPrizeCatalog, publicProduct } from './server/prizes.js';
 import { auditUsers } from './server/userAudit.js';
 
@@ -1258,6 +1259,8 @@ const initDb = async () => {
     await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_consent_token ON bookings(consent_token) WHERE consent_token IS NOT NULL;');
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS consent_transfer BOOLEAN DEFAULT FALSE;');
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS consent_transfer_at TIMESTAMP;');
+    // Бронь продублирована в Profitbase застройщика (статус квартиры BOOKED)
+    await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS profitbase_reserved BOOLEAN DEFAULT FALSE;');
     // Заявка на бронь: риелтор выбрал квартиру и покупателя, но квартира НЕ удерживается.
     // Бронь появляется только когда покупатель по ссылке дал согласие и загрузил паспорт.
     await pool.query(`CREATE TABLE IF NOT EXISTS booking_requests (
@@ -2386,7 +2389,7 @@ async function expireOverdueBookings() {
   }
   if (expired.length > 0) {
     console.log(`⌛ Expired ${expired.length} overdue bookings`);
-    releaseAmoLeads(expired.map(r => r.id), `expired_${BOOKING_HOLD_HOURS}h`).catch(e => console.error('AmoCRM release error:', e.message));
+    releaseBookingsOutside(expired.map(r => r.id), `expired_${BOOKING_HOLD_HOURS}h`);
   }
   return expired;
 }
@@ -2436,6 +2439,21 @@ cron.schedule(FEED_SYNC_CRON, async () => {
 });
 
 cron.schedule(BOOKING_EXPIRY_CRON, processBookingDeadlines);
+
+// Ретрай Profitbase: брони с паспортом, которые не удалось поставить в бронь у застройщика
+cron.schedule('*/15 * * * *', async () => {
+  if (!profitbase.enabled) return;
+  try {
+    const pending = await pool.query(`
+      SELECT b.id FROM bookings b
+      LEFT JOIN units un ON un.id = b.unit_id
+      WHERE b.passport_sent = TRUE AND COALESCE(b.profitbase_reserved, FALSE) = FALSE
+        AND COALESCE(b.stage, 'INIT') NOT IN ('CANCELLED', 'COMPLETE')
+        AND COALESCE(un.status, '') != 'SOLD'
+      ORDER BY b.id LIMIT 20`);
+    for (const row of pending.rows) await reserveInProfitbase(row.id);
+  } catch (e) { console.error('Profitbase retry cron error:', e.message); }
+});
 
 // Ретрай AmoCRM: лид создаётся при отправке паспорта, и если AmoCRM в тот момент
 // лежал — раньше лид терялся навсегда. Теперь каждые 15 минут досоздаём лиды
@@ -2632,6 +2650,7 @@ app.get(['/api/telegram/status', '/api/bot/status'], async (req, res) => {
       lastUpdate: lastTelegramUpdate,
       lastStartReply,
     },
+    profitbase: profitbase.status(),
     max: {
       enabled: isMaxEnabled(),
       mode: MAX_UPDATES_MODE,
@@ -5076,6 +5095,68 @@ async function syncToAmoCRM(booking, userData, unitData) {
   }
 }
 
+// =============================================
+// PROFITBASE: бронь квартиры в шахматке застройщика
+// =============================================
+const profitbase = createProfitbaseClient();
+// Проверяем ключ при старте, чтобы ошибка была видна в /api/bot/status сразу, а не при первой брони
+if (profitbase.enabled) {
+  setTimeout(() => profitbase.ping().then(ok => console.log(ok ? '🏷️ Profitbase: ключ принят' : `⚠️ Profitbase: вход не удался — ${profitbase.status().lastError}`)), 5000);
+}
+let lastProfitbaseAlertAt = 0;
+function alertProfitbaseFailure(text) {
+  if (Date.now() - lastProfitbaseAlertAt < 3600000) return;
+  lastProfitbaseAlertAt = Date.now();
+  notifyAdmin(text).catch(() => {});
+}
+
+// Ставит квартиру брони в BOOKED в Profitbase. Ошибка не мешает брони:
+// флаг profitbase_reserved останется FALSE, и крон повторит попытку.
+async function reserveInProfitbase(bookingId) {
+  if (!profitbase.enabled) return false;
+  const row = (await pool.query(
+    `SELECT b.id, b.unit_id, b.stage, b.profitbase_reserved, un.status AS unit_status, un.number AS unit_number, b.project_id
+     FROM bookings b LEFT JOIN units un ON un.id = b.unit_id WHERE b.id = $1`, [bookingId])).rows[0];
+  if (!row || row.profitbase_reserved) return !!row?.profitbase_reserved;
+  if (['CANCELLED', 'COMPLETE'].includes(row.stage || 'INIT') || row.unit_status === 'SOLD') return false;
+  try {
+    await profitbase.reserve(row.unit_id);
+    await pool.query('UPDATE bookings SET profitbase_reserved = TRUE WHERE id = $1', [row.id]);
+    logAudit(null, 'booking.profitbase_reserved', 'booking', row.id, { unit_id: row.unit_id });
+    console.log(`🏷️ Profitbase: кв. ${row.unit_number || row.unit_id} забронирована (бронь #${row.id})`);
+    return true;
+  } catch (e) {
+    console.error(`Profitbase reserve error (booking #${row.id}):`, e.message);
+    alertProfitbaseFailure(`🚨 <b>Квартира не забронирована в Profitbase</b>\n\nБронь #${row.id}, кв. ${escapeHtml(row.unit_number || row.unit_id)} (${escapeHtml(row.project_id || '')}).\n${escapeHtml(e.message)}\n\nПриложение повторит попытку через 15 минут. Пока в Profitbase квартира выглядит свободной.`);
+    return false;
+  }
+}
+
+// Бронь снята или истекла — возвращаем квартиру в продажу в Profitbase.
+// Проданную застройщиком не трогаем.
+async function releaseInProfitbase(bookingIds) {
+  if (!profitbase.enabled || !bookingIds?.length) return;
+  const rows = (await pool.query(
+    `SELECT b.id, b.unit_id, un.status AS unit_status, un.number AS unit_number
+     FROM bookings b LEFT JOIN units un ON un.id = b.unit_id
+     WHERE b.id = ANY($1::int[]) AND b.profitbase_reserved = TRUE`, [bookingIds])).rows;
+  for (const row of rows) {
+    try {
+      if (row.unit_status !== 'SOLD') await profitbase.release(row.unit_id);
+      await pool.query('UPDATE bookings SET profitbase_reserved = FALSE WHERE id = $1', [row.id]);
+      logAudit(null, 'booking.profitbase_released', 'booking', row.id, { unit_id: row.unit_id, skipped_sold: row.unit_status === 'SOLD' });
+    } catch (e) {
+      console.error(`Profitbase release error (booking #${row.id}):`, e.message);
+      alertProfitbaseFailure(`🚨 <b>Квартира не освобождена в Profitbase</b>\n\nБронь #${row.id} снята, но кв. ${escapeHtml(row.unit_number || row.unit_id)} в Profitbase осталась в брони: ${escapeHtml(e.message)}\nВерните её в продажу вручную.`);
+    }
+  }
+}
+
+async function releaseBookingsOutside(bookingIds, reason) {
+  releaseAmoLeads(bookingIds, reason).catch(e => console.error('AmoCRM release error:', e.message));
+  releaseInProfitbase(bookingIds).catch(e => console.error('Profitbase release error:', e.message));
+}
+
 // Предварительная сделка в amoCRM в момент брони: отдел продаж застройщика сразу
 // видит, что квартира занята. Без данных покупателя — они придут с паспортом.
 // Ошибка не мешает брони: недосозданный лид подхватит ретрай-крон.
@@ -5652,6 +5733,8 @@ async function deliverPassport({ booking, unit, file, buyerName, buyerPhone, boo
     await client.query(`UPDATE units SET status = 'BOOKED' WHERE id = $1`, [booking.unit_id]);
     renewedExpiresAt = updatedRes.rows[0]?.expires_at || null;
   });
+  // Паспорт у застройщика — квартира должна стать занятой и в его Profitbase
+  reserveInProfitbase(bookingId).catch(e => console.error('Profitbase reserve error:', e.message));
 
   const userFull = await pool.query('SELECT * FROM users WHERE id = $1', [booking.user_id]);
   const freshBooking = await pool.query('SELECT * FROM bookings WHERE id = $1', [bookingId]);
@@ -5673,6 +5756,11 @@ async function deliverPassport({ booking, unit, file, buyerName, buyerPhone, boo
         `🤝 Риелтор: ${booking.agent_name} (${booking.agent_company})\n📞 Телефон риелтора: ${booking.agent_phone}\n\n` +
         `📎 Паспорт: ${file ? file.originalname : 'отправлен на email'}`;
       await attachNoteToAmoCRM(leadId, noteText, file ? [file] : [], 'passport');
+      // Квартира в карточке сделки (нужен виджет Profitbase в amoCRM застройщика)
+      if (profitbase.enabled && profitbase.config.linkDeals) {
+        profitbase.linkDeal(booking.unit_id, leadId)
+          .catch(e => console.warn(`Profitbase: квартира не привязана к сделке ${leadId}: ${e.message}`));
+      }
     }
   }).catch(e => console.error('AmoCRM error:', e));
 
@@ -6472,7 +6560,7 @@ app.post('/api/bookings/cancel', async (req, res) => {
 
     console.log(`🔓 Бронь снята: unit=${unitId}, bookings=${outcome.ids.join(',')}, by user=${user.id} (${isManager ? 'admin' : 'owner'})`);
     logAudit(user, isManager ? 'booking.cancel_by_admin' : 'booking.cancel_by_agent', 'unit', unitId, { booking_ids: outcome.ids });
-    releaseAmoLeads(outcome.ids, isManager ? 'cancelled_by_admin' : 'cancelled_by_agent').catch(e => console.error('AmoCRM release error:', e.message));
+    releaseBookingsOutside(outcome.ids, isManager ? 'cancelled_by_admin' : 'cancelled_by_agent');
     if (outcome.byAgent) {
       notifyAdmin(`🔓 Риелтор сам снял свою бронь до отправки паспорта\n\nКвартира: ${unitId}\nРиелтор: ${user.first_name || user.id}`)
         .catch(() => {});

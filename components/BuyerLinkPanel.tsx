@@ -17,10 +17,15 @@ import { showToast } from '../utils/toast';
  */
 
 interface Props {
-    bookingId: number;
+    // Старая бронь в два шага (квартира уже закреплена) — по bookingId.
+    // Новая заявка (квартира закрепится после паспорта) — по requestId.
+    bookingId?: number;
+    requestId?: number;
     unitNumber?: string | number;
     projectName?: string;
     onPassportReceived?: (expiresAt?: string) => void;
+    onRequestBooked?: (expiresAt?: string, bookingId?: number) => void;
+    onRequestLost?: () => void;
 }
 
 type Mode = 'qr' | 'link';
@@ -37,7 +42,10 @@ const formatUntil = (iso?: string) => {
     return d.toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
 };
 
-const BuyerLinkPanel: React.FC<Props> = ({ bookingId, unitNumber, projectName, onPassportReceived }) => {
+const BuyerLinkPanel: React.FC<Props> = ({ bookingId, requestId, unitNumber, projectName, onPassportReceived, onRequestBooked, onRequestLost }) => {
+    const isRequest = !!requestId;
+    const base = isRequest ? `/api/booking-requests/${requestId}` : `/api/bookings/${bookingId}`;
+    const [lost, setLost] = useState(false);
     const [url, setUrl] = useState('');
     const [linkExpiresAt, setLinkExpiresAt] = useState<string | undefined>();
     const [loading, setLoading] = useState(true);
@@ -50,7 +58,7 @@ const BuyerLinkPanel: React.FC<Props> = ({ bookingId, unitNumber, projectName, o
         let cancelled = false;
         setLoading(true);
         setError('');
-        fetch(`/api/bookings/${bookingId}/consent-link`, {
+        fetch(isRequest ? `${base}/link` : `${base}/consent-link`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ initData: getAuthData() }),
@@ -64,6 +72,9 @@ const BuyerLinkPanel: React.FC<Props> = ({ bookingId, unitNumber, projectName, o
                 } else if (data.error === 'Паспорт уже отправлен') {
                     setPassportSent(true);
                     setConsentGiven(true);
+                } else if (isRequest && data.status === 'LOST') {
+                    setLost(true);
+                    onRequestLost?.();
                 } else {
                     setError(data.error || 'Не удалось получить ссылку');
                 }
@@ -71,18 +82,18 @@ const BuyerLinkPanel: React.FC<Props> = ({ bookingId, unitNumber, projectName, o
             .catch(() => { if (!cancelled) setError('Ошибка сети'); })
             .finally(() => { if (!cancelled) setLoading(false); });
         return () => { cancelled = true; };
-    }, [bookingId]);
+    }, [base]);
 
     // Пока ссылка на экране — следим, как покупатель проходит шаги.
     // Останавливаемся, как только паспорт пришёл, и при уходе вкладки в фон.
     useEffect(() => {
-        if (!url || passportSent) return;
+        if (!url || passportSent || lost) return;
         let timer = 0;
         let stopped = false;
         const tick = async () => {
             if (document.visibilityState === 'visible') {
                 try {
-                    const r = await fetch(`/api/bookings/${bookingId}/consent-status`, {
+                    const r = await fetch(isRequest ? `${base}/status` : `${base}/consent-status`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ initData: getAuthData() }),
@@ -93,7 +104,13 @@ const BuyerLinkPanel: React.FC<Props> = ({ bookingId, unitNumber, projectName, o
                         setConsentGiven(!!s.consentGiven);
                         if (s.passportSent) {
                             setPassportSent(true);
-                            onPassportReceived?.(s.expiresAt);
+                            if (isRequest) onRequestBooked?.(s.expiresAt, s.bookingId ? Number(s.bookingId) : undefined);
+                            else onPassportReceived?.(s.expiresAt);
+                            return;
+                        }
+                        if (s.lost || s.status === 'CANCELLED') {
+                            setLost(true);
+                            onRequestLost?.();
                             return;
                         }
                     }
@@ -103,7 +120,7 @@ const BuyerLinkPanel: React.FC<Props> = ({ bookingId, unitNumber, projectName, o
         };
         timer = window.setTimeout(tick, POLL_MS);
         return () => { stopped = true; window.clearTimeout(timer); };
-    }, [url, passportSent, bookingId, onPassportReceived]);
+    }, [url, passportSent, lost, base, isRequest, onPassportReceived, onRequestBooked, onRequestLost]);
 
     const qrSvg = useMemo(() => {
         if (!url) return '';
@@ -116,9 +133,12 @@ const BuyerLinkPanel: React.FC<Props> = ({ bookingId, unitNumber, projectName, o
     const message = useMemo(() => {
         const what = [unitNumber ? `квартиры №${unitNumber}` : 'квартиры', projectName ? `в ${projectName}` : '']
             .filter(Boolean).join(' ');
-        return `Здравствуйте! Чтобы закрепить бронь ${what}, подтвердите согласие на обработку данных ` +
-            `и загрузите фото паспорта по ссылке — это займёт минуту.`;
-    }, [unitNumber, projectName]);
+        return isRequest
+            ? `Здравствуйте! Чтобы забронировать ${what}, подтвердите согласие на обработку данных ` +
+              `и загрузите фото паспорта по ссылке — это займёт минуту. Квартира закрепится за вами сразу после загрузки.`
+            : `Здравствуйте! Чтобы закрепить бронь ${what}, подтвердите согласие на обработку данных ` +
+              `и загрузите фото паспорта по ссылке — это займёт минуту.`;
+    }, [unitNumber, projectName, isRequest]);
 
     const copyLink = () => {
         navigator.clipboard?.writeText(`${message}\n${url}`)
@@ -139,11 +159,17 @@ const BuyerLinkPanel: React.FC<Props> = ({ bookingId, unitNumber, projectName, o
         copyLink();
     };
 
-    const steps = [
-        { icon: Lock, label: 'Квартира закреплена', done: true },
-        { icon: ShieldCheck, label: 'Покупатель дал согласие', done: consentGiven || passportSent },
-        { icon: Camera, label: 'Паспорт получен', done: passportSent },
-    ];
+    const steps = isRequest
+        ? [
+            { icon: ShieldCheck, label: 'Покупатель дал согласие', done: consentGiven || passportSent },
+            { icon: Camera, label: 'Паспорт получен', done: passportSent },
+            { icon: Lock, label: 'Квартира забронирована и передана застройщику', done: passportSent },
+        ]
+        : [
+            { icon: Lock, label: 'Квартира закреплена', done: true },
+            { icon: ShieldCheck, label: 'Покупатель дал согласие', done: consentGiven || passportSent },
+            { icon: Camera, label: 'Паспорт получен', done: passportSent },
+        ];
     const activeStep = steps.findIndex(s => !s.done);
 
     return (
@@ -165,15 +191,27 @@ const BuyerLinkPanel: React.FC<Props> = ({ bookingId, unitNumber, projectName, o
                                 {s.done ? <Check size={13} strokeWidth={3} /> : active ? <Loader2 size={13} className="animate-spin" /> : <Icon size={12} />}
                             </span>
                             {s.label}
-                            {active && !loading && <span className="text-[10px] text-brand-grey font-normal">— ждём</span>}
+                            {active && !loading && !lost && <span className="text-[10px] text-brand-grey font-normal">— ждём</span>}
                         </li>
                     );
                 })}
             </ol>
 
-            {passportSent ? (
+            {isRequest && !passportSent && !lost && !loading && !error && (
+                <div className="mt-3 p-2.5 rounded-xl bg-amber-50 text-amber-800 text-[11px] leading-relaxed">
+                    Квартира пока свободна: она закрепится за вами, как только покупатель загрузит паспорт.
+                </div>
+            )}
+
+            {lost ? (
+                <div className="mt-3 p-3 rounded-xl bg-red-50 text-red-600 text-xs font-bold text-center">
+                    Квартиру уже забронировали или продали — ссылка больше не действует. Паспорт никуда не отправлен.
+                </div>
+            ) : passportSent ? (
                 <div className="mt-3 p-3 rounded-xl bg-green-50 text-green-700 text-xs font-bold text-center">
-                    Готово: согласие и паспорт получены, бронь продлена.
+                    {isRequest
+                        ? 'Готово: паспорт получен, квартира забронирована за вами и передана застройщику.'
+                        : 'Готово: согласие и паспорт получены, бронь продлена.'}
                 </div>
             ) : loading ? (
                 <div className="mt-4 flex items-center justify-center gap-2 text-xs text-brand-grey py-6">

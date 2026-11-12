@@ -15,6 +15,7 @@ import { ensureGoldSchema, addGold, voidGoldEntry, goldSummary, goldHistory, GOL
 import { verifyDealInAmo } from './server/dealVerification.js';
 import { createPollingStatus, startTelegramPolling, startMaxPolling } from './server/botPolling.js';
 import { formatBookingConflictAlert, CONFLICT_IGNORED_STAGES } from './server/bookingConflict.js';
+import { isLeadOnBookingEnabled, isCloseReleasedEnabled, AMO_STATUS_CLOSED_LOST, preliminaryLeadNote, releasedLeadNote } from './server/amoBookingLead.js';
 import { ensurePrizeSchema, seedPrizeCatalog, publicProduct } from './server/prizes.js';
 import { auditUsers } from './server/userAudit.js';
 
@@ -475,6 +476,10 @@ const pool = new Pool({
 pool.on('error', (err) => console.error('⚠️ Pool error:', err.message));
 
 const BOOKING_HOLD_HOURS = Math.max(1, parseInt(process.env.BOOKING_HOLD_HOURS || '72', 10) || 72);
+// Бронь только с паспортом: риелтор отправляет покупателю ссылку, квартира закрепляется
+// в момент загрузки паспорта и сразу уходит застройщику. Так бронь у нас и у застройщика
+// означает одно и то же. BOOKING_REQUIRES_PASSPORT=false возвращает старую бронь в два шага.
+const BOOKING_REQUIRES_PASSPORT = process.env.BOOKING_REQUIRES_PASSPORT !== 'false';
 const BOOKING_EXPIRY_CRON = process.env.BOOKING_EXPIRY_CRON || '*/15 * * * *';
 // Таймаут загрузки XML-фида застройщика
 const FEED_FETCH_TIMEOUT_MS = Math.max(1000, parseInt(process.env.FEED_FETCH_TIMEOUT_MS || '8000', 10) || 8000);
@@ -1253,6 +1258,18 @@ const initDb = async () => {
     await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_consent_token ON bookings(consent_token) WHERE consent_token IS NOT NULL;');
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS consent_transfer BOOLEAN DEFAULT FALSE;');
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS consent_transfer_at TIMESTAMP;');
+    // Заявка на бронь: риелтор выбрал квартиру и покупателя, но квартира НЕ удерживается.
+    // Бронь появляется только когда покупатель по ссылке дал согласие и загрузил паспорт.
+    await pool.query(`CREATE TABLE IF NOT EXISTS booking_requests (
+      id SERIAL PRIMARY KEY, user_id INT NOT NULL, unit_id TEXT NOT NULL, project_id TEXT,
+      buyer_name TEXT, buyer_phone TEXT, status TEXT NOT NULL DEFAULT 'OPEN',
+      consent_token TEXT, consent_token_expires TIMESTAMP,
+      buyer_consent BOOLEAN DEFAULT FALSE, buyer_consent_at TIMESTAMP, buyer_consent_ip_hash TEXT,
+      buyer_consent_user_agent TEXT, buyer_consent_version TEXT,
+      booking_id INT, created_at TIMESTAMP DEFAULT NOW(), closed_at TIMESTAMP
+    );`);
+    await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_booking_requests_token ON booking_requests(consent_token) WHERE consent_token IS NOT NULL;');
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_booking_requests_open ON booking_requests(unit_id) WHERE status = 'OPEN';");
     // 38-ФЗ: застройщик проекта (рекламная пометка)
     await pool.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS developer_name TEXT;');
     // Ход строительства: процент, этап и срок вносит админ по данным застройщика.
@@ -2367,7 +2384,10 @@ async function expireOverdueBookings() {
     notifyAdmin(`⌛ Бронь истекла и квартира освобождена\n\n${bookingLabel(row)}\nРиелтор: ${row.first_name || row.user_id}`, getAppOpenKeyboard())
       .catch(e => console.error('Booking expired notify admin error:', e.message));
   }
-  if (expired.length > 0) console.log(`⌛ Expired ${expired.length} overdue bookings`);
+  if (expired.length > 0) {
+    console.log(`⌛ Expired ${expired.length} overdue bookings`);
+    releaseAmoLeads(expired.map(r => r.id), `expired_${BOOKING_HOLD_HOURS}h`).catch(e => console.error('AmoCRM release error:', e.message));
+  }
   return expired;
 }
 
@@ -2425,13 +2445,21 @@ cron.schedule('*/15 * * * *', async () => {
   try {
     const pending = await pool.query(`
       SELECT b.* FROM bookings b
-      WHERE b.passport_sent = TRUE
-        AND b.amocrm_lead_id IS NULL
-        AND COALESCE(b.stage, 'INIT') NOT IN ('CANCELLED')
+      WHERE b.amocrm_lead_id IS NULL
+        AND COALESCE(b.stage, 'INIT') NOT IN ('CANCELLED', 'COMPLETE')
+        AND (b.passport_sent = TRUE OR ($1::boolean AND NOT EXISTS (
+          SELECT 1 FROM units un WHERE un.id = b.unit_id AND un.status = 'SOLD'
+        )))
       ORDER BY b.created_at ASC
       LIMIT 10
-    `);
+    `, [isLeadOnBookingEnabled()]);
     for (const booking of pending.rows) {
+      // Паспорта ещё нет — это предварительная бронь: лид без данных покупателя
+      if (!booking.passport_sent) {
+        const leadId = await createPreliminaryAmoLead(booking.id);
+        if (leadId) console.log(`🔁 AmoCRM retry: предварительный лид ${leadId} для брони #${booking.id}`);
+        continue;
+      }
       const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [booking.user_id]);
       const unitRes = await pool.query('SELECT * FROM units WHERE id = $1', [booking.unit_id]);
       const unit = unitRes.rows[0] || { project_id: booking.project_id };
@@ -5048,6 +5076,70 @@ async function syncToAmoCRM(booking, userData, unitData) {
   }
 }
 
+// Предварительная сделка в amoCRM в момент брони: отдел продаж застройщика сразу
+// видит, что квартира занята. Без данных покупателя — они придут с паспортом.
+// Ошибка не мешает брони: недосозданный лид подхватит ретрай-крон.
+async function createPreliminaryAmoLead(bookingId) {
+  if (!process.env.AMOCRM_SUBDOMAIN || !process.env.AMOCRM_TOKEN) return null;
+  const booking = (await pool.query('SELECT * FROM bookings WHERE id = $1', [bookingId])).rows[0];
+  if (!booking || booking.amocrm_lead_id) return booking?.amocrm_lead_id || null;
+  const user = (await pool.query('SELECT * FROM users WHERE id = $1', [booking.user_id])).rows[0] || {};
+  const unit = (await pool.query('SELECT * FROM units WHERE id = $1', [booking.unit_id])).rows[0] || { id: booking.unit_id, project_id: booking.project_id };
+  // Застройщик уже продал квартиру — предварительная сделка только запутает отдел продаж
+  if (unit.status === 'SOLD') return null;
+  const leadId = await syncToAmoCRM(booking, user, unit);
+  if (!leadId) return null;
+  // Запоминаем лид, только если его ещё нет: паспорт мог успеть создать свой
+  const saved = await pool.query(
+    'UPDATE bookings SET amocrm_lead_id = $1, amocrm_synced = TRUE WHERE id = $2 AND amocrm_lead_id IS NULL RETURNING stage',
+    [String(leadId), bookingId]
+  );
+  if (saved.rows.length === 0) return leadId;
+  let projectName = unit.project_id || booking.project_id;
+  try {
+    const pr = await pool.query('SELECT name FROM projects WHERE id = $1', [booking.project_id]);
+    if (pr.rows[0]?.name) projectName = pr.rows[0].name;
+  } catch {}
+  await attachNoteToAmoCRM(leadId, preliminaryLeadNote({
+    unit, projectName,
+    agent: { name: user.first_name || booking.user_name, company: user.company || booking.user_company, phone: user.phone || booking.user_phone },
+    expiresAt: booking.expires_at,
+  }), [], 'booking');
+  logAudit(null, 'booking.amocrm_preliminary_lead', 'booking', bookingId, { lead_id: String(leadId) });
+  // Бронь успели снять, пока создавался лид, — сразу закрываем его
+  if (saved.rows[0]?.stage === 'CANCELLED') await releaseAmoLeads([bookingId], 'cancelled_by_agent');
+  return leadId;
+}
+
+// Бронь снята или истекла: пишем в сделку и закрываем её как «не реализовано»,
+// чтобы отдел продаж не считал квартиру занятой.
+async function releaseAmoLeads(bookingIds, reason) {
+  const AMOCRM_SUBDOMAIN = process.env.AMOCRM_SUBDOMAIN;
+  const AMOCRM_TOKEN = process.env.AMOCRM_TOKEN;
+  if (!AMOCRM_SUBDOMAIN || !AMOCRM_TOKEN || !bookingIds?.length) return;
+  const rows = (await pool.query(
+    'SELECT id, amocrm_lead_id FROM bookings WHERE id = ANY($1::int[]) AND amocrm_lead_id IS NOT NULL',
+    [bookingIds]
+  )).rows;
+  for (const row of rows) {
+    try {
+      await addAmoCRMLeadNote(row.amocrm_lead_id, { note_type: 'common', params: { text: releasedLeadNote({ reason }) } });
+      if (isCloseReleasedEnabled()) {
+        const r = await fetchWithTimeout(`https://${AMOCRM_SUBDOMAIN}.amocrm.ru/api/v4/leads/${row.amocrm_lead_id}`, {
+          method: 'PATCH',
+          headers: { 'Authorization': `Bearer ${AMOCRM_TOKEN}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status_id: AMO_STATUS_CLOSED_LOST }),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      }
+      logAudit(null, 'booking.amocrm_released', 'booking', row.id, { lead_id: String(row.amocrm_lead_id), reason });
+    } catch (e) {
+      console.error(`AmoCRM release error (booking #${row.id}):`, e.message);
+      alertAmoCRMFailure(`🚨 <b>Не удалось закрыть сделку в amoCRM</b>\n\nБронь #${row.id} снята (${escapeHtml(reason)}), но лид ${escapeHtml(row.amocrm_lead_id)} у застройщика остался открытым: ${escapeHtml(e.message)}.\nЗакройте его вручную, иначе отдел продаж будет считать квартиру занятой.`);
+    }
+  }
+}
+
 // Прикрепить примечание и файлы к лиду в AmoCRM.
 // Ошибки по файлам не блокируют бронь: почта остаётся резервным каналом.
 // Файл, не дошедший до лида, раньше оставался только в логе: менеджер видел
@@ -5444,6 +5536,12 @@ app.post('/api/bookings', rateLimitByUser(900000, 20), async (req, res) => {
     if (user.approval_status !== 'approved' && !isStaff(user)) {
       return res.status(403).json({ error: 'Бронирование откроется после одобрения заявки' });
     }
+    if (BOOKING_REQUIRES_PASSPORT) {
+      return res.status(409).json({
+        error: 'Бронь оформляется после загрузки паспорта: отправьте покупателю ссылку',
+        code: 'passport_required',
+      });
+    }
 
     // Освежаем фид перед бронью, но не делаем его доступность условием работы.
     // Если фид застройщика лежит — раньше риелтор вообще не мог забронировать;
@@ -5480,6 +5578,10 @@ app.post('/api/bookings', rateLimitByUser(900000, 20), async (req, res) => {
       if (rewards.length > 0) console.log(`🎯 Миссии после бронирования user=${user.id}:`, rewards.map(r => r.title).join(', '));
     });
     logAudit(user, 'booking.create', 'booking', result.bookingId, { unit_id: unitId, project_id: projectId });
+    // Застройщик видит бронь сразу, а не после паспорта (асинхронно, бронь не ждёт CRM)
+    if (isLeadOnBookingEnabled()) {
+      createPreliminaryAmoLead(result.bookingId).catch(e => console.error('AmoCRM preliminary lead error:', e.message));
+    }
     res.json(result);
   } catch (e) {
     if (e.status) return res.status(e.status).json({ error: e.msg });
@@ -5635,6 +5737,258 @@ app.post('/api/bookings/:id/consent-status', rateLimitByUser(60000, 40), async (
   }
 });
 
+// =============================================
+// ЗАЯВКА НА БРОНЬ (бронь только с паспортом)
+// =============================================
+// Риелтор выбирает квартиру и покупателя и получает ссылку. Квартира остаётся
+// свободной: её закрепляет только загруженный покупателем паспорт. Если за это
+// время квартиру забронировал другой риелтор или продал застройщик — заявка
+// закрывается, паспорт никуда не уходит.
+
+async function resolveConsentRequest(token) {
+  if (!token || !/^[a-f0-9]{64}$/.test(String(token))) return null;
+  const r = await pool.query(
+    `SELECT r.*, un.number AS unit_number, un.floor AS unit_floor, un.area AS unit_area,
+            un.rooms AS unit_rooms, un.price AS unit_price,
+            p.name AS project_name, p.developer_name
+     FROM booking_requests r
+     LEFT JOIN units un ON un.id = r.unit_id
+     LEFT JOIN projects p ON p.id = r.project_id
+     WHERE r.consent_token = $1 AND r.consent_token_expires > NOW()`, [token]);
+  return r.rows[0] || null;
+}
+
+async function issueRequestToken(requestId) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const upd = await pool.query(
+    `UPDATE booking_requests SET consent_token = $1, consent_token_expires = NOW() + ($2::int * INTERVAL '1 hour')
+     WHERE id = $3 RETURNING consent_token_expires`,
+    [token, CONSENT_TOKEN_TTL_HOURS, requestId]
+  );
+  return { url: `${process.env.APP_URL || ''}/consent/${token}`, expiresAt: upd.rows[0]?.consent_token_expires };
+}
+
+const requestLinkAlive = (r) => r.consent_token && r.consent_token_expires &&
+  new Date(r.consent_token_expires) > new Date(Date.now() + 60 * 60 * 1000);
+
+// Создать заявку (или вернуть уже открытую по этой квартире) и выдать ссылку покупателю
+app.post('/api/booking-requests', rateLimitByUser(900000, 30), async (req, res) => {
+  const { initData, unitId, projectId } = req.body || {};
+  const buyerName = String(req.body?.buyerName || '').trim().slice(0, 200) || null;
+  const buyerPhone = String(req.body?.buyerPhone || '').trim().slice(0, 40) || null;
+  try {
+    const user = await resolveDbUser(initData);
+    if (!user) return res.status(401).json({ error: 'Invalid signature' });
+    if (!user.is_registered) return res.status(400).json({ error: 'Сначала зарегистрируйтесь' });
+    if (user.approval_status !== 'approved' && !isStaff(user)) {
+      return res.status(403).json({ error: 'Бронирование откроется после одобрения заявки' });
+    }
+    if (!unitId) return res.status(400).json({ error: 'unitId required' });
+    if (!buyerName || !buyerPhone) return res.status(400).json({ error: 'Укажите ФИО и телефон покупателя' });
+
+    const freshFeed = await refreshFeedBeforeBooking(unitId, projectId);
+    if (!freshFeed.ok && freshFeed.status === 404) {
+      return res.status(404).json({ error: freshFeed.msg || 'Квартира не найдена' });
+    }
+    const unit = (await pool.query('SELECT * FROM units WHERE id = $1', [unitId])).rows[0];
+    if (!unit) return res.status(404).json({ error: 'Квартира не найдена' });
+    const active = await pool.query("SELECT 1 FROM bookings WHERE unit_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'", [unitId]);
+    if (unit.status !== 'FREE' || active.rows.length > 0) {
+      return res.status(400).json({ error: 'Квартира уже забронирована или продана' });
+    }
+
+    const open = (await pool.query(
+      "SELECT * FROM booking_requests WHERE user_id = $1 AND unit_id = $2 AND status = 'OPEN' ORDER BY id DESC LIMIT 1",
+      [user.id, unitId]
+    )).rows[0];
+    let requestId;
+    if (open) {
+      requestId = open.id;
+      await pool.query('UPDATE booking_requests SET buyer_name = $1, buyer_phone = $2 WHERE id = $3', [buyerName, buyerPhone, requestId]);
+      if (requestLinkAlive(open)) {
+        return res.json({ success: true, requestId, url: `${process.env.APP_URL || ''}/consent/${open.consent_token}`, expiresAt: open.consent_token_expires });
+      }
+    } else {
+      const ins = await pool.query(
+        `INSERT INTO booking_requests (user_id, unit_id, project_id, buyer_name, buyer_phone)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [user.id, unitId, unit.project_id || projectId, buyerName, buyerPhone]
+      );
+      requestId = ins.rows[0].id;
+      logAudit(user, 'booking_request.create', 'unit', unitId, { request_id: requestId });
+    }
+    const link = await issueRequestToken(requestId);
+    res.json({ success: true, requestId, ...link });
+  } catch (e) {
+    console.error('Booking request error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+async function loadOwnRequest(req, res) {
+  const dbUser = await resolveDbUser(req.body?.initData);
+  if (!dbUser) { res.status(401).json({ error: 'Invalid signature' }); return null; }
+  const r = (await pool.query('SELECT * FROM booking_requests WHERE id = $1', [req.params.id])).rows[0];
+  if (!r) { res.status(404).json({ error: 'Заявка не найдена' }); return null; }
+  if (r.user_id !== dbUser.id) { res.status(403).json({ error: 'Это не ваша заявка' }); return null; }
+  return { dbUser, r };
+}
+
+app.post('/api/booking-requests/:id/link', rateLimitByUser(60000, 20), async (req, res) => {
+  try {
+    const own = await loadOwnRequest(req, res);
+    if (!own) return;
+    const { r } = own;
+    if (r.status !== 'OPEN') return res.status(400).json({ error: r.status === 'BOOKED' ? 'Паспорт уже отправлен' : 'Заявка закрыта', status: r.status });
+    if (requestLinkAlive(r)) {
+      return res.json({ success: true, url: `${process.env.APP_URL || ''}/consent/${r.consent_token}`, expiresAt: r.consent_token_expires });
+    }
+    res.json({ success: true, ...(await issueRequestToken(r.id)) });
+  } catch (e) {
+    console.error('Booking request link error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Риелтор держит QR на экране и видит, где покупатель. Без данных покупателя.
+app.post('/api/booking-requests/:id/status', rateLimitByUser(60000, 40), async (req, res) => {
+  try {
+    const own = await loadOwnRequest(req, res);
+    if (!own) return;
+    const { r } = own;
+    let expiresAt = null;
+    if (r.booking_id) {
+      expiresAt = (await pool.query('SELECT expires_at FROM bookings WHERE id = $1', [r.booking_id])).rows[0]?.expires_at || null;
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      status: r.status, consentGiven: r.buyer_consent === true, passportSent: r.status === 'BOOKED',
+      lost: r.status === 'LOST', bookingId: r.booking_id, expiresAt,
+    });
+  } catch (e) {
+    console.error('Booking request status error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/booking-requests/:id/cancel', rateLimitByUser(60000, 20), async (req, res) => {
+  try {
+    const own = await loadOwnRequest(req, res);
+    if (!own) return;
+    await pool.query(
+      "UPDATE booking_requests SET status = 'CANCELLED', consent_token = NULL, closed_at = NOW() WHERE id = $1 AND status = 'OPEN'",
+      [own.r.id]
+    );
+    logAudit(own.dbUser, 'booking_request.cancel', 'booking_request', own.r.id, {});
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Booking request cancel error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Открытые заявки риелтора — чтобы на шахматке вернуться к ссылке
+app.post('/api/booking-requests/my', async (req, res) => {
+  try {
+    const dbUser = await resolveDbUser(req.body?.initData);
+    if (!dbUser) return res.status(401).json({ error: 'Invalid signature' });
+    const r = await pool.query(
+      `SELECT id, unit_id, project_id, buyer_consent, consent_token_expires FROM booking_requests
+       WHERE user_id = $1 AND status = 'OPEN' AND consent_token_expires > NOW()
+       ORDER BY id DESC`, [dbUser.id]);
+    res.json(r.rows.map(x => ({ id: x.id, unitId: x.unit_id, projectId: x.project_id, consentGiven: x.buyer_consent === true, linkExpiresAt: x.consent_token_expires })));
+  } catch (e) {
+    console.error('Booking requests list error:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Паспорт по заявке пришёл: атомарно превращаем заявку в бронь.
+// Возвращает { booking } или { lost: true }, если квартиру уже заняли.
+async function bookFromRequest(requestId) {
+  try {
+    return await withTransaction(async (client) => {
+      const r = (await client.query('SELECT * FROM booking_requests WHERE id = $1 FOR UPDATE', [requestId])).rows[0];
+      if (!r || r.status !== 'OPEN') return { closed: true, status: r?.status };
+      const unit = (await client.query('SELECT * FROM units WHERE id = $1 FOR UPDATE', [r.unit_id])).rows[0];
+      const active = await client.query("SELECT 1 FROM bookings WHERE unit_id = $1 AND COALESCE(stage, 'INIT') != 'CANCELLED'", [r.unit_id]);
+      if (!unit || unit.status !== 'FREE' || active.rows.length > 0) {
+        await client.query("UPDATE booking_requests SET status = 'LOST', consent_token = NULL, closed_at = NOW() WHERE id = $1", [r.id]);
+        return { lost: true, request: r, unit };
+      }
+      const agent = (await client.query('SELECT * FROM users WHERE id = $1', [r.user_id])).rows[0] || {};
+      const booking = (await client.query(
+        `INSERT INTO bookings (user_id, unit_id, project_id, user_phone, user_name, user_company, stage, expires_at,
+                               buyer_name, buyer_phone, buyer_consent, buyer_consent_at, buyer_consent_ip_hash,
+                               buyer_consent_user_agent, buyer_consent_version)
+         VALUES ($1, $2, $3, $4, $5, $6, 'INIT', NOW() + ($7::int * INTERVAL '1 hour'), $8, $9, TRUE, $10, $11, $12, $13)
+         RETURNING *`,
+        [r.user_id, r.unit_id, r.project_id, agent.phone, agent.first_name, agent.company, BOOKING_HOLD_HOURS,
+         r.buyer_name, r.buyer_phone, r.buyer_consent_at, r.buyer_consent_ip_hash, r.buyer_consent_user_agent, r.buyer_consent_version]
+      )).rows[0];
+      await client.query("UPDATE units SET status = 'BOOKED' WHERE id = $1", [r.unit_id]);
+      await client.query(
+        "UPDATE booking_requests SET status = 'BOOKED', booking_id = $1, consent_token = NULL, closed_at = NOW() WHERE id = $2",
+        [booking.id, r.id]
+      );
+      // Остальные заявки на эту квартиру больше не нужны
+      const others = await client.query(
+        "UPDATE booking_requests SET status = 'LOST', consent_token = NULL, closed_at = NOW() WHERE unit_id = $1 AND status = 'OPEN' AND id != $2 RETURNING user_id",
+        [r.unit_id, r.id]
+      );
+      return { booking, request: r, unit, otherUserIds: others.rows.map(x => x.user_id) };
+    });
+  } catch (e) {
+    // Параллельная бронь успела раньше — уникальный индекс не дал создать вторую
+    if (e.code === '23505' && e.constraint === 'idx_bookings_one_active_per_unit') {
+      await pool.query("UPDATE booking_requests SET status = 'LOST', consent_token = NULL, closed_at = NOW() WHERE id = $1 AND status = 'OPEN'", [requestId]);
+      return { lost: true };
+    }
+    throw e;
+  }
+}
+
+async function notifyUserById(userId, text) {
+  try {
+    const u = (await pool.query('SELECT telegram_id, max_id, platform FROM users WHERE id = $1', [userId])).rows[0];
+    if (u) await notifyUser(u, text, getAppOpenKeyboard());
+  } catch (e) { console.error('notifyUserById error:', e.message); }
+}
+
+async function handleRequestPassport(request, file, res) {
+  if (!request.buyer_consent) return res.status(400).json({ error: 'Сначала подтвердите согласие' });
+  if (!file) return res.status(400).json({ error: 'Файл не выбран' });
+  const label = `кв. ${request.unit_number || '?'}${request.project_name ? `, ЖК «${request.project_name}»` : ''}`;
+
+  const result = await bookFromRequest(request.id);
+  if (result.closed) {
+    return res.status(400).json({ error: result.status === 'BOOKED' ? 'Документы уже отправлены' : 'Ссылка больше не действует' });
+  }
+  if (result.lost) {
+    logAudit(null, 'booking_request.lost', 'booking_request', request.id, { unit_id: request.unit_id });
+    notifyUserById(request.user_id,
+      `😔 <b>Квартира уже занята</b>\n\n${escapeHtml(label)}: покупатель загрузил паспорт, но квартиру к этому моменту забронировали или продали. Паспорт никуда не отправлен.\n\nПодберите клиенту другой вариант.`);
+    return res.status(409).json({ error: 'К сожалению, эту квартиру уже забронировали. Документ никуда не отправлен — риелтор свяжется с вами и предложит другой вариант.' });
+  }
+
+  const { booking } = result;
+  const full = await loadBookingWithAgent(booking.id);
+  const unit = (await pool.query('SELECT * FROM units WHERE id = $1', [booking.unit_id])).rows[0] || {};
+  const { emailSent, renewedExpiresAt } = await deliverPassport({
+    booking: full, unit, file, bookingId: booking.id,
+    buyerName: booking.buyer_name || '', buyerPhone: booking.buyer_phone || '',
+  });
+  logAudit(null, 'booking.create_with_passport', 'booking', booking.id, { request_id: request.id, email_sent: emailSent });
+  checkMissions(booking.user_id, 'booking').catch(() => {});
+  notifyUserById(booking.user_id,
+    `✅ <b>Квартира забронирована</b>\n\n${escapeHtml(label)}: покупатель загрузил паспорт, бронь оформлена и передана застройщику.` +
+    (renewedExpiresAt ? `\nСрок брони: ${formatBookingDeadline(renewedExpiresAt)}.` : ''));
+  for (const uid of result.otherUserIds || []) {
+    notifyUserById(uid, `ℹ️ ${escapeHtml(label)} забронирована другим риелтором — ваша ссылка для покупателя больше не действует.`);
+  }
+  return res.json({ success: true });
+}
+
 async function resolveConsentBooking(token) {
   if (!token || !/^[a-f0-9]{64}$/.test(String(token))) return null;
   const r = await pool.query(
@@ -5653,7 +6007,7 @@ async function resolveConsentBooking(token) {
 // риелтора, ни чужих броней.
 app.get('/api/consent/:token', rateLimit(60000, 60), async (req, res) => {
   try {
-    const booking = await resolveConsentBooking(req.params.token);
+    const booking = (await resolveConsentBooking(req.params.token)) || (await resolveConsentRequest(req.params.token));
     if (!booking) return res.status(404).json({ error: 'Ссылка недействительна или истекла' });
     const settings = await pool.query("SELECT key, value FROM app_settings WHERE key IN ('buyer_consent_text','buyer_consent_version','pd_operator_name')");
     const map = {};
@@ -5681,7 +6035,19 @@ app.get('/api/consent/:token', rateLimit(60000, 60), async (req, res) => {
 app.post('/api/consent/:token/accept', rateLimit(60000, 30), async (req, res) => {
   try {
     const booking = await resolveConsentBooking(req.params.token);
-    if (!booking) return res.status(404).json({ error: 'Ссылка недействительна или истекла' });
+    if (!booking) {
+      const request = await resolveConsentRequest(req.params.token);
+      if (!request || request.status !== 'OPEN') return res.status(404).json({ error: 'Ссылка недействительна или истекла' });
+      const version = await consentTextVersion();
+      await pool.query(
+        `UPDATE booking_requests SET buyer_consent = TRUE, buyer_consent_at = NOW(),
+                buyer_consent_ip_hash = $1, buyer_consent_user_agent = $2, buyer_consent_version = $3
+         WHERE id = $4`,
+        [hashConsentValue(req.ip), String(req.get('user-agent') || '').slice(0, 500), version, request.id]
+      );
+      logAudit(null, 'booking_request.buyer_consent_given', 'booking_request', request.id, { version });
+      return res.json({ success: true, version });
+    }
     if (booking.passport_sent) return res.status(400).json({ error: 'Документы уже отправлены' });
     const version = await consentTextVersion();
     await pool.query(
@@ -5703,7 +6069,11 @@ app.post('/api/consent/:token/accept', rateLimit(60000, 30), async (req, res) =>
 app.post('/api/consent/:token/passport', rateLimit(3600000, 10), upload.single('passport'), async (req, res) => {
   try {
     const booking = await resolveConsentBooking(req.params.token);
-    if (!booking) return res.status(404).json({ error: 'Ссылка недействительна или истекла' });
+    if (!booking) {
+      const request = await resolveConsentRequest(req.params.token);
+      if (!request) return res.status(404).json({ error: 'Ссылка недействительна или истекла' });
+      return await handleRequestPassport(request, req.file, res);
+    }
     if (!booking.buyer_consent) return res.status(400).json({ error: 'Сначала подтвердите согласие' });
     if (booking.passport_sent) return res.status(400).json({ error: 'Документы уже отправлены' });
     if (!req.file) return res.status(400).json({ error: 'Файл не выбран' });
@@ -6102,6 +6472,7 @@ app.post('/api/bookings/cancel', async (req, res) => {
 
     console.log(`🔓 Бронь снята: unit=${unitId}, bookings=${outcome.ids.join(',')}, by user=${user.id} (${isManager ? 'admin' : 'owner'})`);
     logAudit(user, isManager ? 'booking.cancel_by_admin' : 'booking.cancel_by_agent', 'unit', unitId, { booking_ids: outcome.ids });
+    releaseAmoLeads(outcome.ids, isManager ? 'cancelled_by_admin' : 'cancelled_by_agent').catch(e => console.error('AmoCRM release error:', e.message));
     if (outcome.byAgent) {
       notifyAdmin(`🔓 Риелтор сам снял свою бронь до отправки паспорта\n\nКвартира: ${unitId}\nРиелтор: ${user.first_name || user.id}`)
         .catch(() => {});

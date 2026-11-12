@@ -57,6 +57,9 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
     // Бронь, по которой открыта панель «Паспорт покупателя» (QR или ссылка).
     // Покупатель сам даёт согласие и сам загружает документ.
     const [buyerLinkBookingId, setBuyerLinkBookingId] = useState<number | null>(null);
+    // Заявка на бронь: ссылка покупателю выдана, квартира закрепится после его паспорта
+    const [buyerLinkRequestId, setBuyerLinkRequestId] = useState<number | null>(null);
+    const [myRequestByUnitId, setMyRequestByUnitId] = useState<Map<string, number>>(new Map());
     // Мои активные брони по квартирам: нужны, чтобы вернуться к QR позже,
     // если риелтор закрыл карточку, а покупатель ещё не загрузил паспорт.
     const [myBookingByUnitId, setMyBookingByUnitId] = useState<Map<string, { id: number; passportSent: boolean }>>(new Map());
@@ -108,8 +111,17 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
             body: JSON.stringify({ initData: getAuthData() })
         }).then(res => res.json()).catch(() => []);
 
-        Promise.all([unitsPromise, myBookingsPromise])
-            .then(([data, myBookings]) => {
+        const myRequestsPromise = fetch('/api/booking-requests/my', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData: getAuthData() })
+        }).then(res => res.json()).catch(() => []);
+
+        Promise.all([unitsPromise, myBookingsPromise, myRequestsPromise])
+            .then(([data, myBookings, myRequests]) => {
+                setMyRequestByUnitId(new Map(
+                    (Array.isArray(myRequests) ? myRequests : []).map((r: any) => [r.unitId, Number(r.id)])
+                ));
                 const myBookingByUnit = new Map<string, any>(
                     (Array.isArray(myBookings) ? myBookings : [])
                         .filter((b: any) => b.stage !== 'CANCELLED')
@@ -262,13 +274,33 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
         setBookingResult({ ok: true, msg: 'Паспорт получен. Бронь продлена.' });
     }, [bookingUnit]);
 
-    const handleBooking = async () => {
+    // Покупатель загрузил паспорт по заявке — бронь оформлена и ушла застройщику
+    const handleRequestBooked = useCallback((expiresAt?: string, bookingId?: number) => {
+        if (!bookingUnit) return;
+        const unitId = bookingUnit.id;
+        setUnits(prev => prev.map(u => u.id === unitId ? { ...u, status: 'BOOKED', bookingExpiresAt: expiresAt } : u));
+        setBookingUnit(prev => prev && prev.id === unitId ? { ...prev, status: 'BOOKED', bookingExpiresAt: expiresAt } : prev);
+        setMyBookedUnitIds(prev => new Set(prev).add(unitId));
+        if (bookingId) setMyBookingByUnitId(prev => new Map(prev).set(unitId, { id: bookingId, passportSent: true }));
+        setMyRequestByUnitId(prev => { const m = new Map(prev); m.delete(unitId); return m; });
+        setBookingResult({ ok: true, msg: 'Паспорт получен — квартира забронирована за вами и передана застройщику.' });
+    }, [bookingUnit]);
+
+    const handleRequestLost = useCallback(() => {
+        if (!bookingUnit) return;
+        const unitId = bookingUnit.id;
+        setMyRequestByUnitId(prev => { const m = new Map(prev); m.delete(unitId); return m; });
+        loadUnits({ silent: true });
+    }, [bookingUnit, loadUnits]);
+
+    // Бронь без паспорта больше не создаётся: риелтор получает ссылку для покупателя,
+    // а квартира закрепляется в момент, когда покупатель загрузил паспорт.
+    const handleCreateRequest = async () => {
         if (!bookingUnit || !selectedProject || !buyerName || !buyerPhone) return;
         setBookingLoading(true);
         setBookingResult(null);
         try {
-            // Step 1: Create booking (stage = INIT)
-            const res1 = await fetch('/api/bookings', {
+            const res = await fetch('/api/booking-requests', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -279,27 +311,16 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                     buyerPhone: buyerPhone.trim(),
                 }),
             });
-            const data1 = await res1.json();
-            if (!data1.success || !data1.bookingId) {
-                setBookingResult({ ok: false, msg: data1.error || 'Ошибка создания бронирования' });
-                // Скорее всего квартиру забрали, пока заполнялась форма — подтянем шахматку,
-                // чтобы риелтор увидел актуальные статусы, а не то, что было при открытии.
+            const data = await res.json().catch(() => ({}));
+            if (!data.success || !data.requestId) {
+                setBookingResult({ ok: false, msg: data.error || 'Не удалось подготовить ссылку' });
                 loadUnits({ silent: true });
                 return;
             }
-
-            // Квартира уже удерживается. Документы покупатель донесёт сам по ссылке —
-            // согласие на обработку должен дать он, а не риелтор за него.
-            setBookingResult({ ok: true, msg: 'Квартира закреплена за вами. Осталось получить паспорт покупателя.' });
-            setUnits(prev => prev.map(u =>
-                u.id === bookingUnit.id ? { ...u, status: 'BOOKED', bookingExpiresAt: data1.expiresAt } : u
-            ));
-            setBookingUnit(prev => prev ? { ...prev, status: 'BOOKED', bookingExpiresAt: data1.expiresAt } : prev);
             setShowBookingForm(false);
-            setMyBookedUnitIds(prev => new Set(prev).add(bookingUnit.id));
-            setMyBookingByUnitId(prev => new Map(prev).set(bookingUnit.id, { id: Number(data1.bookingId), passportSent: false }));
-            setBuyerLinkBookingId(Number(data1.bookingId));
-        } catch (e) {
+            setMyRequestByUnitId(prev => new Map(prev).set(bookingUnit.id, Number(data.requestId)));
+            setBuyerLinkRequestId(Number(data.requestId));
+        } catch {
             setBookingResult({ ok: false, msg: 'Ошибка сети. Попробуйте позже.' });
         } finally {
             setBookingLoading(false);
@@ -375,6 +396,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
         setPassportPreview(null);
         setBookingResult(null);
         setBuyerLinkBookingId(null);
+        setBuyerLinkRequestId(null);
         setShowBookingForm(false);
         setShowMortgage(false);
         setConsentTransfer(false);
@@ -761,7 +783,7 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                             </button>
 
                             {/* Book - only for FREE */}
-                            {bookingUnit.status === 'FREE' && !bookingResult?.ok && !showBookingForm && (
+                            {bookingUnit.status === 'FREE' && !bookingResult?.ok && !showBookingForm && !buyerLinkRequestId && !myRequestByUnitId.has(bookingUnit.id) && (
                                 <button
                                     onClick={() => setShowBookingForm(true)}
                                     className="w-full py-3 bg-brand-black text-brand-gold rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg active:scale-[0.98] transition-transform"
@@ -796,7 +818,22 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                         </div>
 
                         {/* Паспорт покупателя: QR, если он рядом, или ссылка в мессенджер */}
-                        {buyerLinkBookingId ? (
+                        {buyerLinkRequestId ? (
+                            <BuyerLinkPanel
+                                requestId={buyerLinkRequestId}
+                                unitNumber={bookingUnit.number}
+                                projectName={selectedProject?.name}
+                                onRequestBooked={handleRequestBooked}
+                                onRequestLost={handleRequestLost}
+                            />
+                        ) : bookingUnit.status === 'FREE' && myRequestByUnitId.has(bookingUnit.id) ? (
+                            <button
+                                onClick={() => setBuyerLinkRequestId(myRequestByUnitId.get(bookingUnit.id)!)}
+                                className="w-full mb-4 py-3 bg-brand-cream border border-brand-gold/50 rounded-xl font-bold text-sm flex items-center justify-center gap-2 text-brand-black active:scale-[0.98] transition-transform"
+                            >
+                                <ShieldCheck size={16} className="text-brand-gold" /> Ждём паспорт покупателя: QR или ссылка
+                            </button>
+                        ) : buyerLinkBookingId ? (
                             <BuyerLinkPanel
                                 bookingId={buyerLinkBookingId}
                                 unitNumber={bookingUnit.number}
@@ -841,17 +878,18 @@ const ChessboardModal: React.FC<ChessboardProps> = ({ onClose, projects, isAdmin
                                 <div className="flex items-start gap-2 rounded-xl border border-brand-gold/30 bg-brand-gold/10 p-3">
                                     <ShieldCheck size={16} className="text-brand-gold shrink-0 mt-0.5" />
                                     <span className="text-[11px] text-brand-black leading-relaxed">
-                                        Квартира будет закреплена сразу. Паспорт покупатель загрузит сам —
-                                        после брони вы получите ссылку, которую нужно ему переслать.
+                                        Вы получите ссылку для покупателя. Квартира закрепится за вами,
+                                        когда он подтвердит согласие и загрузит паспорт, — в этот же момент
+                                        бронь уйдёт застройщику. До этого квартиру может забронировать другой риелтор.
                                     </span>
                                 </div>
 
                                 <button
-                                    onClick={handleBooking}
+                                    onClick={handleCreateRequest}
                                     disabled={bookingLoading || !buyerName || !buyerPhone}
                                     className="w-full py-3 bg-brand-black text-white rounded-xl font-bold shadow-lg disabled:opacity-50 flex items-center justify-center gap-2"
                                 >
-                                    {bookingLoading ? <><Loader2 size={16} className="animate-spin" /> Отправка...</> : 'Подтвердить бронирование'}
+                                    {bookingLoading ? <><Loader2 size={16} className="animate-spin" /> Готовим ссылку...</> : 'Получить ссылку для покупателя'}
                                 </button>
                             </div>
                         )}

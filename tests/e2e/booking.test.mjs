@@ -103,13 +103,7 @@ check('заявка Анны стала бронью, заявка Бориса 
 
 check('квартира с паспортом забронирована в Profitbase', await waitFor(() => statusCalls('b1').includes('BOOKED')), pbCalls);
 check('в Profitbase ходим с токеном', pbCalls.some((c) => c.path.includes('status-change') && c.token === 'pbtok'), pbCalls);
-check('в карточку квартиры записаны агент и клиент', await waitFor(() => {
-  const f = fieldCalls('b1')[0];
-  return f && f.pbcf_agent === 'Анна Петрова · Агентство · +79990000002' && f.pbcf_client === 'Покупатель Тест · +79995550000';
-}), fieldCalls('b1'));
-check('запись полей отмечена в брони',
-  await waitFor(async () => (await q('SELECT profitbase_fields_ok FROM bookings WHERE id = $1', [bk.id]))[0].profitbase_fields_ok === true));
-check('чужие поля квартиры не трогаем', !fieldCalls('b1').some((f) => 'pbcf_bti' in (f || {})), fieldCalls('b1'));
+check('поля карточки квартиры в Profitbase не трогаем — только статус', fieldCalls('b1').length === 0, fieldCalls('b1'));
 check('бронь помечена как переданная в Profitbase',
   await waitFor(async () => (await q('SELECT profitbase_reserved FROM bookings WHERE id = $1', [bk.id]))[0].profitbase_reserved === true));
 
@@ -157,10 +151,7 @@ check('по одной заявке без паспорта в Profitbase нич
 r = await post('/api/bookings/cancel', 1001, { unitId: 'b1' });
 check('админ снял бронь', r.status === 200, r);
 check('в Profitbase квартира снова свободна', await waitFor(() => statusCalls('b1').at(-1) === 'AVAILABLE'), statusCalls('b1'));
-check('при снятии брони поля агента и клиента очищены', await waitFor(() => {
-  const f = fieldCalls('b1').at(-1);
-  return f && f.pbcf_agent === '' && f.pbcf_client === '';
-}), fieldCalls('b1'));
+check('при снятии брони поля квартиры тоже не трогаем', fieldCalls('b1').length === 0, fieldCalls('b1'));
 check('флаг брони в Profitbase снят',
   await waitFor(async () => (await q('SELECT profitbase_reserved FROM bookings WHERE id = $1', [bk.id]))[0].profitbase_reserved === false));
 

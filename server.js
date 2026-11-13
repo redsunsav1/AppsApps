@@ -15,7 +15,7 @@ import { ensureGoldSchema, addGold, voidGoldEntry, goldSummary, goldHistory, GOL
 import { verifyDealInAmo } from './server/dealVerification.js';
 import { createPollingStatus, startTelegramPolling, startMaxPolling } from './server/botPolling.js';
 import { formatBookingConflictAlert, CONFLICT_IGNORED_STAGES } from './server/bookingConflict.js';
-import { isLeadOnBookingEnabled, isCloseReleasedEnabled, AMO_STATUS_CLOSED_LOST, preliminaryLeadNote, releasedLeadNote, agentFromUser, formatAgentLine, formatClientLine, buildLeadName, buildLeadContacts } from './server/amoBookingLead.js';
+import { isLeadOnBookingEnabled, isCloseReleasedEnabled, AMO_STATUS_CLOSED_LOST, preliminaryLeadNote, releasedLeadNote } from './server/amoBookingLead.js';
 import { createProfitbaseClient } from './server/profitbase.js';
 import { ensurePrizeSchema, seedPrizeCatalog, publicProduct } from './server/prizes.js';
 import { auditUsers } from './server/userAudit.js';
@@ -1263,9 +1263,6 @@ const initDb = async () => {
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS profitbase_reserved BOOLEAN DEFAULT FALSE;');
     // Агент и клиент записаны в поля карточки квартиры в Profitbase
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS profitbase_fields_ok BOOLEAN DEFAULT FALSE;');
-    // После перезапуска перепроверяем поля активных броней: запись тех же значений безвредна,
-    // а проверка ответа Profitbase покажет, сохранились ли они на самом деле.
-    await pool.query("UPDATE bookings SET profitbase_fields_ok = FALSE WHERE profitbase_reserved = TRUE AND COALESCE(stage, 'INIT') NOT IN ('CANCELLED', 'COMPLETE')");
     // Заявка на бронь: риелтор выбрал квартиру и покупателя, но квартира НЕ удерживается.
     // Бронь появляется только когда покупатель по ссылке дал согласие и загрузил паспорт.
     await pool.query(`CREATE TABLE IF NOT EXISTS booking_requests (
@@ -2457,15 +2454,6 @@ cron.schedule('*/15 * * * *', async () => {
         AND COALESCE(un.status, '') != 'SOLD'
       ORDER BY b.id LIMIT 20`);
     for (const row of pending.rows) await reserveInProfitbase(row.id);
-    // Бронь в Profitbase стоит, а агент и клиент не записаны — дописываем
-    const noFields = await pool.query(`
-      SELECT id FROM bookings
-      WHERE profitbase_reserved = TRUE AND COALESCE(profitbase_fields_ok, FALSE) = FALSE
-        AND COALESCE(stage, 'INIT') NOT IN ('CANCELLED')
-      ORDER BY id LIMIT 20`);
-    for (const row of noFields.rows) {
-      if (!(await writeProfitbaseFields(row.id).catch(e => { console.error('Profitbase fields retry error:', e.message); return null; }))) break;
-    }
   } catch (e) { console.error('Profitbase retry cron error:', e.message); }
 });
 
@@ -5081,15 +5069,13 @@ async function syncToAmoCRM(booking, userData, unitData, options = {}) {
     } catch {}
 
     const customFields = buildAmoCRMCustomFields(unitData, projectName);
-    const agent = agentFromUser(userData || {}, booking);
-    const buyer = options.buyer && (options.buyer.name || options.buyer.phone) ? options.buyer : null;
     const leadData = [{
-      name: buildLeadName({ unit: unitData, projectName, agent, buyer }),
+      name: `Бронь: кв.${unitData.number}, ${unitData.rooms}-к, ${unitData.area}м², эт.${unitData.floor} — ${projectName}`,
       price: parseInt(unitData.price) || 0,
       ...(amocrmPipelineCache.pipelineId && { pipeline_id: amocrmPipelineCache.pipelineId }),
       ...(amocrmPipelineCache.statusId && { status_id: amocrmPipelineCache.statusId }),
       ...(customFields && { custom_fields_values: customFields }),
-      _embedded: { contacts: buildLeadContacts({ agent, buyer }) }
+      _embedded: { contacts: [{ first_name: userData.first_name || '', custom_fields_values: [{ field_code: 'PHONE', values: [{ value: userData.phone || '' }] }] }] }
     }];
     console.log(`📤 AmoCRM: отправка лида в ${AMOCRM_SUBDOMAIN}.amocrm.ru...`);
     const response = await fetch(`https://${AMOCRM_SUBDOMAIN}.amocrm.ru/api/v4/leads/complex`, {
@@ -5122,10 +5108,6 @@ if (profitbase.enabled) {
   setTimeout(async () => {
     const ok = await profitbase.ping();
     console.log(ok ? '🏷️ Profitbase: ключ принят' : `⚠️ Profitbase: вход не удался — ${profitbase.status().lastError}`);
-    if (ok) {
-      const f = await profitbase.resolveFields().catch(e => { console.error('Profitbase fields lookup error:', e.message); return null; });
-      if (f) console.log(`🏷️ Profitbase: поле агента — ${f.agent?.name || 'не найдено'}, поле клиента — ${f.client?.name || 'не найдено'}`);
-    }
   }, 5000);
 }
 let lastProfitbaseAlertAt = 0;
@@ -5150,7 +5132,6 @@ async function reserveInProfitbase(bookingId) {
   try {
     await profitbase.reserve(row.unit_id);
     await pool.query('UPDATE bookings SET profitbase_reserved = TRUE WHERE id = $1', [row.id]);
-    writeProfitbaseFields(row.id).catch(e => console.error(`Profitbase fields error (booking #${row.id}):`, e.message));
     logAudit(null, 'booking.profitbase_reserved', 'booking', row.id, { unit_id: row.unit_id });
     console.log(`🏷️ Profitbase: кв. ${row.unit_number || row.unit_id} забронирована (бронь #${row.id})`);
     return true;
@@ -5159,25 +5140,6 @@ async function reserveInProfitbase(bookingId) {
     alertProfitbaseFailure(`🚨 <b>Квартира не забронирована в Profitbase</b>\n\nБронь #${row.id}, кв. ${escapeHtml(row.unit_number || row.unit_id)} (${escapeHtml(row.project_id || '')}).\n${escapeHtml(e.message)}\n\nПриложение повторит попытку через 15 минут. Пока в Profitbase квартира выглядит свободной.`);
     return false;
   }
-}
-
-// Кто и на кого забронировал — в поля карточки квартиры. Бронь в Profitbase уже стоит,
-// поэтому сбой здесь не трогает её: флаг profitbase_fields_ok останется FALSE, и крон
-// допишет поля позже (в том числе когда их только создали в Profitbase).
-async function writeProfitbaseFields(bookingId) {
-  const row = (await pool.query(
-    `SELECT b.id, b.unit_id, b.buyer_name, b.buyer_phone, b.user_name, b.user_phone, b.user_company,
-            u.first_name, u.last_name, u.company, u.company_type, u.phone
-     FROM bookings b LEFT JOIN users u ON u.id = b.user_id
-     WHERE b.id = $1 AND b.profitbase_reserved = TRUE`, [bookingId])).rows[0];
-  if (!row) return false;
-  const r = await profitbase.writePartnerFields(row.unit_id, {
-    agent: formatAgentLine(agentFromUser(row, row)),
-    client: formatClientLine({ name: row.buyer_name, phone: row.buyer_phone }),
-  });
-  if (r?.skipped) return false;
-  await pool.query('UPDATE bookings SET profitbase_fields_ok = TRUE WHERE id = $1', [row.id]);
-  return true;
 }
 
 // Бронь снята или истекла — возвращаем квартиру в продажу в Profitbase.
@@ -5192,8 +5154,6 @@ async function releaseInProfitbase(bookingIds) {
     try {
       if (row.unit_status !== 'SOLD') {
         await profitbase.release(row.unit_id);
-        await profitbase.clearPartnerFields(row.unit_id)
-          .catch(e => console.error(`Profitbase clear fields error (booking #${row.id}):`, e.message));
       }
       await pool.query('UPDATE bookings SET profitbase_reserved = FALSE, profitbase_fields_ok = FALSE WHERE id = $1', [row.id]);
       logAudit(null, 'booking.profitbase_released', 'booking', row.id, { unit_id: row.unit_id, skipped_sold: row.unit_status === 'SOLD' });

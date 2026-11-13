@@ -155,6 +155,13 @@ check('при снятии брони поля квартиры тоже не т
 check('флаг брони в Profitbase снят',
   await waitFor(async () => (await q('SELECT profitbase_reserved FROM bookings WHERE id = $1', [bk.id]))[0].profitbase_reserved === false));
 
+// --- Старая бронь на квартиру, которую застройщик продал: снятие не делает её свободной
+await q("INSERT INTO units (id, project_id, floor, number, rooms, area, price, status) VALUES ('b4', 'p1', 2, '24', 1, 40, 5000000, 'SOLD')");
+await q("INSERT INTO bookings (user_id, unit_id, project_id, stage) VALUES (2, 'b4', 'p1', 'INIT')");
+r = await post('/api/bookings/cancel', 1001, { unitId: 'b4' });
+check('бронь на проданной квартире снимается', r.status === 200, r);
+check('проданная квартира после снятия брони остаётся проданной', (await q("SELECT status FROM units WHERE id = 'b4'"))[0].status === 'SOLD');
+
 // --- Риелтор отменил заявку
 const c = await post('/api/booking-requests', 1002, { unitId: 'b3', projectId: 'p1', ...buyer });
 r = await post(`/api/booking-requests/${c.data.requestId}/cancel`, 1003);

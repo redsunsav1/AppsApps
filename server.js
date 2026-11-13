@@ -2373,6 +2373,8 @@ async function expireOverdueBookings() {
         `UPDATE units u
          SET status = 'FREE', updated_at = NOW()
          WHERE u.id = ANY($1::text[])
+           -- Проданную застройщиком не освобождаем: иначе она всплывёт свободной
+           AND u.status = 'BOOKED'
            AND NOT EXISTS (
              SELECT 1 FROM bookings b
              WHERE b.unit_id = u.id AND COALESCE(b.stage, 'INIT') NOT IN ('CANCELLED')
@@ -6563,6 +6565,8 @@ app.post('/api/bookings/cancel', async (req, res) => {
       await client.query(`
         UPDATE units u SET status = 'FREE', updated_at = NOW()
         WHERE u.id = $1
+          -- Проданную застройщиком не освобождаем: иначе она всплывёт свободной
+          AND u.status = 'BOOKED'
           AND NOT EXISTS (
             SELECT 1 FROM bookings b
             WHERE b.unit_id = u.id AND COALESCE(b.stage, 'INIT') != 'CANCELLED'

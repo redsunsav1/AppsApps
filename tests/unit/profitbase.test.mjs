@@ -88,5 +88,56 @@ check('нет custom_fields в ответе — проверить нечем', 
 check('очистка: поле пропало из ответа — это ок', verifyFieldsSaved({ custom_fields: [] }, [{ id: 10, name: 'Агент', value: '' }]).verified === true);
 check('в итоге проверки нет самих значений', !JSON.stringify(miss).includes('Анна'), miss);
 
+// --- Подбор формата: живой аккаунт молча игнорирует формат из документации
+{
+  const store = {};
+  const patches = [];
+  const fx = async (url, opts) => {
+    const u = new URL(url);
+    const body = opts.body ? JSON.parse(opts.body) : null;
+    const json = (status, data) => ({ ok: status < 400, status, text: async () => JSON.stringify(data) });
+    if (u.pathname.endsWith('/authentication')) return json(200, { access_token: 't', remaining_time: 86400 });
+    if (u.pathname.endsWith('/property-types')) return json(200, [{ customFields: [
+      { id: 1110500, key: 'pbcf_a', name: 'Агент КлубПартнеров', type: 'text' },
+      { id: 1110501, key: 'pbcf_c', name: 'Клиент КлубПартнеров', type: 'text' }] }]);
+    if (opts.method === 'PATCH') {
+      patches.push(body.custom_fields);
+      // Сохраняется только список с числовыми id
+      if (Array.isArray(body.custom_fields) && typeof body.custom_fields[0]?.id === 'number') {
+        for (const c of body.custom_fields) store[c.id] = c.value;
+      }
+      return json(200, { id: 17607838, status: 'BOOKED' });
+    }
+    if (u.pathname.endsWith('/property')) return json(200, { data: [{ id: 17607838, custom_fields: [
+      { id: 'pbcf_a', name: 'Агент КлубПартнеров', value: store[1110500] ?? null },
+      { id: 'pbcf_c', name: 'Клиент КлубПартнеров', value: store[1110501] ?? null }] }] });
+    return json(404, {});
+  };
+  const pc = createProfitbaseClient({ config: profitbaseConfig({ PROFITBASE_ACCOUNT: 'pbx', PROFITBASE_API_KEY: 'k', PROFITBASE_MIN_INTERVAL_MS: '0' }), fetchImpl: fx });
+  await pc.writePartnerFields('17607838', { agent: 'Анна · +7', client: 'Иван · +7' });
+  const st2 = pc.status().lastFieldsWrite;
+  check('подбирает рабочий формат и проверяет перечитыванием', st2.verified === true && st2.format === 'id_list' && store[1110500] === 'Анна · +7', st2);
+  const before = patches.length;
+  await pc.writePartnerFields('17607838', { agent: '', client: '' });
+  check('сработавший формат запоминается', patches.length - before === 1 && Array.isArray(patches.at(-1)), patches.slice(before));
+
+  // Ни один формат не сохраняется — понятная диагностика без значений
+  const fy = async (url, opts) => {
+    const u = new URL(url);
+    const json = (status, data) => ({ ok: true, status, text: async () => JSON.stringify(data) });
+    if (u.pathname.endsWith('/authentication')) return json(200, { access_token: 't', remaining_time: 86400 });
+    if (u.pathname.endsWith('/property-types')) return json(200, [{ customFields: [{ id: 1, key: 'pbcf_a', name: 'Агент', type: 'text' }] }]);
+    if (opts.method === 'PATCH') return json(200, { id: 5 });
+    if (u.pathname.endsWith('/property')) return json(200, [{ id: 5, number: '1', custom_fields: [{ id: 'pbcf_bti', name: 'Номер БТИ', value: '7' }] }]);
+    return json(404, {});
+  };
+  const py = createProfitbaseClient({ config: profitbaseConfig({ PROFITBASE_ACCOUNT: 'pbx', PROFITBASE_API_KEY: 'k', PROFITBASE_MIN_INTERVAL_MS: '0' }), fetchImpl: fy });
+  let thrown = null;
+  try { await py.writePartnerFields('5', { agent: 'Секрет Агент · +7999', client: 'x' }); } catch (e) { thrown = e; }
+  const sy = py.status().lastFieldsWrite;
+  check('если не сохранилось — ошибка и видно, какие поля есть у квартиры', thrown && sy.verified === false && sy.tried.length === 4 && sy.visibleCustomFields.includes('Номер БТИ'), sy);
+  check('в диагностике нет значений', !JSON.stringify(py.status()).includes('Секрет'), sy);
+}
+
 if (fails) { console.error(`\n${fails} проверок не прошло`); process.exit(1); }
 console.log('\nВсе проверки пройдены');

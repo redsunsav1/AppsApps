@@ -131,26 +131,71 @@ export function createProfitbaseClient({ config = profitbaseConfig(), fetchImpl 
     return fieldsCache;
   }
 
+  // Форматы записи пользовательских полей. Документация показывает первый, но на
+  // живом аккаунте он может молча игнорироваться — тогда пробуем остальные и
+  // запоминаем сработавший.
+  const FIELD_FORMATS = {
+    key_map: (items) => ({ custom_fields: Object.fromEntries(items.map((w) => [w.key, w.value])) }),
+    id_map: (items) => ({ custom_fields: Object.fromEntries(items.map((w) => [String(w.id ?? w.key), w.value])) }),
+    key_list: (items) => ({ custom_fields: items.map((w) => ({ id: w.key, value: w.value })) }),
+    id_list: (items) => ({ custom_fields: items.map((w) => ({ id: w.id ?? w.key, value: w.value })) }),
+  };
+  let workingFormat = null;
+
+  async function readPropertyFields(propertyId) {
+    const data = await call('GET', `/property?id=${encodeURIComponent(propertyId)}&full=true`);
+    const list = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data
+      : Array.isArray(data?.properties) ? data.properties : data?.data && typeof data.data === 'object' ? [data.data] : [data];
+    const prop = list.find((p) => String(p?.id) === String(propertyId)) || list[0] || null;
+    return { prop, topKeys: data && typeof data === 'object' ? Object.keys(data).slice(0, 10) : [typeof data] };
+  }
+
   async function writePartnerFields(propertyId, { agent, client }) {
     const f = await resolveFields();
-    const custom = {};
-    if (f.agent) custom[f.agent.key] = agent ?? '';
-    if (f.client) custom[f.client.key] = client ?? '';
-    if (!Object.keys(custom).length) return { skipped: true, reason: 'no_fields' };
-    const res = await call('PATCH', `/properties/${encodeURIComponent(propertyId)}`, { custom_fields: custom });
-    // Сверяем ответ: Profitbase может ответить 200, но поле не сохранить.
-    // В диагностику — только форма ответа и итог, без самих значений (это ПДн).
-    const check = verifyFieldsSaved(res, [
+    const items = [
       f.agent && { ...f.agent, value: agent ?? '' },
       f.client && { ...f.client, value: client ?? '' },
-    ].filter(Boolean));
-    state.lastFieldsWrite = { at: new Date(now()).toISOString(), propertyId: String(propertyId), ...check };
-    if (check.verified === false) {
-      const err = new Error(`Profitbase ответил на запись полей, но значения не сохранились (${check.detail})`);
-      noteError(err);
-      throw err;
+    ].filter(Boolean);
+    if (!items.length) return { skipped: true, reason: 'no_fields' };
+
+    const order = [workingFormat, ...Object.keys(FIELD_FORMATS)].filter((x, i, arr) => x && arr.indexOf(x) === i);
+    const tried = [];
+    let lastRead = null;
+    for (const fmt of order) {
+      let res;
+      try {
+        res = await call('PATCH', `/properties/${encodeURIComponent(propertyId)}`, FIELD_FORMATS[fmt](items));
+      } catch (e) {
+        tried.push(`${fmt}: ${String(e.message).slice(0, 80)}`);
+        continue;
+      }
+      // Сначала ответ на запись, потом — перечитанная квартира: она надёжнее
+      let check = verifyFieldsSaved(res, items);
+      if (check.verified !== true) {
+        lastRead = await readPropertyFields(propertyId).catch((e) => ({ error: e.message }));
+        if (lastRead?.prop) check = verifyFieldsSaved(lastRead.prop, items);
+      }
+      if (check.verified === true) {
+        workingFormat = fmt;
+        state.lastFieldsWrite = { at: new Date(now()).toISOString(), propertyId: String(propertyId), verified: true, format: fmt, tried };
+        return res;
+      }
+      tried.push(`${fmt}: ${check.detail}`);
     }
-    return res;
+    // Ни один формат не сохранился. В диагностику — какие поля Profitbase вообще
+    // показывает у этой квартиры (только названия, без значений: это ПДн).
+    const visible = Array.isArray(lastRead?.prop?.custom_fields)
+      ? lastRead.prop.custom_fields.map((c) => c?.name || c?.id).slice(0, 30) : null;
+    state.lastFieldsWrite = {
+      at: new Date(now()).toISOString(), propertyId: String(propertyId), verified: false, tried,
+      readError: lastRead?.error || null,
+      propertyKeys: lastRead?.prop && typeof lastRead.prop === 'object' ? Object.keys(lastRead.prop).slice(0, 40) : null,
+      responseTopKeys: lastRead?.topKeys || null,
+      visibleCustomFields: visible,
+    };
+    const err = new Error(`Profitbase не сохранил поля агента и клиента ни в одном формате (${tried.join('; ').slice(0, 200)})`);
+    noteError(err);
+    throw err;
   }
 
   return {
@@ -206,7 +251,7 @@ export function verifyFieldsSaved(res, written = []) {
   if (!list) return { verified: null, detail: 'в ответе нет custom_fields', shape };
   const norm = (v) => String(v ?? '').trim();
   const missing = written.filter((w) => {
-    const item = list.find((c) => (w.id != null && String(c?.id) === String(w.id)) || c?.key === w.key || c?.name === w.name);
+    const item = list.find((c) => (w.id != null && String(c?.id) === String(w.id)) || String(c?.id) === String(w.key) || c?.key === w.key || c?.name === w.name);
     if (!item) return norm(w.value) !== '';
     return norm(item.value) !== norm(w.value);
   });

@@ -1263,6 +1263,9 @@ const initDb = async () => {
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS profitbase_reserved BOOLEAN DEFAULT FALSE;');
     // Агент и клиент записаны в поля карточки квартиры в Profitbase
     await pool.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS profitbase_fields_ok BOOLEAN DEFAULT FALSE;');
+    // После перезапуска перепроверяем поля активных броней: запись тех же значений безвредна,
+    // а проверка ответа Profitbase покажет, сохранились ли они на самом деле.
+    await pool.query("UPDATE bookings SET profitbase_fields_ok = FALSE WHERE profitbase_reserved = TRUE AND COALESCE(stage, 'INIT') NOT IN ('CANCELLED', 'COMPLETE')");
     // Заявка на бронь: риелтор выбрал квартиру и покупателя, но квартира НЕ удерживается.
     // Бронь появляется только когда покупатель по ссылке дал согласие и загрузил паспорт.
     await pool.query(`CREATE TABLE IF NOT EXISTS booking_requests (

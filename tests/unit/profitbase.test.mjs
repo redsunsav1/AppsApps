@@ -1,6 +1,6 @@
 // Клиент Profitbase на подставном fetch: вход, повторное использование токена,
 // перелогин при 401, лимит «запрос в секунду», адрес аккаунта.
-import { profitbaseConfig, createProfitbaseClient, pickPartnerFields } from '../../server/profitbase.js';
+import { profitbaseConfig, createProfitbaseClient, pickPartnerFields, verifyFieldsSaved } from '../../server/profitbase.js';
 
 let fails = 0;
 const check = (n, c, x) => { console.log(`${c ? '✅' : '❌'} ${n}${c ? '' : ' → ' + JSON.stringify(x)}`); if (!c) fails++; };
@@ -78,6 +78,15 @@ check('находит поля агента и клиента', pf.agent?.key ==
 pf = pickPartnerFields([{ key: 'n', name: 'Риелтор', type: 'number' }, { key: 't', name: 'Риелтор ФИО', type: 'text' }]);
 check('текстовое поле предпочтительнее', pf.agent?.key === 't' && pf.client === null, pf);
 check('нет полей — ничего', (() => { const x = pickPartnerFields([]); return x.agent === null && x.client === null; })());
+
+// --- Проверка, что Profitbase сохранил поля
+const w = [{ id: 10, key: 'pbcf_a', name: 'Агент', value: 'Анна · +7' }, { id: 11, key: 'pbcf_c', name: 'Клиент', value: 'Иван · +7' }];
+check('значения на месте — verified', verifyFieldsSaved({ custom_fields: [{ id: 10, name: 'Агент', value: 'Анна · +7' }, { id: 11, name: 'Клиент', value: 'Иван · +7' }] }, w).verified === true);
+const miss = verifyFieldsSaved({ custom_fields: [{ id: 10, name: 'Агент', value: '' }] }, w);
+check('пустое значение — не сохранено, с названиями полей', miss.verified === false && /Агент/.test(miss.detail) && /Клиент/.test(miss.detail), miss);
+check('нет custom_fields в ответе — проверить нечем', verifyFieldsSaved({ id: 1 }, w).verified === null);
+check('очистка: поле пропало из ответа — это ок', verifyFieldsSaved({ custom_fields: [] }, [{ id: 10, name: 'Агент', value: '' }]).verified === true);
+check('в итоге проверки нет самих значений', !JSON.stringify(miss).includes('Анна'), miss);
 
 if (fails) { console.error(`\n${fails} проверок не прошло`); process.exit(1); }
 console.log('\nВсе проверки пройдены');

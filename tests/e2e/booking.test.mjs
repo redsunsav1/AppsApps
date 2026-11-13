@@ -19,7 +19,7 @@ const pbServer = http.createServer((req, res) => {
       { id: 2, key: 'pbcf_agent', name: 'Агент PartnerBuild', type: 'text' },
       { id: 3, key: 'pbcf_client', name: 'Клиент PartnerBuild', type: 'text' },
     ] }]));
-    if (req.method === 'PATCH' && /^\/properties\/[^/]+$/.test(u.pathname)) return res.end(JSON.stringify({ id: 1, custom_fields: [] }));
+    if (req.method === 'PATCH' && /^\/properties\/[^/]+$/.test(u.pathname)) return res.end(JSON.stringify({ id: 1, custom_fields: Object.entries(body?.custom_fields || {}).map(([key, value], i) => ({ id: { pbcf_agent: 2, pbcf_client: 3 }[key] ?? 100 + i, name: key, value })) }));
     const m = u.pathname.match(/^\/properties\/([^/]+)\/status-change$/);
     if (m) return res.end(JSON.stringify({ id: m[1], status: body?.status }));
     res.statusCode = 404; res.end('{}');
@@ -123,6 +123,19 @@ r = await getConsent(tB);
 check('ссылка Бориса закрыта после чужой брони', r.status === 404, r);
 r = await post(`/api/booking-requests/${boris.data.requestId}/status`, 1003);
 check('Борис видит, что квартиру заняли', r.data?.lost === true, r);
+
+// --- Чужие брони и клиенты не видны другим риелторам
+const unitsForBoris = (await post('/api/units/p1', 1003)).data;
+const b1ForBoris = unitsForBoris.find((u) => u.id === 'b1');
+check('другой риелтор видит только статус «забронирована»', b1ForBoris?.status === 'BOOKED', b1ForBoris);
+check('в шахматке другого риелтора нет агента и клиента чужой брони',
+  !JSON.stringify(unitsForBoris).match(/Покупатель Тест|79995550000|Петрова|79990000002|booking_buyer|booking_agent/), b1ForBoris);
+const borisBookings = (await post('/api/bookings/my', 1003)).data;
+check('в «моих бронях» другого риелтора нет чужой брони', Array.isArray(borisBookings) && !borisBookings.some((b) => b.unit_id === 'b1'), borisBookings);
+r = await post('/api/bookings/all', 1003);
+check('список всех броней риелтору закрыт', r.status === 403, r.status);
+const unitsForAdmin = (await post('/api/units/p1', 1001)).data;
+check('админ видит агента и клиента брони', unitsForAdmin.find((u) => u.id === 'b1')?.booking_buyer_name === 'Покупатель Тест');
 
 r = await post('/api/booking-requests', 1003, { unitId: 'b1', projectId: 'p1', ...buyer });
 check('на забронированную квартиру заявку не создать', r.status === 400, r);

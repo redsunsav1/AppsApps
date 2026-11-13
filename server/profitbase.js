@@ -43,7 +43,7 @@ export function createProfitbaseClient({ config = profitbaseConfig(), fetchImpl 
   let chain = Promise.resolve();
   let lastCallAt = 0;
   // Для диагностики (/api/bot/status): без ключа и токена
-  const state = { lastAuthOk: null, lastAuthAt: null, lastOkAt: null, lastError: null, lastErrorAt: null, fields: null };
+  const state = { lastAuthOk: null, lastAuthAt: null, lastOkAt: null, lastError: null, lastErrorAt: null, fields: null, lastFieldsWrite: null };
   let fieldsCache = null;
   let fieldsCachedAt = 0;
   const noteError = (e) => { state.lastError = String(e?.message || e).slice(0, 300); state.lastErrorAt = new Date(now()).toISOString(); };
@@ -137,7 +137,20 @@ export function createProfitbaseClient({ config = profitbaseConfig(), fetchImpl 
     if (f.agent) custom[f.agent.key] = agent ?? '';
     if (f.client) custom[f.client.key] = client ?? '';
     if (!Object.keys(custom).length) return { skipped: true, reason: 'no_fields' };
-    return call('PATCH', `/properties/${encodeURIComponent(propertyId)}`, { custom_fields: custom });
+    const res = await call('PATCH', `/properties/${encodeURIComponent(propertyId)}`, { custom_fields: custom });
+    // Сверяем ответ: Profitbase может ответить 200, но поле не сохранить.
+    // В диагностику — только форма ответа и итог, без самих значений (это ПДн).
+    const check = verifyFieldsSaved(res, [
+      f.agent && { ...f.agent, value: agent ?? '' },
+      f.client && { ...f.client, value: client ?? '' },
+    ].filter(Boolean));
+    state.lastFieldsWrite = { at: new Date(now()).toISOString(), propertyId: String(propertyId), ...check };
+    if (check.verified === false) {
+      const err = new Error(`Profitbase ответил на запись полей, но значения не сохранились (${check.detail})`);
+      noteError(err);
+      throw err;
+    }
+    return res;
   }
 
   return {
@@ -179,7 +192,25 @@ export function pickPartnerFields(fields = []) {
   const agent = find(/агент|риелтор|риэлтор/i);
   const client = find(/клиент|покупател/i);
   return {
-    agent: agent ? { key: agent.key, name: agent.name } : null,
-    client: client && client.key !== agent?.key ? { key: client.key, name: client.name } : null,
+    agent: agent ? { key: agent.key, name: agent.name, id: agent.id } : null,
+    client: client && client.key !== agent?.key ? { key: client.key, name: client.name, id: client.id } : null,
   };
+}
+
+// Проверка ответа PATCH /properties/{id}: в нём custom_fields — массив { id, name, value }.
+// verified: true — значения на месте; false — поле есть, а значения нет; null — проверить нечем.
+export function verifyFieldsSaved(res, written = []) {
+  const shape = res && typeof res === 'object' ? Object.keys(res).slice(0, 12) : [typeof res];
+  const list = [res?.custom_fields, res?.data?.custom_fields, res?.property?.custom_fields, res?.data?.[0]?.custom_fields]
+    .find((x) => Array.isArray(x));
+  if (!list) return { verified: null, detail: 'в ответе нет custom_fields', shape };
+  const norm = (v) => String(v ?? '').trim();
+  const missing = written.filter((w) => {
+    const item = list.find((c) => (w.id != null && String(c?.id) === String(w.id)) || c?.key === w.key || c?.name === w.name);
+    if (!item) return norm(w.value) !== '';
+    return norm(item.value) !== norm(w.value);
+  });
+  return missing.length
+    ? { verified: false, detail: `не сохранено: ${missing.map((m) => m.name).join(', ')}`, shape }
+    : { verified: true, detail: 'ok', shape };
 }

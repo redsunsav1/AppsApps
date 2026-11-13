@@ -74,3 +74,56 @@ export function releasedLeadNote({ reason }) {
     `Причина: ${RELEASE_REASONS[key] || 'бронь отменена'}.`,
   ].join('\n');
 }
+
+// ---------------------------------------------------------------------------
+// Кто забронировал и на кого — одной строкой для amoCRM и Profitbase.
+// Агент: ФИО · агентство/ИП · телефон. Клиент: ФИО · телефон.
+
+export function formatCompany(company, companyType) {
+  const c = String(company || '').trim();
+  if (!c) return '';
+  if (/^(ип|ан|ооо|оао|зао|ао|пао)(?=[\s«"]|$)/i.test(c) || /агентств/i.test(c)) return c;
+  return `${companyType === 'ip' ? 'ИП' : 'АН'} ${c}`;
+}
+
+export function agentFromUser(user = {}, booking = {}) {
+  const name = [user.first_name || booking.user_name, user.last_name].filter(Boolean).join(' ').trim();
+  return {
+    name,
+    company: formatCompany(user.company || booking.user_company, user.company_type),
+    phone: String(user.phone || booking.user_phone || '').trim(),
+  };
+}
+
+export function formatAgentLine(agent = {}) {
+  return [agent.name, agent.company, agent.phone].map((v) => String(v || '').trim()).filter(Boolean).join(' · ');
+}
+
+export function formatClientLine(buyer = {}) {
+  return [buyer.name, buyer.phone].map((v) => String(v || '').trim()).filter(Boolean).join(' · ');
+}
+
+// Название сделки: квартира, ЖК, агент и клиент видны прямо в списке сделок и в Profitbase.
+// Без клиента (предварительная бронь до согласия) — только агент.
+export function buildLeadName({ unit = {}, projectName, agent = {}, buyer } = {}) {
+  const flat = [`кв.${unit.number || '?'}`, unit.rooms != null && unit.rooms !== '' ? `${unit.rooms}-к` : null,
+    unit.area ? `${unit.area}м²` : null, unit.floor ? `эт.${unit.floor}` : null].filter(Boolean).join(', ');
+  const parts = [`Бронь: ${flat} — ${projectName || unit.project_id || ''}`.trim()];
+  const agentShort = [agent.name, agent.company].filter(Boolean).join(', ');
+  if (agentShort) parts.push(`агент ${agentShort}`);
+  if (buyer?.name) parts.push(`клиент ${buyer.name}`);
+  return parts.join(' · ').slice(0, 250);
+}
+
+// Контакты сделки: клиент основной (его Profitbase показывает у квартиры), агент вторым.
+export function buildLeadContacts({ agent = {}, buyer } = {}) {
+  const contact = (name, phone) => ({
+    first_name: String(name || '').trim() || 'Без имени',
+    ...(phone ? { custom_fields_values: [{ field_code: 'PHONE', values: [{ value: String(phone).trim() }] }] } : {}),
+  });
+  const agentName = [agent.name, agent.company ? `(${agent.company})` : ''].filter(Boolean).join(' ');
+  const list = [];
+  if (buyer?.name || buyer?.phone) list.push(contact(buyer.name || 'Клиент', buyer.phone));
+  list.push(contact(agentName ? `Агент: ${agentName}` : 'Агент', agent.phone));
+  return list;
+}

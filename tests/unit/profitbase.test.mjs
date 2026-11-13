@@ -1,6 +1,6 @@
 // Клиент Profitbase на подставном fetch: вход, повторное использование токена,
 // перелогин при 401, лимит «запрос в секунду», адрес аккаунта.
-import { profitbaseConfig, createProfitbaseClient } from '../../server/profitbase.js';
+import { profitbaseConfig, createProfitbaseClient, pickPartnerFields } from '../../server/profitbase.js';
 
 let fails = 0;
 const check = (n, c, x) => { console.log(`${c ? '✅' : '❌'} ${n}${c ? '' : ' → ' + JSON.stringify(x)}`); if (!c) fails++; };
@@ -67,6 +67,17 @@ catch (e) { check('неверный ключ даёт понятную ошиб�
 const st = pb.status();
 check('статус: адрес и успешный вход, без ключа и токена', st.enabled && st.host === 'pbtest.profitbase.ru' && st.lastAuthOk === true && !JSON.stringify(st).includes('key-1') && !JSON.stringify(st).includes('tok'), st);
 check('ping проверяет ключ', (await pb.ping()) === true && (await bad.ping()) === false && /403/.test(bad.status().lastError || ''), bad.status());
+
+// --- Поля «Агент» и «Клиент» по названию
+let pf = pickPartnerFields([
+  { key: 'pbcf_1', name: 'Номер для БТИ', type: 'text' },
+  { key: 'pbcf_2', name: 'Агент (PartnerBuild)', type: 'text' },
+  { key: 'pbcf_3', name: 'Покупатель', type: 'text' },
+]);
+check('находит поля агента и клиента', pf.agent?.key === 'pbcf_2' && pf.client?.key === 'pbcf_3', pf);
+pf = pickPartnerFields([{ key: 'n', name: 'Риелтор', type: 'number' }, { key: 't', name: 'Риелтор ФИО', type: 'text' }]);
+check('текстовое поле предпочтительнее', pf.agent?.key === 't' && pf.client === null, pf);
+check('нет полей — ничего', (() => { const x = pickPartnerFields([]); return x.agent === null && x.client === null; })());
 
 if (fails) { console.error(`\n${fails} проверок не прошло`); process.exit(1); }
 console.log('\nВсе проверки пройдены');

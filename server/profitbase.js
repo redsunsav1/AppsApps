@@ -30,6 +30,9 @@ export function profitbaseConfig(env = process.env) {
     bookedStatus: String(env.PROFITBASE_BOOKED_STATUS || 'BOOKED'),
     availableStatus: String(env.PROFITBASE_AVAILABLE_STATUS || 'AVAILABLE'),
     linkDeals: env.PROFITBASE_LINK_DEALS !== 'false',
+    // Ключи пользовательских полей квартиры (pbcf_...). Если не заданы — ищем по названию.
+    agentFieldKey: String(env.PROFITBASE_FIELD_AGENT || '').trim(),
+    clientFieldKey: String(env.PROFITBASE_FIELD_CLIENT || '').trim(),
     minIntervalMs: Math.max(0, parseInt(env.PROFITBASE_MIN_INTERVAL_MS || '1100', 10) || 0),
   };
 }
@@ -40,7 +43,9 @@ export function createProfitbaseClient({ config = profitbaseConfig(), fetchImpl 
   let chain = Promise.resolve();
   let lastCallAt = 0;
   // Для диагностики (/api/bot/status): без ключа и токена
-  const state = { lastAuthOk: null, lastAuthAt: null, lastOkAt: null, lastError: null, lastErrorAt: null };
+  const state = { lastAuthOk: null, lastAuthAt: null, lastOkAt: null, lastError: null, lastErrorAt: null, fields: null };
+  let fieldsCache = null;
+  let fieldsCachedAt = 0;
   const noteError = (e) => { state.lastError = String(e?.message || e).slice(0, 300); state.lastErrorAt = new Date(now()).toISOString(); };
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -109,9 +114,39 @@ export function createProfitbaseClient({ config = profitbaseConfig(), fetchImpl 
     return data;
   }
 
+  // Поля «Агент» и «Клиент» в карточке квартиры: берём из настроек или находим по названию
+  async function resolveFields() {
+    if (config.agentFieldKey || config.clientFieldKey) {
+      return { agent: config.agentFieldKey ? { key: config.agentFieldKey, name: config.agentFieldKey } : null,
+               client: config.clientFieldKey ? { key: config.clientFieldKey, name: config.clientFieldKey } : null };
+    }
+    // Найденные поля помним час; не найденные ищем снова через 5 минут — их могли только что создать
+    const ttl = fieldsCache && (fieldsCache.agent || fieldsCache.client) ? 3600_000 : 300_000;
+    if (fieldsCache && now() - fieldsCachedAt < ttl) return fieldsCache;
+    const data = await call('GET', '/property-types');
+    const types = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : data ? [data] : [];
+    fieldsCache = pickPartnerFields(types.flatMap((t) => (Array.isArray(t?.customFields) ? t.customFields : [])));
+    fieldsCachedAt = now();
+    state.fields = { agent: fieldsCache.agent?.name || null, client: fieldsCache.client?.name || null };
+    return fieldsCache;
+  }
+
+  async function writePartnerFields(propertyId, { agent, client }) {
+    const f = await resolveFields();
+    const custom = {};
+    if (f.agent) custom[f.agent.key] = agent ?? '';
+    if (f.client) custom[f.client.key] = client ?? '';
+    if (!Object.keys(custom).length) return { skipped: true, reason: 'no_fields' };
+    return call('PATCH', `/properties/${encodeURIComponent(propertyId)}`, { custom_fields: custom });
+  }
+
   return {
     enabled: config.enabled,
     config,
+    resolveFields,
+    // Записать в карточку квартиры, кто и на кого забронировал (пустые строки — очистить)
+    writePartnerFields,
+    clearPartnerFields: (propertyId) => writePartnerFields(propertyId, { agent: '', client: '' }),
     // Проверка ключа: только вход, статусы квартир не трогает
     ping: async () => {
       if (!config.enabled) return false;
@@ -132,5 +167,19 @@ export function createProfitbaseClient({ config = profitbaseConfig(), fetchImpl 
     // Квартира в карточке сделки amoCRM. Нужен виджет «Profitbase для amoCRM» у застройщика.
     linkDeal: (propertyId, dealId) =>
       call('POST', '/crm/addPropertyDeal', { propertyId: Number(propertyId), dealId: Number(dealId) }),
+  };
+}
+
+// Из списка пользовательских полей Profitbase выбираем «Агент» и «Клиент» по названию.
+// Текстовые поля предпочтительнее: в число или список строку не записать.
+export function pickPartnerFields(fields = []) {
+  const uniq = [...new Map(fields.filter((f) => f && f.key).map((f) => [f.key, f])).values()];
+  const score = (f) => (/^(text|string|textarea)$/i.test(f.type || '') ? 0 : 1);
+  const find = (re) => uniq.filter((f) => re.test(String(f.name || ''))).sort((a, b) => score(a) - score(b))[0] || null;
+  const agent = find(/агент|риелтор|риэлтор/i);
+  const client = find(/клиент|покупател/i);
+  return {
+    agent: agent ? { key: agent.key, name: agent.name } : null,
+    client: client && client.key !== agent?.key ? { key: client.key, name: client.name } : null,
   };
 }

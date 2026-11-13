@@ -11,15 +11,22 @@ const pbServer = http.createServer((req, res) => {
   req.on('end', () => {
     const u = new URL(req.url, 'http://x');
     const body = raw ? JSON.parse(raw) : null;
-    pbCalls.push({ path: u.pathname, token: u.searchParams.get('access_token'), body });
+    pbCalls.push({ method: req.method, path: u.pathname, token: u.searchParams.get('access_token'), body });
     res.setHeader('Content-Type', 'application/json');
     if (u.pathname === '/authentication') return res.end(JSON.stringify({ access_token: 'pbtok', remaining_time: 86400 }));
+    if (u.pathname === '/property-types') return res.end(JSON.stringify([{ id: 1, customFields: [
+      { id: 1, key: 'pbcf_bti', name: 'Номер для БТИ', type: 'text' },
+      { id: 2, key: 'pbcf_agent', name: 'Агент PartnerBuild', type: 'text' },
+      { id: 3, key: 'pbcf_client', name: 'Клиент PartnerBuild', type: 'text' },
+    ] }]));
+    if (req.method === 'PATCH' && /^\/properties\/[^/]+$/.test(u.pathname)) return res.end(JSON.stringify({ id: 1, custom_fields: [] }));
     const m = u.pathname.match(/^\/properties\/([^/]+)\/status-change$/);
     if (m) return res.end(JSON.stringify({ id: m[1], status: body?.status }));
     res.statusCode = 404; res.end('{}');
   });
 });
 await new Promise((r) => pbServer.listen(Number(process.env.TEST_PB_PORT || 18092), '127.0.0.1', r));
+const fieldCalls = (id) => pbCalls.filter((c) => c.method === 'PATCH' && c.path === `/properties/${id}`).map((c) => c.body?.custom_fields);
 const statusCalls = (id) => pbCalls.filter((c) => c.path === `/properties/${id}/status-change`).map((c) => c.body?.status);
 const waitFor = async (fn, ms = 4000) => { const t = Date.now(); while (Date.now() - t < ms) { if (await fn()) return true; await new Promise((r) => setTimeout(r, 100)); } return false; };
 
@@ -96,6 +103,13 @@ check('заявка Анны стала бронью, заявка Бориса 
 
 check('квартира с паспортом забронирована в Profitbase', await waitFor(() => statusCalls('b1').includes('BOOKED')), pbCalls);
 check('в Profitbase ходим с токеном', pbCalls.some((c) => c.path.includes('status-change') && c.token === 'pbtok'), pbCalls);
+check('в карточку квартиры записаны агент и клиент', await waitFor(() => {
+  const f = fieldCalls('b1')[0];
+  return f && f.pbcf_agent === 'Анна Петрова · Агентство · +79990000002' && f.pbcf_client === 'Покупатель Тест · +79995550000';
+}), fieldCalls('b1'));
+check('запись полей отмечена в брони',
+  await waitFor(async () => (await q('SELECT profitbase_fields_ok FROM bookings WHERE id = $1', [bk.id]))[0].profitbase_fields_ok === true));
+check('чужие поля квартиры не трогаем', !fieldCalls('b1').some((f) => 'pbcf_bti' in (f || {})), fieldCalls('b1'));
 check('бронь помечена как переданная в Profitbase',
   await waitFor(async () => (await q('SELECT profitbase_reserved FROM bookings WHERE id = $1', [bk.id]))[0].profitbase_reserved === true));
 
@@ -130,6 +144,10 @@ check('по одной заявке без паспорта в Profitbase нич
 r = await post('/api/bookings/cancel', 1001, { unitId: 'b1' });
 check('админ снял бронь', r.status === 200, r);
 check('в Profitbase квартира снова свободна', await waitFor(() => statusCalls('b1').at(-1) === 'AVAILABLE'), statusCalls('b1'));
+check('при снятии брони поля агента и клиента очищены', await waitFor(() => {
+  const f = fieldCalls('b1').at(-1);
+  return f && f.pbcf_agent === '' && f.pbcf_client === '';
+}), fieldCalls('b1'));
 check('флаг брони в Profitbase снят',
   await waitFor(async () => (await q('SELECT profitbase_reserved FROM bookings WHERE id = $1', [bk.id]))[0].profitbase_reserved === false));
 
